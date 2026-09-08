@@ -1,49 +1,60 @@
-from flask import Flask, request, jsonify
+import os
 import requests
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-# Credentials
 VERIFY_TOKEN = "ganga_palace_secure_token"
-ACCESS_TOKEN = "EAAcF7hlfsRQBSRFWVx8RWH5jmotItREJUN9OFqlbxprh5sgCejCFbVmtj76XIeoetkNE8wgWx7kYncRcl3uJY3uLxXuOOnZAsaocSzq5cpuf0x71xPVCulNtQQ9sYRbRRKiQ325C4pp2EglKEG4UPWOstiQEFlTWcrVVZAzKUZCdj4dI435K1K4NW1ByJERrMPxLZAZAizXOQiFdM6ZBCs8gidu8dW66OYZAZA9ZC6QKfmLQEr7d5BzY4ZAkyJzh3slboeCzQg3lGF7gVRZAXGEDq71"
+ACCESS_TOKEN = "EAAcF7hlfsRQBSYrZAZCESGtjhYJOGA225O88bc2kpPZCS0VEfkLjIxLZB3vZBWZCQvtiinCDzCPD7yMAhA2jadM0TICBcfdo4f13a8cs3joeg416azaZAAwp9BbFcuK9qsFDcR2s6Owr0m9olKhCMOJQ0AGHdyREzX9FJNhQ3lfjguT3rZCXCfiFu7BZCEsJ3Uyv4rdkueBHZB0MTdYtuhjZCuJWZBEbcwsV7KpZBh32irewr3WgqdbZCRnKMocuOa8zGwCo7xFT3nvu5GXvFghu25wo0XPgZDZD"
 PHONE_NUMBER_ID = "1357005434155447"
 
-@app.route('/webhook', methods=['GET'])
-def verify():
-    mode = request.args.get('hub.mode')
-    token = request.args.get('hub.verify_token')
-    challenge = request.args.get('hub.challenge')
+@app.route('/', methods=['GET'])
+def home():
+    return "Ganga Palace WhatsApp Bot is Live!", 200
 
-    if mode and token:
-        if mode == 'subscribe' and token == VERIFY_TOKEN:
-            return str(challenge), 200
-        return 'Verification token mismatch', 403
-    return 'Hello Webhook', 200
-
-@app.route('/webhook', methods=['POST'])
+@app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    data = request.get_json()
-    try:
-        if data.get('entry'):
-            for entry in data['entry']:
-                for change in entry.get('changes', []):
+    # Webhook Verification (Meta GET request)
+    if request.method == 'GET':
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+
+        if mode == 'subscribe' and token == VERIFY_TOKEN:
+            return challenge, 200
+        return 'Verification failed', 403
+
+    # Message Handling (Meta POST request)
+    if request.method == 'POST':
+        data = request.get_json()
+        print("Incoming Webhook Data:", data)
+
+        try:
+            entries = data.get('entry', [])
+            for entry in entries:
+                changes = entry.get('changes', [])
+                for change in changes:
                     value = change.get('value', {})
                     messages = value.get('messages', [])
-                    if messages:
-                        msg = messages[0]
-                        sender = msg.get('from')
-                        text = msg.get('text', {}).get('body', '')
-                        print(f"[WhatsApp Incoming] {sender}: {text}")
-                        
-                        # Hotel automated reply
-                        reply = "Namaste! Hotel Ganga Palace, Haridwar mein aapka swagat hai. Room booking ya inquiry ke liye batayein, hum aapki kya sahayata kar sakte hain?"
-                        send_whatsapp_message(sender, reply)
-    except Exception as e:
-        print(f"Error handling incoming message: {e}")
-    return jsonify({'status': 'EVENT_RECEIVED'}), 200
+                    
+                    for msg in messages:
+                        sender_id = msg.get('from')
+                        user_text = msg.get('text', {}).get('body', '').lower()
+
+                        print(f"Message from {sender_id}: {user_text}")
+
+                        # Bot reply logic
+                        reply_text = "Namaste! Welcome to Hotel Ganga Palace, Haridwar.\n\nHow can we help you today?\n1. Room Tariffs & Availability\n2. Location & Directions\n3. Ghat Distance & Aarti Timings\n\nPlease reply with a number or your query."
+
+                        send_whatsapp_message(sender_id, reply_text)
+
+        except Exception as e:
+            print(f"Error handling message: {e}")
+
+        return jsonify({"status": "success"}), 200
 
 def send_whatsapp_message(to_number, text):
-    url = f"https://graph.facebook.com/v25.0/{PHONE_NUMBER_ID}/messages"
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
@@ -55,8 +66,7 @@ def send_whatsapp_message(to_number, text):
         "text": {"body": text}
     }
     res = requests.post(url, headers=headers, json=payload)
-    print(f"[Send Status]: {res.status_code} - {res.text}")
+    print("Meta API Response:", res.status_code, res.text)
 
 if __name__ == '__main__':
-    print("[+] Haridwar Hotel Ganga Palace WhatsApp Server Starting...")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000)

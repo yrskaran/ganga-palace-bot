@@ -52,7 +52,7 @@ def ask_ai(sender_id, user_msg):
 
     try:
         completion = groq_client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="llama3-8b-8192",
             messages=payload,
             temperature=0.3,
             max_tokens=150

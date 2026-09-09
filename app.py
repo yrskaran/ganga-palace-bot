@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 
-VERIFY_TOKEN = "ganga_palace_secure_token"
+VERIFY_TOKEN = "ganga_bot_secret_123"
 ACCESS_TOKEN = "EAAcF7hlfsRQBSZA01hZCQyvBPULJ1B4CSIgvNT0Uv9BG1Kwu0SAJQweZCf2m65WeNIcx7nl9Es97SckC0QDMQSu0dINxTwDsexZAKzcQjPKXoFOBBETdGomRJpwdFiNduIIa2LZAZCQ4kl3HNqqTnvl70ufkBIjryCK2FFN70HWDvraL91ptZCZAg9CXWZAUAlLblPWvM7ZBRm0uqKJ76dmenjiZAIOugtEqKdHcryM05Vq4GiNBrx63nr60OQn2xhinTZBvFszugHulfTWB81Qg1AuVugZDZD"
 PHONE_NUMBER_ID = "1357005434155447"
 

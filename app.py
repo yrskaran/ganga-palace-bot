@@ -6,16 +6,17 @@ from google.genai import types
 
 app = Flask(__name__)
 
-# Environment variables
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ganga_bot_secret_123")
 ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN") or os.environ.get("ACCESS_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1357005434155447")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Memory store (phone_number -> list of messages)
-chat_histories = {}
+# Processed message IDs (duplicate webhook drop karne ke liye)
+processed_msg_ids = set()
 
-# Server startup par hotel details load karna
+# Native Gemini Chat sessions per user
+chat_sessions = {}
+
 try:
     with open("hotel_data.txt", "r", encoding="utf-8") as f:
         HOTEL_INFO = f.read()
@@ -24,59 +25,52 @@ except Exception:
 
 ai_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
-SYSTEM_PROMPT = f"""
-Aap Hotel Ganga Palace (Haridwar) ke real aur humble front-desk receptionist hain.
-Aapka mission ek real human ki tarah helpful aur polite rehna hai.
+SYSTEM_INSTRUCTION = f"""
+Aap Hotel Ganga Palace (Haridwar) ke front desk manager hain.
+Aapka mission ek real polite receptionist ki tarah 1-to-1 natural chat karna hai.
 
-STRICT CONVERSATION RULES:
-1. Short & Crisp: WhatsApp par lambe essay bilkul nahi likhne. Max 1-3 lines me seedha reply karein.
-2. Step-by-Step Flow:
-   - Agar guest pooche "Room milega?": Seedha bolen "Ji bilkul! Aap kis date ke liye dekh rahe hain aur kitne log hain?" (Pehle se poori rate list mat chipkayein).
-   - Agar guest specific room tariff pooche: Tabhi price batayein (Deluxe Rs. 2000, Super Deluxe Rs. 2800) aur poochein unhe konsa chahiye.
-   - Advance Booking ke liye: Unhe front desk number 7500058655 par call ya direct payment karne ko kahein.
-3. No Formatting Junk: Stars (*), bold tags ya hashtags bilkul mat lagayein. Plain readable text rakhein.
-4. Tone: Humble Hinglish/Hindi (jaise: "Ji sir", "Haanji bilkul").
+CRITICAL RULES:
+1. Short Chat: WhatsApp par lambe bhashan ya poori menu list bilkul mat bhejein. Har reply sirf 1 ya 2 lines ka hona chahiye.
+2. Step-by-Step Baat Karein:
+   - Pehli baar guest puche "Room milega?": Sirf itna bolein: "Ji bilkul sir! Aap kis date ke liye plan kar rahe hain aur kitne log hain?" (Rates pehle se mat batao).
+   - Jab guest date/log bataye ya specific room rate puche: Tabhi rate batao (Deluxe Rs. 2000, Super Deluxe Rs. 2800).
+   - Booking ke liye: Front desk number 7500058655 par call ya WhatsApp karke advance dene ko bolein.
+3. Clean Text: Stars (*), bold (**), ya bullet points bilkul mat lagana. Normal WhatsApp chat text likho.
+4. Tone: Humble Hindi/Hinglish (e.g., "Ji sir", "Haanji bilkul").
 
 HOTEL DATA:
 {HOTEL_INFO}
 """
 
-def ask_ai(sender_id, user_msg):
-    if not ai_client:
-        return "Namaste! Front desk se connect karne ke liye kripya 7500058655 par call karein."
-
-    if sender_id not in chat_histories:
-        chat_histories[sender_id] = []
-
-    # Pichle 12 messages maintain karna
-    history = chat_histories[sender_id][-12:]
-    history_text = "\n".join([f"{h['role']}: {h['text']}" for h in history])
-
-    user_query = f"Previous conversation:\n{history_text}\nGuest: {user_msg}\nReceptionist reply:"
-
-    try:
-        response = ai_client.models.generate_content(
-            model='gemini-3.6-flash',
-            contents=user_query,
+def get_or_create_chat(sender_id):
+    if sender_id not in chat_sessions:
+        chat_sessions[sender_id] = ai_client.chats.create(
+            model="gemini-3.6-flash",
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_PROMPT,
-                temperature=0.3,
-                max_output_tokens=150
+                system_instruction=SYSTEM_INSTRUCTION,
+                temperature=0.2,
+                max_output_tokens=100
             )
         )
-        reply = response.text.replace("*", "").replace("#", "").strip()
+    return chat_sessions[sender_id]
 
-        # Update chat memory
-        chat_histories[sender_id].append({"role": "Guest", "text": user_msg})
-        chat_histories[sender_id].append({"role": "Receptionist", "text": reply})
+def ask_ai(sender_id, user_msg):
+    if not ai_client:
+        return "Namaste! Front desk se connect karne ke liye 7500058655 par sampark karein."
+    try:
+        chat = get_or_create_chat(sender_id)
+        response = chat.send_message(user_msg)
+        reply = response.text.replace("*", "").replace("#", "").strip()
         return reply
     except Exception as e:
-        print("Gemini API Error:", e)
-        return "Namaste! Front desk se baat karne ke liye kripya 7500058655 par call karein."
+        print("Gemini Chat Error:", e)
+        # Session reset on error
+        chat_sessions.pop(sender_id, None)
+        return "Namaste! Front desk se connect karne ke liye 7500058655 par sampark karein."
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Ganga Palace WhatsApp Bot is Live!", 200
+    return "Ganga Palace WhatsApp Bot is Running!", 200
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -93,15 +87,26 @@ def webhook():
         try:
             for entry in data.get('entry', []):
                 for change in entry.get('changes', []):
-                    messages = change.get('value', {}).get('messages', [])
+                    value = change.get('value', {})
+                    messages = value.get('messages', [])
                     for msg in messages:
+                        msg_id = msg.get('id')
+                        # Duplicate prevention
+                        if msg_id in processed_msg_ids:
+                            continue
+                        processed_msg_ids.add(msg_id)
+                        if len(processed_msg_ids) > 1000:
+                            processed_msg_ids.clear()
+
                         sender_id = msg.get('from')
-                        user_text = msg.get('text', {}).get('body', '')
-                        if user_text:
-                            reply_text = ask_ai(sender_id, user_text)
-                            send_whatsapp_message(sender_id, reply_text)
+                        # Sirf real user text messages handle karein
+                        if msg.get('type') == 'text':
+                            user_text = msg.get('text', {}).get('body', '').strip()
+                            if user_text:
+                                reply_text = ask_ai(sender_id, user_text)
+                                send_whatsapp_message(sender_id, reply_text)
         except Exception as e:
-            print(f"Error handling message: {e}")
+            print(f"Webhook processing error: {e}")
         return jsonify({"status": "success"}), 200
 
 def send_whatsapp_message(to_number, text):

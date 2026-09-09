@@ -45,7 +45,7 @@ HOTEL DATA:
 def get_or_create_chat(sender_id):
     if sender_id not in chat_sessions:
         chat_sessions[sender_id] = ai_client.chats.create(
-            model="gemini-3.6-flash",
+            model="gemini-2.0-flash"
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_INSTRUCTION,
                 temperature=0.2,

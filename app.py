@@ -35,7 +35,7 @@ def ask_ai(user_msg):
         return "Namaste! Front desk se connect karne ke liye kripya 7500058655 par sampark karein."
     try:
         response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-3.6-flash',
             contents=f"{HOTEL_CONTEXT}\n\nUser Message: {user_msg}\nAssistant Reply:"
         )
         return response.text.strip()

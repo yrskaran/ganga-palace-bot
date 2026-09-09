@@ -5,20 +5,21 @@ from google import genai
 
 app = Flask(__name__)
 
+# Environment variables
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ganga_bot_secret_123")
 ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN") or os.environ.get("ACCESS_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1357005434155447")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# User chat memory dictionary
+# User chat memory dictionary (phone_number -> list of message dicts)
 chat_histories = {}
 
-def get_hotel_context():
-    try:
-        with open("hotel_data.txt", "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception:
-        return "Hotel Ganga Palace, Haridwar. Contact: 7500058655."
+# Server boot par hotel details ko ek baar memory me load karna (Faster response)
+try:
+    with open("hotel_data.txt", "r", encoding="utf-8") as f:
+        HOTEL_INFO = f.read()
+except Exception:
+    HOTEL_INFO = "Hotel Ganga Palace, Haridwar. Contact: 7500058655."
 
 ai_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
@@ -29,26 +30,24 @@ def ask_ai(sender_id, user_msg):
     if sender_id not in chat_histories:
         chat_histories[sender_id] = []
 
-    # Pichle 15 messages ki memory
+    # Pichle 15 messages ki conversation history
     history = chat_histories[sender_id][-15:]
     history_text = "\n".join([f"{h['role']}: {h['text']}" for h in history])
 
-    hotel_info = get_hotel_context()
-
     prompt = f"""
-Aap Hotel Ganga Palace ke warm aur smart virtual manager hain.
-Aapko neeche di gayi hotel details ke hisaab se customer se natural, polite Hinglish me baat karni hai.
+Aap Hotel Ganga Palace ke warm aur experienced receptionist/manager hain.
+Aapko di gayi hotel details ke hisaab se customer se natural, polite Hinglish/Hindi me baat karni hai.
 
 Guidelines:
-1. Short & WhatsApp friendly: Lambe paragraphs mat likhein, 2-3 lines me seedha jawab dein.
-2. Bold text ya stars (**) ka use mat karein. Clean normal text rakhein.
-3. Natural Context: Customer ki pichli baat yaad rakhein. Agar unhone pehle room maanga tha, toh baar-baar intro mat dein. Date aur guests naturally poochhein.
-4. Booking ke liye front desk number 7500058655 mention karein.
+1. Short & WhatsApp friendly: Lambe paragraphs bilkul mat likhein, 2-3 lines me seedha aur accurate reply karein.
+2. Markdown Formatting: Kisi bhi text me stars (**) ka use mat karein. Text bilkul clean rakhein.
+3. Natural Memory: Pichli baatein yaad rakhein. Agar date ya guests ki baat ho chuki hai toh baar-baar wahi sawal repeat mat karein.
+4. Final Booking: Advance booking ya room block karne ke liye front desk number 7500058655 mention karein.
 
 Hotel Knowledge:
-{hotel_info}
+{HOTEL_INFO}
 
-Conversation So Far:
+Conversation History:
 {history_text}
 Customer: {user_msg}
 Assistant:"""
@@ -59,18 +58,18 @@ Assistant:"""
             contents=prompt
         )
         reply = response.text.replace("*", "").strip()
-        
-        # Memory update
+
+        # Update chat history
         chat_histories[sender_id].append({"role": "Customer", "text": user_msg})
         chat_histories[sender_id].append({"role": "Assistant", "text": reply})
         return reply
     except Exception as e:
         print("Gemini API Error:", e)
-        return "Namaste! Kripya humare reception number par call karein: 7500058655."
+        return "Namaste! Kripya humare front desk par call karein: 7500058655."
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Ganga Palace WhatsApp Bot is Live!", 200
+    return "Ganga Palace WhatsApp Bot is Live and Ready!", 200
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():

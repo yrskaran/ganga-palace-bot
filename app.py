@@ -2,6 +2,7 @@ import os
 import requests
 from flask import Flask, request, jsonify
 from google import genai
+from google.genai import types
 
 app = Flask(__name__)
 
@@ -11,10 +12,10 @@ ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN") or os.environ.get("ACCESS_TOKEN"
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1357005434155447")
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
 
-# User chat memory dictionary (phone_number -> list of message dicts)
+# Memory store (phone_number -> list of messages)
 chat_histories = {}
 
-# Server boot par hotel details ko ek baar memory me load karna (Faster response)
+# Server startup par hotel details load karna
 try:
     with open("hotel_data.txt", "r", encoding="utf-8") as f:
         HOTEL_INFO = f.read()
@@ -23,6 +24,23 @@ except Exception:
 
 ai_client = genai.Client(api_key=GEMINI_KEY) if GEMINI_KEY else None
 
+SYSTEM_PROMPT = f"""
+Aap Hotel Ganga Palace (Haridwar) ke real aur humble front-desk receptionist hain.
+Aapka mission ek real human ki tarah helpful aur polite rehna hai.
+
+STRICT CONVERSATION RULES:
+1. Short & Crisp: WhatsApp par lambe essay bilkul nahi likhne. Max 1-3 lines me seedha reply karein.
+2. Step-by-Step Flow:
+   - Agar guest pooche "Room milega?": Seedha bolen "Ji bilkul! Aap kis date ke liye dekh rahe hain aur kitne log hain?" (Pehle se poori rate list mat chipkayein).
+   - Agar guest specific room tariff pooche: Tabhi price batayein (Deluxe Rs. 2000, Super Deluxe Rs. 2800) aur poochein unhe konsa chahiye.
+   - Advance Booking ke liye: Unhe front desk number 7500058655 par call ya direct payment karne ko kahein.
+3. No Formatting Junk: Stars (*), bold tags ya hashtags bilkul mat lagayein. Plain readable text rakhein.
+4. Tone: Humble Hinglish/Hindi (jaise: "Ji sir", "Haanji bilkul").
+
+HOTEL DATA:
+{HOTEL_INFO}
+"""
+
 def ask_ai(sender_id, user_msg):
     if not ai_client:
         return "Namaste! Front desk se connect karne ke liye kripya 7500058655 par call karein."
@@ -30,46 +48,35 @@ def ask_ai(sender_id, user_msg):
     if sender_id not in chat_histories:
         chat_histories[sender_id] = []
 
-    # Pichle 15 messages ki conversation history
-    history = chat_histories[sender_id][-15:]
+    # Pichle 12 messages maintain karna
+    history = chat_histories[sender_id][-12:]
     history_text = "\n".join([f"{h['role']}: {h['text']}" for h in history])
 
-    prompt = f"""
-Aap Hotel Ganga Palace ke warm aur experienced receptionist/manager hain.
-Aapko di gayi hotel details ke hisaab se customer se natural, polite Hinglish/Hindi me baat karni hai.
-
-Guidelines:
-1. Short & WhatsApp friendly: Lambe paragraphs bilkul mat likhein, 2-3 lines me seedha aur accurate reply karein.
-2. Markdown Formatting: Kisi bhi text me stars (**) ka use mat karein. Text bilkul clean rakhein.
-3. Natural Memory: Pichli baatein yaad rakhein. Agar date ya guests ki baat ho chuki hai toh baar-baar wahi sawal repeat mat karein.
-4. Final Booking: Advance booking ya room block karne ke liye front desk number 7500058655 mention karein.
-
-Hotel Knowledge:
-{HOTEL_INFO}
-
-Conversation History:
-{history_text}
-Customer: {user_msg}
-Assistant:"""
+    user_query = f"Previous conversation:\n{history_text}\nGuest: {user_msg}\nReceptionist reply:"
 
     try:
         response = ai_client.models.generate_content(
             model='gemini-3.6-flash',
-            contents=prompt
+            contents=user_query,
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.3,
+                max_output_tokens=150
+            )
         )
-        reply = response.text.replace("*", "").strip()
+        reply = response.text.replace("*", "").replace("#", "").strip()
 
-        # Update chat history
-        chat_histories[sender_id].append({"role": "Customer", "text": user_msg})
-        chat_histories[sender_id].append({"role": "Assistant", "text": reply})
+        # Update chat memory
+        chat_histories[sender_id].append({"role": "Guest", "text": user_msg})
+        chat_histories[sender_id].append({"role": "Receptionist", "text": reply})
         return reply
     except Exception as e:
         print("Gemini API Error:", e)
-        return "Namaste! Kripya humare front desk par call karein: 7500058655."
+        return "Namaste! Front desk se baat karne ke liye kripya 7500058655 par call karein."
 
 @app.route('/', methods=['GET'])
 def home():
-    return "Ganga Palace WhatsApp Bot is Live and Ready!", 200
+    return "Ganga Palace WhatsApp Bot is Live!", 200
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():

@@ -5,7 +5,7 @@ from groq import Groq
 
 app = Flask(__name__)
 
-# Credentials & Config
+# Environment Variables
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ganga_bot_secret_123")
 ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN") or os.environ.get("ACCESS_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1357005434155447")
@@ -40,25 +40,24 @@ HOTEL DATA:
 """
 
 def get_live_groq_model():
-    """Groq API se live active chat model auto-detect karega"""
     global ACTIVE_MODEL
     if ACTIVE_MODEL:
         return ACTIVE_MODEL
     
     if not groq_client:
+        print("ERROR: GROQ_KEY missing in environment variables!", flush=True)
         return None
 
     try:
         models_data = groq_client.models.list().data
-        # Whisper (audio) aur Guard (moderation) chhodkar pehla working text model uthayega
         for m in models_data:
             m_id = m.id.lower()
             if "whisper" not in m_id and "guard" not in m_id and "embed" not in m_id:
                 ACTIVE_MODEL = m.id
-                print(f"--> LIVE GROQ MODEL SELECTED: {ACTIVE_MODEL}")
+                print(f"--> LIVE GROQ MODEL SELECTED: {ACTIVE_MODEL}", flush=True)
                 return ACTIVE_MODEL
     except Exception as err:
-        print("Model list error:", err)
+        print(f"Model list error: {err}", flush=True)
     
     return "llama-3.3-70b-versatile"
 
@@ -88,8 +87,23 @@ def ask_ai(sender_id, user_msg):
         chat_histories[sender_id].append({"role": "assistant", "content": reply})
         return reply
     except Exception as e:
-        print("Groq API Error:", e)
+        print(f"Groq API Error: {e}", flush=True)
         return "Namaste! Front desk se connect karne ke liye kripya 7500058655 par sampark karein."
+
+def send_whatsapp_message(to_number, text):
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "text",
+        "text": {"body": text}
+    }
+    resp = requests.post(url, headers=headers, json=payload)
+    print(f"Meta Send Status: {resp.status_code} | Meta Response: {resp.text}", flush=True)
 
 @app.route('/', methods=['GET'])
 def home():
@@ -123,26 +137,14 @@ def webhook():
                         sender_id = msg.get('from')
                         if msg.get('type') == 'text':
                             user_text = msg.get('text', {}).get('body', '').strip()
+                            print(f"\n--- INCOMING: '{user_text}' from {sender_id} ---", flush=True)
                             if user_text:
                                 reply = ask_ai(sender_id, user_text)
+                                print(f"--- BOT REPLY: '{reply}' ---", flush=True)
                                 send_whatsapp_message(sender_id, reply)
         except Exception as e:
-            print(f"Webhook processing error: {e}")
+            print(f"Webhook processing error: {e}", flush=True)
         return jsonify({"status": "success"}), 200
-
-def send_whatsapp_message(to_number, text):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-    headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to_number,
-        "type": "text",
-        "text": {"body": text}
-    }
-    requests.post(url, headers=headers, json=payload)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)

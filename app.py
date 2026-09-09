@@ -1,11 +1,11 @@
 import os
+import re
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
 
 app = Flask(__name__)
 
-# Environment Variables
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ganga_bot_secret_123")
 ACCESS_TOKEN = os.environ.get("WHATSAPP_TOKEN") or os.environ.get("ACCESS_TOKEN")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1357005434155447")
@@ -33,7 +33,8 @@ RULES:
    - Pehli baar guest room puche: Date aur kitne log hain wo poochein (e.g. 'Ji bilkul sir! Kis date ke liye plan hai aur kitne log hain?').
    - Specific rate poochein tabhi batao: Deluxe AC Rs 2000, Super Deluxe AC Rs 2800.
    - Advance booking ke liye 7500058655 par sampark karne ko kahein.
-3. Kisi reply me stars (*), hash (#), ya bullet points na lagayein.
+3. Stars (*), hash (#), ya bullet points na lagayein.
+4. Kabhi bhi internal thinking ya step-by-step reasoning print mat karein, seedha guest ko final message bhejien.
 
 HOTEL DATA:
 {HOTEL_INFO}
@@ -45,21 +46,28 @@ def get_live_groq_model():
         return ACTIVE_MODEL
     
     if not groq_client:
-        print("ERROR: GROQ_KEY missing in environment variables!", flush=True)
         return None
 
     try:
         models_data = groq_client.models.list().data
+        # Reasoning, deepseek, audio, guard aur vision models exclude karke clean chat model select karega
         for m in models_data:
             m_id = m.id.lower()
-            if "whisper" not in m_id and "guard" not in m_id and "embed" not in m_id:
+            if not any(skip in m_id for skip in ["whisper", "guard", "embed", "r1", "deepseek", "qwq", "vision"]):
                 ACTIVE_MODEL = m.id
-                print(f"--> LIVE GROQ MODEL SELECTED: {ACTIVE_MODEL}", flush=True)
+                print(f"--> LIVE STANDARD CHAT MODEL: {ACTIVE_MODEL}", flush=True)
                 return ACTIVE_MODEL
     except Exception as err:
         print(f"Model list error: {err}", flush=True)
     
+    # Fallback to first available model if filter is strict
     return "llama-3.3-70b-versatile"
+
+def clean_reply(text):
+    # Agar kisi model ne <think> tag bheja toh use poori tarah remove karega
+    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    cleaned = cleaned.replace("*", "").replace("#", "").strip()
+    return cleaned
 
 def ask_ai(sender_id, user_msg):
     if not groq_client:
@@ -81,9 +89,10 @@ def ask_ai(sender_id, user_msg):
             model=current_model,
             messages=payload,
             temperature=0.3,
-            max_tokens=150
+            max_tokens=120
         )
-        reply = completion.choices[0].message.content.replace("*", "").replace("#", "").strip()
+        raw_reply = completion.choices[0].message.content or ""
+        reply = clean_reply(raw_reply)
         chat_histories[sender_id].append({"role": "assistant", "content": reply})
         return reply
     except Exception as e:

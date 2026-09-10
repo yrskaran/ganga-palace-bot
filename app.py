@@ -14,8 +14,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Groq ka sabse stable non-reasoning direct model
-ACTIVE_MODEL = "llama3-8b-8192"
+# Wahi model jo pehle kaam kar raha tha
+ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-9876543210"
 
 def load_hotel_data():
@@ -44,6 +44,16 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
+def clean_reply(text):
+    if not text:
+        return ""
+    # Think tag hatane ka original logic
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+    elif "<think>" in text:
+        text = text.split("<think>")[0].strip()
+    return text.strip()
+
 def get_ai_reply(user_message):
     system_prompt = f"""
 Aap Hotel Ganga Palace Haridwar ke polite manager 'Aman' hain.
@@ -51,9 +61,8 @@ Aapka andaz bilkul natural, humble WhatsApp human typing jaisa hona chahiye.
 
 RULES:
 1. Har jawab 1 ya 2 short sentences me dein. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
-2. Agar guest khana, nashta, room, rates, timing ya menu se juda kuch bhi puche, toh HOTEL DATA se seedha jawab dein.
-3. Agar koi aisi cheez puche jo data me NAHI hai, toh saaf bole: "Ji, is baare me mujhe confirm nahi hai. Kripya aap reception number {HOTEL_PHONE} par call kar lijiye."
-4. Direct WhatsApp message reply likhein, koi extra notes ya explanation nahi.
+2. Agar guest room, rate, khana, menu ya timings puche, toh seedha HOTEL DATA se jawab dein.
+3. Agar koi aisi cheez puche jo data me bilkul NAHI hai, toh saaf bole: "Ji, is baare me mujhe confirm nahi hai. Kripya aap reception number {HOTEL_PHONE} par call kar lijiye."
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
@@ -66,15 +75,12 @@ HOTEL DATA:
             ],
             model=ACTIVE_MODEL,
             temperature=0.3,
-            max_tokens=250
+            max_tokens=600  # Token badha diye taaki thinking ke baad reply cut na ho
         )
-        reply = completion.choices[0].message.content
-        if reply:
-            reply = reply.strip()
-            print(f"--- BOT RAW OUTPUT: '{reply}' ---")
-            return reply
-        
-        return "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+        raw_text = completion.choices[0].message.content
+        reply = clean_reply(raw_text)
+        print(f"--- BOT RAW OUTPUT: '{reply}' ---")
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
         print(f"--- GROQ ERROR: {e} ---")
         return f"Namaste ji! Front desk par thoda rush hai, kripya direct call kar lijiye: {HOTEL_PHONE}"

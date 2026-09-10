@@ -14,9 +14,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Wahi ek model jo aapke Groq par 100% active aur open hai
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
-HOTEL_PHONE = "+91-9876543210"
+HOTEL_PHONE = "+91-7500058655"
 
 def load_hotel_data():
     try:
@@ -44,49 +43,51 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def sanitize_qwen_output(raw_text):
-    """Qwen ki sari reasoning aur steps ko kaat kar sirf WhatsApp message nikalna"""
-    if not raw_text:
+def clean_qwen_reasoning(text):
+    """Reasoning aur thinking process ko 100% remove karke sirf actual reply nikalna"""
+    if not text:
         return ""
-    
-    text = raw_text.strip()
 
-    # 1. Agar think tags hain toh hatao
-    if "</think>" in text:
-        text = text.split("</think>")[-1].strip()
+    raw = text.strip()
 
-    # 2. Agar Qwen ne 'Final Output Generation' likha hai
-    if "Final Output Generation" in text:
-        parts = text.split("Final Output Generation")
-        text = parts[-1].strip()
-        # Leading symbols jaise :*, ->, etc. hatana
-        text = re.sub(r'^[\s\*\:\-\>\(\)a-zA-Z\/]+[\:\-\>]\s*', '', text).strip()
+    # 1. Agar </think> tag hai toh uske aage ka hissa uthao
+    if "</think>" in raw:
+        cleaned = raw.split("</think>")[-1].strip()
+        if cleaned:
+            return cleaned
 
-    # 3. Agar model ne bullet point numbers likhe hain toh aakhri clean line lena
-    lines = [line.strip() for line in text.split("\n") if line.strip()]
-    valid_lines = [
-        l for l in lines 
-        if not re.match(r'^(\d+\.|\*|\-|\#|Step|Thought|Check)', l, re.IGNORECASE)
-    ]
-    
-    if valid_lines:
-        text = " ".join(valid_lines)
+    # 2. Agar unclosed <think> hai (jaisa screenshot me dikha)
+    if "<think>" in raw:
+        # Qwen hamesha aakhri refined reply ko quotes me deta hai
+        quotes = re.findall(r'"([^"\n\r]{15,})"', raw)
+        if quotes:
+            return quotes[-1].strip()
 
-    # 4. Faltoo quotes ya backticks saaf karna
-    text = text.strip("`'\"\n\r ")
-    return text
+        # Agar quotes na mile toh <think> Here's a thinking process: ke baad ki pehli 2 lines uthao
+        content_after_think = re.sub(r'<think>.*?thinking process:?', '', raw, flags=re.IGNORECASE | re.DOTALL).strip()
+        lines = [l.strip() for l in content_after_think.split("\n") if l.strip()]
+        
+        # Meta reasoning lines chhod kar actual response pick karna
+        valid_lines = [
+            l for l in lines 
+            if not any(keyword in l.lower() for keyword in ["adjustment", "sentence", "rule", "instruction", "output"])
+        ]
+        if valid_lines:
+            return valid_lines[0]
+
+    # 3. Clean any remaining artifacts
+    cleaned = re.sub(r'\[Final Output Generation\]\s*->?', '', raw, flags=re.IGNORECASE).strip()
+    return cleaned if cleaned else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise madad karu?"
 
 def get_ai_reply(user_message):
     system_prompt = f"""
 Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain.
-Aapka andaz bilkul humble aur polite WhatsApp typing jaisa hona chahiye.
+Aapka andaz polite aur helpful WhatsApp typing jaisa hona chahiye.
 
-DIRECTIVE:
-- Only generate the direct WhatsApp response to the guest.
-- Never write internal checklists, never show thought steps or reasoning.
-- Language: Natural Hinglish. 1 ya 2 short sentences.
-- Use 'Ji', 'Aap'.
-- Agar hotel data me information hai, wahi batayein. Agar bilkul nahi hai, toh number {HOTEL_PHONE} dekar call karne ko kahein.
+DIRECT OUTPUT INSTRUCTION:
+Do not explain your thoughts. Do not write 'Here's a thinking process'.
+Direct guest ko answer karein 1 ya 2 lines me respectful Hinglish me.
+Agar details data me hain toh answer dein, agar bilkul nahi hain toh call karne ko kahein: {HOTEL_PHONE}.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
@@ -99,13 +100,14 @@ HOTEL DATA:
             ],
             model=ACTIVE_MODEL,
             temperature=0.2,
-            max_tokens=600
+            max_tokens=500
         )
         raw_text = completion.choices[0].message.content
-        reply = sanitize_qwen_output(raw_text)
-        print(f"--- BOT RAW: '{raw_text}' ---")
-        print(f"--- SANITIZED FOR WHATSAPP: '{reply}' ---")
-        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+        print(f"--- RAW QWEN RESPONSE: {raw_text} ---")
+
+        reply = clean_qwen_reasoning(raw_text)
+        print(f"--- FINAL CLEAN REPLY: {reply} ---")
+        return reply
     except Exception as e:
         print(f"--- GROQ ERROR: {e} ---")
         return f"Namaste ji! Front desk par thoda rush hai, kripya direct call kar lijiye: {HOTEL_PHONE}"

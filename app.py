@@ -1,11 +1,11 @@
 import os
+import re
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
 
 app = Flask(__name__)
 
-# Environment variables
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "hotel_secret_token")
@@ -13,61 +13,48 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
-# Dynamically fetch the working model from your Groq account
-def get_active_model():
-    try:
-        model_list = groq_client.models.list()
-        # Filter for chat-capable models and pick the first available
-        for m in model_list.data:
-            m_id = m.id.lower()
-            if "whisper" not in m_id and "orpheus" not in m_id and "guard" not in m_id:
-                print(f"--- DETECTED ACTIVE GROQ MODEL: {m.id} ---")
-                return m.id
-    except Exception as e:
-        print(f"Could not auto-fetch models: {e}")
-    # Fallback to standard 70b
-    return "llama-3.1-70b-versatile"
+# Duplicate messages prevent karne ke liye cache
+PROCESSED_MESSAGES = set()
 
-CURRENT_MODEL = get_active_model()
+def clean_reply(text):
+    # <think>...</think> reasoning blocks ko strip karna
+    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+    return cleaned if cleaned else text.strip()
 
 def get_ai_reply(user_message):
-    global CURRENT_MODEL
     system_prompt = (
         "Aap Hotel Ganga Palace Haridwar ke digital concierge hain. "
-        "Short, respectful aur clear Hinglish me reply karein. "
-        "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. "
-        "Services: 24/7 Room Service, Hot Water, Har Ki Pauri se 500m."
+        "Short, respectful aur direct Hinglish me 1-2 sentence me reply karein. "
+        "Standard Check-in: 12:00 PM, Check-out: 11:00 AM. "
+        "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. Har Ki Pauri se 500m. "
+        "Never show your thought process, only output the direct final message."
     )
     
-    try:
-        chat_completion = groq_client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
-            model=CURRENT_MODEL,
-            temperature=0.4,
-            max_tokens=200
-        )
-        return chat_completion.choices[0].message.content.strip()
-    except Exception as e:
-        print(f"Groq API Error on {CURRENT_MODEL}: {e}")
-        # Agar current model fail hota hai toh fresh list fetch karke retry karega
+    # Priority order for production chat models
+    candidate_models = [
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+        "deepseek-r1-distill-llama-70b",
+        "qwen-2.5-32b"
+    ]
+    
+    for model_name in candidate_models:
         try:
-            CURRENT_MODEL = get_active_model()
-            chat_completion = groq_client.chat.completions.create(
+            completion = groq_client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                model=CURRENT_MODEL,
-                temperature=0.4,
+                model=model_name,
+                temperature=0.3,
                 max_tokens=200
             )
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as retry_err:
-            print(f"Groq Retry Error: {retry_err}")
-            return "Namaste! Hotel Ganga Palace me aapka swagat hai. Front desk executive turant aapse sampark karenge."
+            raw_text = completion.choices[0].message.content
+            return clean_reply(raw_text)
+        except Exception:
+            continue
+            
+    return "Namaste! Hotel Ganga Palace Haridwar me check-in time dopahar 12:00 baje se hai. Room availability ke liye dates batayein."
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -82,10 +69,9 @@ def send_whatsapp_message(to_number, message_text):
         "text": {"body": message_text}
     }
     try:
-        response = requests.post(url, headers=headers, json=payload)
-        print(f"Meta Send Status: {response.status_code}")
+        requests.post(url, headers=headers, json=payload, timeout=5)
     except Exception as e:
-        print(f"Meta Send Error: {e}")
+        print(f"Send Error: {e}")
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -93,7 +79,7 @@ def verify_webhook():
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
-    if mode and token and mode == "subscribe" and token == VERIFY_TOKEN:
+    if mode == "subscribe" and token == VERIFY_TOKEN:
         return challenge, 200
     return "Forbidden", 403
 
@@ -107,18 +93,27 @@ def webhook():
                     value = change.get("value", {})
                     if "messages" in value:
                         message = value["messages"][0]
-                        sender_phone = message["from"]
+                        msg_id = message.get("id")
+                        sender_phone = message.get("from")
+
+                        # Duplicate checks (Meta webhook retry safe)
+                        if msg_id in PROCESSED_MESSAGES:
+                            return jsonify({"status": "already_processed"}), 200
+                        PROCESSED_MESSAGES.add(msg_id)
+
+                        if len(PROCESSED_MESSAGES) > 500:
+                            PROCESSED_MESSAGES.clear()
 
                         if message.get("type") == "text":
                             incoming_text = message["text"]["body"]
                             print(f"--- INCOMING: '{incoming_text}' from {sender_phone} ---")
 
                             reply_text = get_ai_reply(incoming_text)
-                            print(f"--- BOT REPLY: '{reply_text}' ---")
+                            print(f"--- BOT FINAL REPLY: '{reply_text}' ---")
 
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:
-        print(f"Webhook processing error: {err}")
+        print(f"Webhook Error: {err}")
 
     return jsonify({"status": "success"}), 200
 

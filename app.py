@@ -14,7 +14,8 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-ACTIVE_MODEL = "qwen/qwen3.6-27b"
+# Groq ka sabse stable non-reasoning direct model
+ACTIVE_MODEL = "llama3-8b-8192"
 HOTEL_PHONE = "+91-9876543210"
 
 def load_hotel_data():
@@ -45,58 +46,38 @@ def mark_message_as_read(message_id):
 
 def get_ai_reply(user_message):
     system_prompt = f"""
-You are Aman, the polite front desk manager at Hotel Ganga Palace Haridwar.
-Respond directly to the guest in WhatsApp chat style. 
+Aap Hotel Ganga Palace Haridwar ke polite manager 'Aman' hain.
+Aapka andaz bilkul natural, humble WhatsApp human typing jaisa hona chahiye.
 
-CRITICAL INSTRUCTIONS:
-- Give DIRECT OUTPUT ONLY. Never write internal thoughts, reasoning steps, or checklists.
-- Language: Natural, polite Hinglish.
-- Length: Exactly 1 to 2 short sentences.
-- Use 'Ji', 'Aap', and be respectful.
-- If asked about rooms, rates, location, food, or menu, answer directly from HOTEL DATA.
-- If asking something totally absent from HOTEL DATA, ask them to call {HOTEL_PHONE}.
+RULES:
+1. Har jawab 1 ya 2 short sentences me dein. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
+2. Agar guest khana, nashta, room, rates, timing ya menu se juda kuch bhi puche, toh HOTEL DATA se seedha jawab dein.
+3. Agar koi aisi cheez puche jo data me NAHI hai, toh saaf bole: "Ji, is baare me mujhe confirm nahi hai. Kripya aap reception number {HOTEL_PHONE} par call kar lijiye."
+4. Direct WhatsApp message reply likhein, koi extra notes ya explanation nahi.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
 """
     try:
-        # Extra_body me reasoning disable ki gayi hai
         completion = groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
             model=ACTIVE_MODEL,
-            temperature=0.2,
-            max_tokens=400,
-            extra_body={"reasoning_format": "hidden"}
+            temperature=0.3,
+            max_tokens=250
         )
-        reply = completion.choices[0].message.content.strip()
-        print(f"--- BOT RAW OUTPUT: '{reply}' ---")
-        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+        reply = completion.choices[0].message.content
+        if reply:
+            reply = reply.strip()
+            print(f"--- BOT RAW OUTPUT: '{reply}' ---")
+            return reply
+        
+        return "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
-        print(f"--- GROQ API ERROR: {e} ---")
-        # Fallback without extra_body if unsupported
-        try:
-            fallback_comp = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                model=ACTIVE_MODEL,
-                temperature=0.2,
-                max_tokens=400
-            )
-            raw = fallback_comp.choices[0].message.content.strip()
-            # If model still prints thought steps, grab the last quoted sentence
-            if '"' in raw:
-                quotes = re.findall(r'"([^"]*)"', raw)
-                if quotes:
-                    return quotes[-1]
-            return raw
-        except Exception as err2:
-            print(f"--- COMPLETE FAILURE: {err2} ---")
-            return f"Namaste ji! Front desk par call kar lijiye: {HOTEL_PHONE}"
+        print(f"--- GROQ ERROR: {e} ---")
+        return f"Namaste ji! Front desk par thoda rush hai, kripya direct call kar lijiye: {HOTEL_PHONE}"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

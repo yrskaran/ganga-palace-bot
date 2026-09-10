@@ -61,18 +61,18 @@ FRUITS SALAD:
 - Fruits Salad Pudding: ₹100
 - Dry Fruits Salad: ₹80
 
-MAIN COURSE & CURRY:
+MAIN COURSE & CURRY (VEG):
 - Dal Makhani: ₹120
 - Shahi Paneer: ₹150
 - Paneer Gravy: ₹130
 
-MUTTON:
+MUTTON (NON-VEG):
 - Mutton Chops: ₹190
 - Mutton Chukka: ₹130
 - Mutton Fry: ₹120
 - Mutton Boti Fry: ₹80
 
-FISH & PRAWNS:
+FISH & PRAWNS (NON-VEG):
 - Fish Fry: ₹100
 - Fish Curry: ₹100
 - Fish 65: ₹100
@@ -83,19 +83,19 @@ FISH & PRAWNS:
 - Prawns Curry: ₹180
 - Chilli Prawns: ₹180
 
-DINNER SPECIALS:
+DINNER SPECIALS (PAROTTA):
 - Parotta: ₹15
 - Veechu Parotta: ₹25
 - Open Veechu Parotta: ₹25
-- Veechu Egg Parotta: ₹70
 - Piece Parotta: ₹25
+- Veechu Egg Parotta: ₹70
 - Kothu Parotta: ₹70
-- Mutton Kaima Parotta: ₹180
 - Chicken Kaima Parotta: ₹170
-- Mutton Murtabak Parotta: ₹180
+- Mutton Kaima Parotta: ₹180
 - Chicken Murtabak Parotta: ₹170
+- Mutton Murtabak Parotta: ₹180
 
-CHINESE:
+CHINESE (VEG & NON-VEG):
 - Veg Manchurian: ₹100
 - Gobi Manchurian: ₹90
 - Chilli Gobi Manchurian: ₹90
@@ -103,26 +103,29 @@ CHINESE:
 - Mushroom Gravy: ₹120
 - Mushroom Manchurian: ₹120
 - Crispy Veg: ₹120
-- Szechwan Chicken: ₹150
 - Chilli Chicken: ₹120
 - Ginger Chicken: ₹140
+- Szechwan Chicken: ₹150
 - Dragon Chicken: ₹150
 
 FRIED RICE:
 - Veg Fried Rice: ₹80
-- Egg Fried Rice: ₹90
-- Chicken Fried Rice: ₹120
 - Mushroom Fried Rice: ₹100
 - Paneer Fried Rice: ₹110
+- Schezwan Veg Fried Rice: ₹100
+- Egg Fried Rice: ₹90
+- Chicken Fried Rice: ₹120
 - Mixed Fried Rice: ₹140
 - Schezwan Chicken Fried Rice: ₹140
-- Schezwan Veg Fried Rice: ₹100
 - Taiwanese Fried Rice: ₹130
 
 NOODLES:
 - Veg Noodles: ₹80
-- Egg Noodles: ₹90
-- Chicken Noodles: ₹120
 - Paneer Noodles: ₹110
 - Schezwan Veg Noodles: ₹100
+- Egg Noodles: ₹90
+- Chicken Noodles: ₹120
+
+roti: 10 rs
+butter roti:25 rs
 - Schezwan Chicken Noodles: ₹140

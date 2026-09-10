@@ -18,14 +18,13 @@ ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-7500058655"
 
 def load_hotel_data():
+    """File ko real-time read karega taaki naye items turant reflect ho"""
     try:
         with open("hotel_data.txt", "r", encoding="utf-8") as f:
             return f.read()
     except Exception as e:
         print(f"Error loading hotel_data.txt: {e}")
-        return f"Hotel Ganga Palace Haridwar. Rooms: Deluxe AC ₹1,800, Super Deluxe ₹2,600. Contact: {HOTEL_PHONE}"
-
-HOTEL_CONTEXT = load_hotel_data()
+        return f"Hotel Ganga Palace Haridwar. Contact: {HOTEL_PHONE}"
 
 def mark_message_as_read(message_id):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -49,22 +48,22 @@ def sanitize_qwen_output(raw_text):
 
     raw = raw_text.strip()
 
-    # 1. Think tags nikalna
+    # 1. Think tags strip karna
     if "</think>" in raw:
         raw = raw.split("</think>")[-1].strip()
 
-    # 2. Agar quote ke andar clean answer ho
+    # 2. Quotes me clean answer dhoondhna
     quotes = re.findall(r'"([^"\n\r]{10,})"', raw)
     if quotes:
         candidate = quotes[-1].strip()
-        if not any(k in candidate.lower() for k in ["agar details", "system", "instruction", "prompt"]):
+        if not any(k in candidate.lower() for k in ["system", "instruction", "prompt", "rule"]):
             return candidate
 
-    # 3. Line by line filter (Prompt echo aur meta phrases hatana)
+    # 3. Clean line filter
     lines = [l.strip() for l in raw.split("\n") if l.strip()]
     cleaned_lines = []
     banned_keywords = [
-        "agar details", "hotel data", "system prompt", "here's a thinking",
+        "hotel data", "system prompt", "here's a thinking",
         "final output", "thinking process", "instruction", "rule 1", "rule 2"
     ]
 
@@ -76,22 +75,23 @@ def sanitize_qwen_output(raw_text):
         cleaned_lines.append(line)
 
     if cleaned_lines:
-        final_text = cleaned_lines[-1].strip("`'\" ")
-        return final_text
+        return cleaned_lines[-1].strip("`'\" ")
 
-    return f"Ji namaste! Is baare me confirm karne ke liye kripya reception par call kar lijiye: {HOTEL_PHONE}"
+    return f"Ji namaste! Is baare me confirm karne ke liye reception par call kar lijiye: {HOTEL_PHONE}"
 
 def get_ai_reply(user_message):
+    current_hotel_data = load_hotel_data()  # Fresh data on every query
+
     system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke manager 'Aman' hain. Aap WhatsApp par guest se baat kar rahe hain.
+Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain. Aap WhatsApp par guest se baat kar rahe hain.
 
-Aapko sirf aur sirf guest ko bhejne wala 1 short polite Hinglish sentence likhna hai. Kabhi bhi instructions ya rules ko repeat mat kijiye.
+Aapko sirf aur sirf guest ko bhejne wala 1 short polite Hinglish sentence likhna hai.
 
-- Agar guest room, rate, timings, ya restaurant dishes (Chinese, Parotta, Shakes, Falooda etc.) puche, toh data dekhkar seedha jawab dein.
-- Agar aisi cheez puche jo data me nahi hai (jaise Dal Makhni ya swimming pool), toh politely kahein ki yeh available nahi hai aur call karne ko kahein: {HOTEL_PHONE}.
+- Guest ke har sawal ka jawab niche diye gaye HOTEL DATA aur MENU se dekh kar dein. Agar dish menu me hai toh uska rate aur availability politely batayein.
+- Agar aisi cheez puche jo is data me bilkul nahi hai, tabhi reception number {HOTEL_PHONE} par call karne ko kahein.
 
-DATA:
-{HOTEL_CONTEXT}
+HOTEL DATA & MENU:
+{current_hotel_data}
 """
     try:
         completion = groq_client.chat.completions.create(

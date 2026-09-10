@@ -14,7 +14,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Wahi same model jo pehle se connected hai
+# Wahi ek model jo aapke Groq par 100% active aur open hai
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-9876543210"
 
@@ -44,47 +44,49 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def clean_reply(raw_text):
-    """Thoughts aur reasoning ko WhatsApp par aane se 100% rokne ka logic"""
+def sanitize_qwen_output(raw_text):
+    """Qwen ki sari reasoning aur steps ko kaat kar sirf WhatsApp message nikalna"""
     if not raw_text:
         return ""
+    
+    text = raw_text.strip()
 
-    # 1. Agar AI ne <reply>...</reply> me likha hai toh sirf wahi nikalo
-    match = re.search(r'<reply>(.*?)</reply>', raw_text, re.DOTALL)
-    if match and match.group(1).strip():
-        return match.group(1).strip()
+    # 1. Agar think tags hain toh hatao
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
 
-    # 2. Agar tag open hua ho par band na ho paya ho
-    if "<reply>" in raw_text:
-        text = raw_text.split("<reply>")[-1].strip()
-        if text:
-            return text
+    # 2. Agar Qwen ne 'Final Output Generation' likha hai
+    if "Final Output Generation" in text:
+        parts = text.split("Final Output Generation")
+        text = parts[-1].strip()
+        # Leading symbols jaise :*, ->, etc. hatana
+        text = re.sub(r'^[\s\*\:\-\>\(\)a-zA-Z\/]+[\:\-\>]\s*', '', text).strip()
 
-    # 3. Agar 'Final Output Generation' likha ho toh uske baad ka actual reply nikalo
-    if "Final Output Generation" in raw_text:
-        after_text = raw_text.split("Final Output Generation")[-1]
-        cleaned = re.sub(r'^[:\*\-\>\s\(\)a-zA-Z\/]+[\:\-\>]\s*', '', after_text).strip()
-        if cleaned:
-            return cleaned
+    # 3. Agar model ne bullet point numbers likhe hain toh aakhri clean line lena
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    valid_lines = [
+        l for l in lines 
+        if not re.match(r'^(\d+\.|\*|\-|\#|Step|Thought|Check)', l, re.IGNORECASE)
+    ]
+    
+    if valid_lines:
+        text = " ".join(valid_lines)
 
-    # 4. Think tag strip karna
-    text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
+    # 4. Faltoo quotes ya backticks saaf karna
+    text = text.strip("`'\"\n\r ")
     return text
 
 def get_ai_reply(user_message):
     system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke manager 'Aman' hain.
-Aapka andaz polite, humble WhatsApp human typing jaisa hona chahiye.
+Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain.
+Aapka andaz bilkul humble aur polite WhatsApp typing jaisa hona chahiye.
 
-MANDATORY OUTPUT FORMAT:
-Aapko jo bhi sochna hai sochiye, lekin customer ko bhejne wala final jawab STRICTLY `<reply>` aur `</reply>` tags ke beech me hi likhein.
-Example:
-<reply>Ji namaste! Hamare paas Deluxe AC room ₹1,800 me available hai.</reply>
-
-RULES:
-1. Reply hamesha 1 ya 2 short sentences me ho. 'Ji', 'Aap' respectful Hinglish use karein.
-2. Agar guest room, rate, khana ya timing puche, HOTEL DATA se jawab dein.
-3. Agar aisi baat puche jo data me NAHI hai, reception number {HOTEL_PHONE} par call karne ko kahein.
+DIRECTIVE:
+- Only generate the direct WhatsApp response to the guest.
+- Never write internal checklists, never show thought steps or reasoning.
+- Language: Natural Hinglish. 1 ya 2 short sentences.
+- Use 'Ji', 'Aap'.
+- Agar hotel data me information hai, wahi batayein. Agar bilkul nahi hai, toh number {HOTEL_PHONE} dekar call karne ko kahein.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
@@ -97,11 +99,12 @@ HOTEL DATA:
             ],
             model=ACTIVE_MODEL,
             temperature=0.2,
-            max_tokens=1000
+            max_tokens=600
         )
         raw_text = completion.choices[0].message.content
-        reply = clean_reply(raw_text)
-        print(f"--- FILTERED FINAL REPLY: '{reply}' ---")
+        reply = sanitize_qwen_output(raw_text)
+        print(f"--- BOT RAW: '{raw_text}' ---")
+        print(f"--- SANITIZED FOR WHATSAPP: '{reply}' ---")
         return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
         print(f"--- GROQ ERROR: {e} ---")
@@ -160,7 +163,6 @@ def webhook():
 
                             mark_message_as_read(msg_id)
                             reply_text = get_ai_reply(incoming_text)
-                            print(f"--- DELIVERING TO USER: '{reply_text}' ---")
 
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:

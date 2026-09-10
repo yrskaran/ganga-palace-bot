@@ -1,8 +1,10 @@
 import os
 import re
+import time
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
+from hotel_data import get_hotel_context, HOTEL_CONFIG
 
 app = Flask(__name__)
 
@@ -13,29 +15,49 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
-
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
+
+def mark_message_as_read(message_id):
+    """Message par Blue Tick lagane ke liye"""
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    try:
+        requests.post(url, headers=headers, json=payload, timeout=3)
+    except Exception as e:
+        print(f"Read receipt error: {e}")
 
 def clean_reply(text):
     if not text:
         return ""
-    # Agar closing </think> tag hai, toh uske baad ka actual answer uthao
     if "</think>" in text:
         text = text.split("</think>")[-1].strip()
-    # Agar model token limit ki wajah se beech me hi ruk gaya aur </think> nahi aaya
     elif "<think>" in text:
         text = text.split("<think>")[0].strip()
-        
     return text.strip()
 
 def get_ai_reply(user_message):
-    system_prompt = (
-        "Aap Hotel Ganga Palace Haridwar ke digital concierge hain. "
-        "Guest ke sawal ka short, polite aur helpful Hinglish me reply karein. "
-        "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. "
-        "Location: Har Ki Pauri se 500m door. Check-in: 12 PM, Check-out: 11 AM."
-    )
+    hotel_info = get_hotel_context()
     
+    system_prompt = f"""
+Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
+Aapka andaz natural, humble aur bilkul WhatsApp human typing jaisa hona chahiye.
+
+Rules:
+1. Har jawab 1 ya 2 short sentences me dein.
+2. Hamesha 'Ji', 'Aap', aur respectful tone use karein.
+3. Extra technical ya formal words mat use karein.
+
+HOTEL DATA:
+{hotel_info}
+"""
     try:
         completion = groq_client.chat.completions.create(
             messages=[
@@ -43,19 +65,14 @@ def get_ai_reply(user_message):
                 {"role": "user", "content": user_message}
             ],
             model=ACTIVE_MODEL,
-            temperature=0.3,
-            max_tokens=600  # Token limit badha di taaki actual answer cut na ho
+            temperature=0.25,
+            max_tokens=200
         )
-        raw_output = completion.choices[0].message.content
-        reply = clean_reply(raw_output)
-        
-        if not reply:
-            reply = "Namaste! Hotel Ganga Palace Haridwar me aapka swagat hai. Ji haan, hamare paas Deluxe aur Super Deluxe rooms available hain."
-            
-        return reply
+        reply = clean_reply(completion.choices[0].message.content)
+        return reply if reply else "Namaste ji! Kaise help kar sakta hu aapki?"
     except Exception as e:
-        print(f"--- GROQ REAL ERROR: {e} ---")
-        return "Namaste! Hotel Ganga Palace me aapka swagat hai. Kripya batayein aapko room booking ya kisi service me sahayata chahiye?"
+        print(f"Groq Error: {e}")
+        return "Namaste ji! Front desk par thoda rush hai, main 2 minute me aapse baat karta hu."
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -106,11 +123,18 @@ def webhook():
 
                         if message.get("type") == "text":
                             incoming_text = message["text"]["body"]
-                            print(f"--- INCOMING: '{incoming_text}' from {sender_phone} ---")
+                            print(f"--- INCOMING: '{incoming_text}' ---")
 
+                            # 1. Pehle Blue Tick lagao (Message read hua)
+                            mark_message_as_read(msg_id)
+
+                            # 2. AI se reply generate karwao
                             reply_text = get_ai_reply(incoming_text)
-                            print(f"--- BOT FINAL REPLY: '{reply_text}' ---")
 
+                            # 3. Natural typing pause (2.5 seconds ka wait)
+                            time.sleep(2.5)
+
+                            # 4. Ab reply send karo
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:
         print(f"Webhook Error: {err}")

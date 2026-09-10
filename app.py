@@ -5,20 +5,13 @@ from groq import Groq
 
 app = Flask(__name__)
 
+# Environment variables
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "hotel_secret_token")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-# Guaranteed Active Models (Auto-fallback list)
-MODELS_TO_TRY = [
-    "llama-3.3-70b-versatile",
-    "llama3-8b-8192",
-    "mixtral-8x7b-32768",
-    "gemma2-9b-it"
-]
 
 def get_ai_reply(user_message):
     system_prompt = (
@@ -28,25 +21,20 @@ def get_ai_reply(user_message):
         "Services: 24/7 Room Service, Hot Water, Har Ki Pauri se 500m."
     )
     
-    # Try models one by one taaki demo me crash hone ka 0% chance rahe
-    for model_name in MODELS_TO_TRY:
-        try:
-            chat_completion = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                model=model_name,
-                temperature=0.4,
-                max_tokens=200
-            )
-            print(f"--- SUCCESS WITH MODEL: {model_name} ---")
-            return chat_completion.choices[0].message.content.strip()
-        except Exception as e:
-            print(f"Model {model_name} failed: {e}. Trying next...")
-            continue
-            
-    return "Namaste! Hotel Ganga Palace me aapka swagat hai. Front desk manager turant aapse connect karenge."
+    try:
+        chat_completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            model="llama-3.3-70b-versatile",
+            temperature=0.4,
+            max_tokens=200
+        )
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Groq API Error: {e}")
+        return "Namaste! Hotel Ganga Palace me aapka swagat hai. Front desk manager turant aapse sampark karenge."
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

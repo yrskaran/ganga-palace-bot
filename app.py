@@ -12,6 +12,9 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
 co = cohere.ClientV2(api_key=COHERE_API_KEY)
 PROCESSED_MESSAGES = set()
+
+# Supported active model
+ACTIVE_MODEL = "command-r-08-2024"
 HOTEL_PHONE = "+91-7500058655"
 
 def load_hotel_data():
@@ -56,7 +59,7 @@ HOTEL DATA:
 """
     try:
         response = co.chat(
-            model="command-r",
+            model=ACTIVE_MODEL,
             messages=[
                 {"role": "system", "content": preamble},
                 {"role": "user", "content": user_message}

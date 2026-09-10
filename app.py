@@ -14,8 +14,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Groq ka primary tested model
-ACTIVE_MODEL = "llama-3.3-70b-versatile"
+ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-9876543210"
 
 def load_hotel_data():
@@ -24,7 +23,7 @@ def load_hotel_data():
             return f.read()
     except Exception as e:
         print(f"Error loading hotel_data.txt: {e}")
-        return "Hotel Ganga Palace Haridwar. Rooms available: Deluxe AC ₹1800, Super Deluxe ₹2600. Contact: " + HOTEL_PHONE
+        return f"Hotel Ganga Palace Haridwar. Deluxe AC ₹1,800, Super Deluxe ₹2,600. Contact: {HOTEL_PHONE}"
 
 HOTEL_CONTEXT = load_hotel_data()
 
@@ -44,61 +43,59 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def clean_reply(text):
-    if not text:
-        return ""
-    # Think tag safe removal
-    cleaned = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
-    return cleaned if cleaned else text.strip()
-
 def get_ai_reply(user_message):
     system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke polite manager 'Aman' hain.
-Aapka andaz bilkul natural, humble WhatsApp human typing jaisa hona chahiye.
+You are Aman, the polite front desk manager at Hotel Ganga Palace Haridwar.
+Respond directly to the guest in WhatsApp chat style. 
 
-RULES:
-1. Har jawab 1 ya 2 short sentences me dein. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
-2. Agar guest 'Khana', 'Room', 'Rate', 'Menu' ya milta julta kuch bhi puche, toh niche diye gaye HOTEL DATA se directly polite jawab dein.
-3. Agar aisi koi cheez puche jo data me bilkul NAHI hai, tabhi reception number {HOTEL_PHONE} par call karne ko kahein.
-4. Kabhi apna thinking process show na karein.
+CRITICAL INSTRUCTIONS:
+- Give DIRECT OUTPUT ONLY. Never write internal thoughts, reasoning steps, or checklists.
+- Language: Natural, polite Hinglish.
+- Length: Exactly 1 to 2 short sentences.
+- Use 'Ji', 'Aap', and be respectful.
+- If asked about rooms, rates, location, food, or menu, answer directly from HOTEL DATA.
+- If asking something totally absent from HOTEL DATA, ask them to call {HOTEL_PHONE}.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
 """
     try:
+        # Extra_body me reasoning disable ki gayi hai
         completion = groq_client.chat.completions.create(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
             model=ACTIVE_MODEL,
-            temperature=0.4,
-            max_tokens=250
+            temperature=0.2,
+            max_tokens=400,
+            extra_body={"reasoning_format": "hidden"}
         )
-        raw_text = completion.choices[0].message.content
-        print(f"--- RAW GROQ OUTPUT: '{raw_text}' ---")
-        
-        reply = clean_reply(raw_text)
-        if reply:
-            return reply
-        return "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+        reply = completion.choices[0].message.content.strip()
+        print(f"--- BOT RAW OUTPUT: '{reply}' ---")
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
-        print(f"--- GROQ REAL ERROR: {e} ---")
-        # Agar model not found ka error aaye toh Qwen par fallback
+        print(f"--- GROQ API ERROR: {e} ---")
+        # Fallback without extra_body if unsupported
         try:
-            fallback_completion = groq_client.chat.completions.create(
+            fallback_comp = groq_client.chat.completions.create(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_message}
                 ],
-                model="qwen/qwen3.6-27b",
-                temperature=0.4,
-                max_tokens=250
+                model=ACTIVE_MODEL,
+                temperature=0.2,
+                max_tokens=400
             )
-            raw_fallback = fallback_completion.choices[0].message.content
-            return clean_reply(raw_fallback)
+            raw = fallback_comp.choices[0].message.content.strip()
+            # If model still prints thought steps, grab the last quoted sentence
+            if '"' in raw:
+                quotes = re.findall(r'"([^"]*)"', raw)
+                if quotes:
+                    return quotes[-1]
+            return raw
         except Exception as err2:
-            print(f"--- FALLBACK ALSO FAILED: {err2} ---")
+            print(f"--- COMPLETE FAILURE: {err2} ---")
             return f"Namaste ji! Front desk par call kar lijiye: {HOTEL_PHONE}"
 
 def send_whatsapp_message(to_number, message_text):
@@ -154,7 +151,7 @@ def webhook():
 
                             mark_message_as_read(msg_id)
                             reply_text = get_ai_reply(incoming_text)
-                            print(f"--- BOT FINAL REPLY: '{reply_text}' ---")
+                            print(f"--- DELIVERING REPLY: '{reply_text}' ---")
 
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:

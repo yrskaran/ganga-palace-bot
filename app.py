@@ -13,7 +13,25 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# Dynamically fetch the working model from your Groq account
+def get_active_model():
+    try:
+        model_list = groq_client.models.list()
+        # Filter for chat-capable models and pick the first available
+        for m in model_list.data:
+            m_id = m.id.lower()
+            if "whisper" not in m_id and "orpheus" not in m_id and "guard" not in m_id:
+                print(f"--- DETECTED ACTIVE GROQ MODEL: {m.id} ---")
+                return m.id
+    except Exception as e:
+        print(f"Could not auto-fetch models: {e}")
+    # Fallback to standard 70b
+    return "llama-3.1-70b-versatile"
+
+CURRENT_MODEL = get_active_model()
+
 def get_ai_reply(user_message):
+    global CURRENT_MODEL
     system_prompt = (
         "Aap Hotel Ganga Palace Haridwar ke digital concierge hain. "
         "Short, respectful aur clear Hinglish me reply karein. "
@@ -27,14 +45,29 @@ def get_ai_reply(user_message):
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
-            model="llama-3.3-70b-versatile",
+            model=CURRENT_MODEL,
             temperature=0.4,
             max_tokens=200
         )
         return chat_completion.choices[0].message.content.strip()
     except Exception as e:
-        print(f"Groq API Error: {e}")
-        return "Namaste! Hotel Ganga Palace me aapka swagat hai. Front desk manager turant aapse sampark karenge."
+        print(f"Groq API Error on {CURRENT_MODEL}: {e}")
+        # Agar current model fail hota hai toh fresh list fetch karke retry karega
+        try:
+            CURRENT_MODEL = get_active_model()
+            chat_completion = groq_client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_message}
+                ],
+                model=CURRENT_MODEL,
+                temperature=0.4,
+                max_tokens=200
+            )
+            return chat_completion.choices[0].message.content.strip()
+        except Exception as retry_err:
+            print(f"Groq Retry Error: {retry_err}")
+            return "Namaste! Hotel Ganga Palace me aapka swagat hai. Front desk executive turant aapse sampark karenge."
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

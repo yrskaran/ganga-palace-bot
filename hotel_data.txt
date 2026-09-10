@@ -1,9 +1,15 @@
 HOTEL DETAILS:
 Hotel Name: Hotel Ganga Palace
 Location: Haridwar, Uttarakhand
-Reception Phone: +91-7500058655
+Reception Contact: +91-7500058655
 Check-in Time: 12:00 PM
 Check-out Time: 11:00 AM
+
+DISTANCE & CONNECTIVITY:
+- Har Ki Pauri: Lagbhag 1.5 km se 2 km (Auto/E-rickshaw se 5-10 minute ka rasta)
+- Haridwar Railway Station: Lagbhag 2 km
+- Haridwar Bus Stand (ISBT): Lagbhag 2 km
+- Local Conveyance: Hotel ke bahar 24 ghante E-rickshaw aur auto aasaani se mil jate hain.
 
 ROOM TYPES & TARIFF:
 - Deluxe AC Room: ₹1,800 per night
@@ -16,6 +22,7 @@ ROOM AMENITIES:
 - Flat Screen TV with Cable Channels
 - Room Service Available
 - Daily Housekeeping
+- Parking Facility Available
 
 RESTAURANT FOOD MENU & RATES:
 

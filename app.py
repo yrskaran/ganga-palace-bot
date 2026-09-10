@@ -4,7 +4,6 @@ import time
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
-from hotel_data import get_hotel_context, HOTEL_CONFIG
 
 app = Flask(__name__)
 
@@ -17,8 +16,17 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
 
+# Single-file hotel details (No extra file needed)
+HOTEL_CONTEXT = """
+Hotel: Hotel Ganga Palace Haridwar
+Location: Upper Road, Haridwar (Har Ki Pauri se sirf 450 meter door, paidal 5 minute).
+Rates: Deluxe AC Room: ₹1,800/night, Super Deluxe: ₹2,600/night.
+Timings: Check-in 12:00 PM, Check-out 11:00 AM.
+Sightseeing: Har Ki Pauri Evening Aarti: 6:30 PM, Morning: 5:30 AM. Mansa Devi Ropeway: 1.5 km door.
+Facilities: Free Wi-Fi, 24/7 hot water, pure veg room service, parking available.
+"""
+
 def mark_message_as_read(message_id):
-    """Message par Blue Tick lagane ke liye"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -44,19 +52,18 @@ def clean_reply(text):
     return text.strip()
 
 def get_ai_reply(user_message):
-    hotel_info = get_hotel_context()
-    
     system_prompt = f"""
 Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
-Aapka andaz natural, humble aur bilkul WhatsApp human typing jaisa hona chahiye.
+Aapka andaz bilkul natural, humble WhatsApp human typing jaisa hona chahiye.
 
 Rules:
 1. Har jawab 1 ya 2 short sentences me dein.
-2. Hamesha 'Ji', 'Aap', aur respectful tone use karein.
+2. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
 3. Extra technical ya formal words mat use karein.
+4. Kabhi apna reasoning ya thinking process show na karein.
 
 HOTEL DATA:
-{hotel_info}
+{HOTEL_CONTEXT}
 """
     try:
         completion = groq_client.chat.completions.create(
@@ -66,10 +73,10 @@ HOTEL DATA:
             ],
             model=ACTIVE_MODEL,
             temperature=0.25,
-            max_tokens=200
+            max_tokens=250
         )
         reply = clean_reply(completion.choices[0].message.content)
-        return reply if reply else "Namaste ji! Kaise help kar sakta hu aapki?"
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
         print(f"Groq Error: {e}")
         return "Namaste ji! Front desk par thoda rush hai, main 2 minute me aapse baat karta hu."
@@ -112,7 +119,7 @@ def webhook():
                     if "messages" in value:
                         message = value["messages"][0]
                         msg_id = message.get("id")
-                        sender_phone = message["from"]
+                        sender_phone = message.get("from")
 
                         if msg_id in PROCESSED_MESSAGES:
                             return jsonify({"status": "already_processed"}), 200
@@ -125,16 +132,16 @@ def webhook():
                             incoming_text = message["text"]["body"]
                             print(f"--- INCOMING: '{incoming_text}' ---")
 
-                            # 1. Pehle Blue Tick lagao (Message read hua)
+                            # Blue tick mark karna
                             mark_message_as_read(msg_id)
 
-                            # 2. AI se reply generate karwao
+                            # AI response generate
                             reply_text = get_ai_reply(incoming_text)
 
-                            # 3. Natural typing pause (2.5 seconds ka wait)
-                            time.sleep(2.5)
+                            # Natural human delay
+                            time.sleep(2)
 
-                            # 4. Ab reply send karo
+                            # Reply send
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:
         print(f"Webhook Error: {err}")

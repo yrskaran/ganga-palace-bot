@@ -28,3 +28,42 @@ Hotel Policies & Timings:
 Booking & Advance:
 - Advance booking ke liye guests ko arrival date aur kitne log hain batana hota hai.
 - Final booking confirm karne ke liye reception number 7500058655 par connect karke GPay/PhonePe se token advance liya jata hai.
+HOTEL DETAILS:
+Hotel: Hotel Ganga Palace Haridwar
+Location: Upper Road, Haridwar (Har Ki Pauri se sirf 450 meter door, paidal 5 minute).
+Contact Number: +91-9876543210
+Rooms & Rates: Deluxe AC Room: ₹1,800/night, Super Deluxe: ₹2,600/night.
+Timings: Check-in 12:00 PM, Check-out 11:00 AM.
+Sightseeing: Har Ki Pauri Evening Aarti: 6:30 PM, Morning: 5:30 AM. Mansa Devi Ropeway: 1.5 km door.
+Facilities: Free Wi-Fi, 24/7 hot water, in-house dining/room service, parking available.
+
+RESTAURANT FOOD MENU & RATES:
+MILK SHAKE & ICE CREAM:
+- Vanilla: ₹75, Strawberry: ₹75, Chocolate: ₹80, Butter Scotch: ₹80, Pista: ₹80, Spanish Delite: ₹80, Black Current: ₹80, Cherry: ₹80, Cashew: ₹90, Fig Fruit: ₹100, Kashmir: ₹85, Oman: ₹80, Saudi: ₹80, Thamam: ₹80, Mango Shake: ₹80, Papaya: ₹80, Pineapple: ₹90, Chikku: ₹80, Aanaar: ₹80, Tender Coconut: ₹80, Semam: ₹80, Badam Shake: ₹100, Oreo Shake: ₹80, Cara Milk Nuts: ₹80, Til Tak: ₹80
+
+FALOODA:
+- Royal Falooda: ₹150, Pista Falooda: ₹160, Butter Falooda: ₹170, MGS Special Falooda: ₹210
+
+FRESH LIMES:
+- Fresh Limes: ₹20, Ginger Limes: ₹20, Mint Limes: ₹35, Soda Limes: ₹25, Grapes Limes: ₹30, Curry Leaves Limes: ₹35
+
+FRUITS SALAD:
+- Fruits Salad Pudding: ₹100, Dry Fruits Salad: ₹80
+
+MUTTON:
+- Mutton Chops: ₹190, Mutton Chukka: ₹130, Mutton Fry: ₹120, Mutton Boti Fry: ₹80
+
+FISH & PRAWNS:
+- Fish Fry: ₹100, Fish Curry: ₹100, Fish 65: ₹100, Fish Masala: ₹120, Chilli Fish: ₹130, Prawns Fry: ₹170, Prawns Masala: ₹180, Prawns Curry: ₹180, Chilli Prawns: ₹180
+
+DINNER SPECIALS:
+- Parotta: ₹15, Veechu Parotta: ₹25, Open Veechu Parotta: ₹25, Veechu Egg Parotta: ₹70, Piece Parotta: ₹25, Kothu Parotta: ₹70, Mutton Kaima Parotta: ₹180, Chicken Kaima Parotta: ₹170, Mutton Murtabak Parotta: ₹180, Chicken Murtabak Parotta: ₹170, Oil Parotta: ₹25, Without Oil Parotta: ₹20, Panchu Parotta: ₹25, Sweet Parotta: ₹30, Banana Leaf Mutton Parotta: ₹210, Banana Leaf Chicken Parotta: ₹170, Chappathi: ₹40, Chicken Dum Parotta: ₹300, Mushroom Dosa: ₹120, Chicken Dosa: ₹130, Mutton Dosa: ₹160, Idiyappam/Paya: ₹80, Appam/Chicken Gravy: ₹135
+
+CHINESE:
+- Veg Manchurian: ₹100, Gobi Manchurian: ₹90, Chilli Gobi Manchurian: ₹90, Mushroom Gravy: ₹120, Mushroom Manchurian: ₹120, Crispy Veg: ₹120, Szechwan Chicken: ₹150, Chilli Chicken: ₹120, Ginger Chicken: ₹140, Dragon Chicken: ₹150, Shawarma Roll: ₹80, Shawarma Plate: ₹110
+
+FRIED RICE:
+- Veg Fried Rice: ₹80, Egg Fried Rice: ₹90, Chicken Fried Rice: ₹120, Mushroom Fried Rice: ₹100, Paneer Fried Rice: ₹110, Mixed Fried Rice: ₹140, Schezwan Chicken Fried Rice: ₹140, Schezwan Veg Fried Rice: ₹100, Taiwanese Chicken Fried Rice: ₹130, Taiwanese Veg Fried Rice: ₹110
+
+NOODLES:
+- Chicken Noodles: ₹110, Veg Noodles: ₹80, Egg Noodles: ₹90, Mixed Noodles: ₹130, Schezwan Chicken Noodles: ₹140, Schezwan Veg Noodles: ₹110, Taiwanese Chicken Noodles: ₹140, Taiwanese Veg Noodles: ₹100

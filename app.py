@@ -13,7 +13,9 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 co = cohere.ClientV2(api_key=COHERE_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Supported active model
+# Har user ki pichli chat history store karne ke liye
+USER_CHATS = {}
+
 ACTIVE_MODEL = "command-r-08-2024"
 HOTEL_PHONE = "+91-7500058655"
 
@@ -41,33 +43,47 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def get_ai_reply(user_message):
+def get_ai_reply(sender_phone, user_message):
     hotel_context = load_hotel_data()
     
     preamble = f"""
 Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
-Aapka andaz bilkul humble aur short WhatsApp human typing jaisa hona chahiye.
+Aapka andaz bilkul humble, short aur natural WhatsApp typing jaisa hona chahiye.
 
 RULES:
 1. Har jawab 1 ya 2 short sentences me respectful Hinglish me dein ('Ji', 'Aap' use karein).
-2. Niche diye gaye HOTEL DATA se rooms, rates, timings aur food menu items confirm karke direct batayein.
-3. Agar aisi koi cheez puchi jaye jo data me nahi hai, toh politely reception number {HOTEL_PHONE} par call karne ko kahein.
-4. Kabhi koi explanation, rule ya checklist repeat na karein, seedha customer ko reply dein.
+2. Pichli baatcheet (context) ka dhyan rakhein. Agar guest kisi item ke baad 'kitne ka hai' puche, toh usi specific item ka price batayein, room ka nahi.
+3. Niche diye gaye HOTEL DATA se rooms, rates, timings aur restaurant items confirm karke batayein.
+4. Agar aisi cheez puchi jaye jo data me nahi hai, toh politely reception number {HOTEL_PHONE} par call karne ko kahein.
+5. Direct reply dein, koi system rules ya notes repeat na karein.
 
 HOTEL DATA:
 {hotel_context}
 """
+    # User ki pichli history lena (last 4 messages context ke liye)
+    if sender_phone not in USER_CHATS:
+        USER_CHATS[sender_phone] = []
+
+    history = USER_CHATS[sender_phone]
+    history.append({"role": "user", "content": user_message})
+
+    # Message payload tayyar karna
+    messages_payload = [{"role": "system", "content": preamble}] + history[-5:]
+
     try:
         response = co.chat(
             model=ACTIVE_MODEL,
-            messages=[
-                {"role": "system", "content": preamble},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.3
+            messages=messages_payload,
+            temperature=0.2
         )
         reply = response.message.content[0].text.strip()
         print(f"--- BOT CLEAN REPLY: '{reply}' ---")
+
+        # Bot ka reply history me add karna
+        history.append({"role": "assistant", "content": reply})
+        if len(history) > 10:
+            USER_CHATS[sender_phone] = history[-6:]
+
         return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
         print(f"--- COHERE ERROR: {e} ---")
@@ -125,7 +141,7 @@ def webhook():
                             print(f"--- INCOMING: '{incoming_text}' from {sender_phone} ---")
 
                             mark_message_as_read(msg_id)
-                            reply_text = get_ai_reply(incoming_text)
+                            reply_text = get_ai_reply(sender_phone, incoming_text)
 
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:

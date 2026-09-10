@@ -16,6 +16,7 @@ USER_CHATS = {}
 
 ACTIVE_MODEL = "command-r-08-2024"
 HOTEL_PHONE = "+91-7500058655"
+KITCHEN_PHONE = "919058514478"  # WhatsApp format (country code + 10 digits)
 
 def load_hotel_data():
     try:
@@ -41,53 +42,6 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def get_ai_reply(sender_phone, user_message):
-    hotel_context = load_hotel_data()
-    
-    preamble = f"""
-Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain.
-
-STRICT LANGUAGE & SCRIPT MATCHING:
-1. SCRIPT MIRRORING:
-   - Agar guest Roman letters/English me likhe (jaise 'Parking hai', 'Rate btao', 'Room available?'), toh aapka jawab BHI sirf aur sirf ROMAN LETTERS / HINGLISH me hona chahiye (jaise 'Ji haan, hamare paas parking facility available hai.'). Bilkul bhi Hindi Devnagari script (क, ख, ग) me mat likhna.
-   - Devnagari Hindi script (नमस्ते, हाँ) sirf tab use karein agar guest ne khud Devnagari Hindi script me text kiya ho.
-   - Agar guest proper English me baat kare, toh English me reply karein.
-
-ACCURACY & MENU RULES:
-2. Menu categories ka naam mat badlo. Vanilla, Chocolate, Pista 'Milk Shake' hain, inhe 'Juice' mat bolo. Juice hamare paas available nahi hai.
-3. Agar guest kisi item ya rate ke baare me puche, data se exact rate aur availability ek sath batayein. Faltu sawaal mat pucho.
-4. Agar aisi koi cheez puchi jaye jo data me bilkul nahi hai, toh politely reception number {HOTEL_PHONE} par call karne ko kahein.
-5. Max 1-2 short sentences. Seedha WhatsApp message bhejenge, koi rules ya thinking print nahi honi chahiye.
-
-HOTEL DATA & MENU:
-{hotel_context}
-"""
-    if sender_phone not in USER_CHATS:
-        USER_CHATS[sender_phone] = []
-
-    history = USER_CHATS[sender_phone]
-    history.append({"role": "user", "content": user_message})
-
-    messages_payload = [{"role": "system", "content": preamble}] + history[-5:]
-
-    try:
-        response = co.chat(
-            model=ACTIVE_MODEL,
-            messages=messages_payload,
-            temperature=0.0
-        )
-        reply = response.message.content[0].text.strip()
-        print(f"--- BOT CLEAN REPLY: '{reply}' ---")
-
-        history.append({"role": "assistant", "content": reply})
-        if len(history) > 10:
-            USER_CHATS[sender_phone] = history[-6:]
-
-        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
-    except Exception as e:
-        print(f"--- COHERE ERROR: {e} ---")
-        return f"Namaste ji! Reception par call kar lijiye: {HOTEL_PHONE}"
-
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
@@ -104,6 +58,67 @@ def send_whatsapp_message(to_number, message_text):
         requests.post(url, headers=headers, json=payload, timeout=5)
     except Exception as e:
         print(f"Send Error: {e}")
+
+def get_ai_reply(sender_phone, user_message):
+    hotel_context = load_hotel_data()
+    
+    preamble = f"""
+Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
+
+STRICT LANGUAGE & SCRIPT MATCHING:
+1. Agar guest Roman letters (English letters) me likhe, toh aapka jawab BHI 100% ROMAN SCRIPT (Hinglish) me hi hona chahiye. Devnagari Hindi (हिंदी) me bilkul mat likhna.
+2. Agar guest Devnagari script me text kare, tabhi Devnagari me reply dein.
+
+FOOD ORDER & ROOM NUMBER RULES:
+3. Agar guest khana mangwaye ya order dene ki baat kare (jaise '1 dal makhni bhej do', 'order karna hai', 'room me bhej do'):
+   - Agar guest ne abhi tak apna Room Number nahi bataya hai, toh order confirm karne se pehle politely Room Number puchein: "Ji bilkul, kripya apna Room Number batayein taaki order deliver kiya ja sake."
+   - Agar guest ne dish ke sath Room Number pehle hi bata diya hai ya pichle message me bata chuka hai:
+     Aapke reply ki aakhri line me exact yeh secret tag zaroor lagayein:
+     [ORDER_CONFIRMED: Room <room_no> - <items>]
+     Aur guest ko bolein: "Ji, aapka order confirm ho gaya hai, jald hi Room <room_no> me deliver kar diya jayega."
+
+ACCURACY & MENU RULES:
+4. Menu categories ka dhyan rakhein (Milkshake ko juice na bolein). Jo cheez menu me nahi hai, saaf mana karein.
+5. Rate aur availability direct batayein. Faltu counter-questions na karein.
+6. Max 1-2 short sentences me natural WhatsApp typing me reply dein.
+
+HOTEL DATA & MENU:
+{hotel_context}
+"""
+    if sender_phone not in USER_CHATS:
+        USER_CHATS[sender_phone] = []
+
+    history = USER_CHATS[sender_phone]
+    history.append({"role": "user", "content": user_message})
+
+    messages_payload = [{"role": "system", "content": preamble}] + history[-6:]
+
+    try:
+        response = co.chat(
+            model=ACTIVE_MODEL,
+            messages=messages_payload,
+            temperature=0.0
+        )
+        reply = response.message.content[0].text.strip()
+        print(f"--- BOT RAW REPLY: '{reply}' ---")
+
+        # Kitchen notification check
+        if "[ORDER_CONFIRMED:" in reply:
+            order_detail = reply.split("[ORDER_CONFIRMED:")[1].split("]")[0].strip()
+            reply = reply.split("[ORDER_CONFIRMED:")[0].strip()
+            
+            kitchen_alert = f"🛎️ *Naya Food Order*\nGuest Phone: +{sender_phone}\nDetails: {order_detail}"
+            print(f"--- ALERTING KITCHEN: {kitchen_alert} ---")
+            send_whatsapp_message(KITCHEN_PHONE, kitchen_alert)
+
+        history.append({"role": "assistant", "content": reply})
+        if len(history) > 10:
+            USER_CHATS[sender_phone] = history[-6:]
+
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+    except Exception as e:
+        print(f"--- COHERE ERROR: {e} ---")
+        return f"Namaste ji! Reception par call kar lijiye: {HOTEL_PHONE}"
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():

@@ -1,29 +1,25 @@
 import os
-import re
 import requests
 from flask import Flask, request, jsonify
-from groq import Groq
+import cohere
 
 app = Flask(__name__)
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "hotel_secret_token")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+co = cohere.ClientV2(api_key=COHERE_API_KEY)
 PROCESSED_MESSAGES = set()
-
-ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-7500058655"
 
 def load_hotel_data():
-    """File ko real-time read karega taaki naye items turant reflect ho"""
     try:
         with open("hotel_data.txt", "r", encoding="utf-8") as f:
             return f.read()
     except Exception as e:
-        print(f"Error loading hotel_data.txt: {e}")
+        print(f"Error reading hotel_data.txt: {e}")
         return f"Hotel Ganga Palace Haridwar. Contact: {HOTEL_PHONE}"
 
 def mark_message_as_read(message_id):
@@ -42,76 +38,37 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def sanitize_qwen_output(raw_text):
-    if not raw_text:
-        return ""
-
-    raw = raw_text.strip()
-
-    # 1. Think tags strip karna
-    if "</think>" in raw:
-        raw = raw.split("</think>")[-1].strip()
-
-    # 2. Quotes me clean answer dhoondhna
-    quotes = re.findall(r'"([^"\n\r]{10,})"', raw)
-    if quotes:
-        candidate = quotes[-1].strip()
-        if not any(k in candidate.lower() for k in ["system", "instruction", "prompt", "rule"]):
-            return candidate
-
-    # 3. Clean line filter
-    lines = [l.strip() for l in raw.split("\n") if l.strip()]
-    cleaned_lines = []
-    banned_keywords = [
-        "hotel data", "system prompt", "here's a thinking",
-        "final output", "thinking process", "instruction", "rule 1", "rule 2"
-    ]
-
-    for line in lines:
-        if any(banned in line.lower() for banned in banned_keywords):
-            continue
-        if re.match(r'^(\d+\.|\*|\-|\#)', line):
-            continue
-        cleaned_lines.append(line)
-
-    if cleaned_lines:
-        return cleaned_lines[-1].strip("`'\" ")
-
-    return f"Ji namaste! Is baare me confirm karne ke liye reception par call kar lijiye: {HOTEL_PHONE}"
-
 def get_ai_reply(user_message):
-    current_hotel_data = load_hotel_data()  # Fresh data on every query
+    hotel_context = load_hotel_data()
+    
+    preamble = f"""
+Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
+Aapka andaz bilkul humble aur short WhatsApp human typing jaisa hona chahiye.
 
-    system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain. Aap WhatsApp par guest se baat kar rahe hain.
+RULES:
+1. Har jawab 1 ya 2 short sentences me respectful Hinglish me dein ('Ji', 'Aap' use karein).
+2. Niche diye gaye HOTEL DATA se rooms, rates, timings aur food menu items confirm karke direct batayein.
+3. Agar aisi koi cheez puchi jaye jo data me nahi hai, toh politely reception number {HOTEL_PHONE} par call karne ko kahein.
+4. Kabhi koi explanation, rule ya checklist repeat na karein, seedha customer ko reply dein.
 
-Aapko sirf aur sirf guest ko bhejne wala 1 short polite Hinglish sentence likhna hai.
-
-- Guest ke har sawal ka jawab niche diye gaye HOTEL DATA aur MENU se dekh kar dein. Agar dish menu me hai toh uska rate aur availability politely batayein.
-- Agar aisi cheez puche jo is data me bilkul nahi hai, tabhi reception number {HOTEL_PHONE} par call karne ko kahein.
-
-HOTEL DATA & MENU:
-{current_hotel_data}
+HOTEL DATA:
+{hotel_context}
 """
     try:
-        completion = groq_client.chat.completions.create(
+        response = co.chat(
+            model="command-r",
             messages=[
-                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": preamble},
                 {"role": "user", "content": user_message}
             ],
-            model=ACTIVE_MODEL,
-            temperature=0.2,
-            max_tokens=450
+            temperature=0.3
         )
-        raw_text = completion.choices[0].message.content
-        print(f"--- RAW OUTPUT: '{raw_text}' ---")
-
-        reply = sanitize_qwen_output(raw_text)
-        print(f"--- FINAL CLEAN: '{reply}' ---")
-        return reply
+        reply = response.message.content[0].text.strip()
+        print(f"--- BOT CLEAN REPLY: '{reply}' ---")
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
-        print(f"--- GROQ ERROR: {e} ---")
-        return f"Namaste ji! Reception par call kar lijiye: {HOTEL_PHONE}"
+        print(f"--- COHERE ERROR: {e} ---")
+        return f"Namaste ji! Front desk par call kar lijiye: {HOTEL_PHONE}"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

@@ -5,9 +5,9 @@ import requests
 from flask import Flask, request, jsonify
 from groq import Groq
 
-# 1. Flask App Initialization (Yahi miss hua tha)
 app = Flask(__name__)
 
+# Environment Variables
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "hotel_secret_token")
@@ -16,13 +16,10 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# Models to fallback smoothly
-MODELS_TO_TRY = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "qwen/qwen3.6-27b"
-]
+# Fixed working model
+ACTIVE_MODEL = "qwen/qwen3.6-27b"
 
+# Hotel Knowledge Base
 HOTEL_CONTEXT = """
 Hotel: Hotel Ganga Palace Haridwar
 Location: Upper Road, Haridwar (Har Ki Pauri se sirf 450 meter door, paidal 5 minute).
@@ -33,6 +30,7 @@ Facilities: Free Wi-Fi, 24/7 hot water, pure veg room service, parking available
 """
 
 def mark_message_as_read(message_id):
+    """Message par blue tick lagane ke liye"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -49,6 +47,7 @@ def mark_message_as_read(message_id):
         print(f"Read receipt error: {e}")
 
 def clean_reply(text):
+    """Reasoning aur think tags hatane ke liye"""
     if not text:
         return ""
     if "</think>" in text:
@@ -66,31 +65,27 @@ Rules:
 1. Har jawab 1 ya 2 short sentences me dein.
 2. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
 3. Extra technical ya formal words mat use karein.
+4. Kabhi apna reasoning ya thinking process show na karein.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}
 """
-    for model_name in MODELS_TO_TRY:
-        try:
-            completion = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                model=model_name,
-                temperature=0.3,
-                max_tokens=250
-            )
-            raw_text = completion.choices[0].message.content
-            reply = clean_reply(raw_text)
-            if reply:
-                print(f"--- SUCCESS WITH MODEL: {model_name} ---")
-                return reply
-        except Exception as e:
-            print(f"--- FAILED ON {model_name}: {e} ---")
-            continue
-
-    return "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+    try:
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            model=ACTIVE_MODEL,
+            temperature=0.3,
+            max_tokens=400
+        )
+        raw_text = completion.choices[0].message.content
+        reply = clean_reply(raw_text)
+        return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
+    except Exception as e:
+        print(f"--- Groq Error: {e} ---")
+        return "Namaste ji! Front desk par thoda rush hai, main 2 minute me aapse baat karta hu."
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -132,6 +127,7 @@ def webhook():
                         msg_id = message.get("id")
                         sender_phone = message.get("from")
 
+                        # Duplicate messages ignore karna
                         if msg_id in PROCESSED_MESSAGES:
                             return jsonify({"status": "already_processed"}), 200
                         PROCESSED_MESSAGES.add(msg_id)
@@ -143,12 +139,17 @@ def webhook():
                             incoming_text = message["text"]["body"]
                             print(f"--- INCOMING: '{incoming_text}' from {sender_phone} ---")
 
+                            # 1. Blue tick lagana
                             mark_message_as_read(msg_id)
 
+                            # 2. AI reply generate karna
                             reply_text = get_ai_reply(incoming_text)
                             print(f"--- BOT FINAL REPLY: '{reply_text}' ---")
 
+                            # 3. Natural human typing delay (2 seconds)
                             time.sleep(2)
+
+                            # 4. Message send karna
                             send_whatsapp_message(sender_phone, reply_text)
     except Exception as err:
         print(f"Webhook Error: {err}")

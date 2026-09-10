@@ -12,49 +12,41 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "hotel_secret_token")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-# Duplicate messages prevent karne ke liye cache
 PROCESSED_MESSAGES = set()
 
+# EXACT MODEL FROM YOUR SERVER LOG
+ACTIVE_MODEL = "qwen/qwen3.6-27b"
+
 def clean_reply(text):
-    # <think>...</think> reasoning blocks ko strip karna
+    if not text:
+        return ""
     cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
     return cleaned if cleaned else text.strip()
 
 def get_ai_reply(user_message):
     system_prompt = (
-        "Aap Hotel Ganga Palace Haridwar ke digital concierge hain. "
-        "Short, respectful aur direct Hinglish me 1-2 sentence me reply karein. "
-        "Standard Check-in: 12:00 PM, Check-out: 11:00 AM. "
-        "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. Har Ki Pauri se 500m. "
-        "Never show your thought process, only output the direct final message."
+        "Aap Hotel Ganga Palace Haridwar ke helpful concierge hain. "
+        "Guest ke sawal ka seedha, polite aur short Hinglish me jawab dein (1-2 sentences). "
+        "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. "
+        "Location: Har Ki Pauri se sirf 500 meter door, Upper Road, Haridwar. "
+        "Check-in: 12 PM, Check-out: 11 AM. 24/7 Room Service & Hot Water available."
     )
     
-    # Priority order for production chat models
-    candidate_models = [
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-        "deepseek-r1-distill-llama-70b",
-        "qwen-2.5-32b"
-    ]
-    
-    for model_name in candidate_models:
-        try:
-            completion = groq_client.chat.completions.create(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ],
-                model=model_name,
-                temperature=0.3,
-                max_tokens=200
-            )
-            raw_text = completion.choices[0].message.content
-            return clean_reply(raw_text)
-        except Exception:
-            continue
-            
-    return "Namaste! Hotel Ganga Palace Haridwar me check-in time dopahar 12:00 baje se hai. Room availability ke liye dates batayein."
+    try:
+        completion = groq_client.chat.completions.create(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            model=ACTIVE_MODEL,
+            temperature=0.3,
+            max_tokens=180
+        )
+        reply = clean_reply(completion.choices[0].message.content)
+        return reply
+    except Exception as e:
+        print(f"--- GROQ REAL ERROR: {e} ---")
+        return "Namaste! Hotel Ganga Palace Haridwar me aapka swagat hai. Kripya batayein aapko room booking ya kisi service me sahayata chahiye?"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -94,9 +86,8 @@ def webhook():
                     if "messages" in value:
                         message = value["messages"][0]
                         msg_id = message.get("id")
-                        sender_phone = message.get("from")
+                        sender_phone = message["from"]
 
-                        # Duplicate checks (Meta webhook retry safe)
                         if msg_id in PROCESSED_MESSAGES:
                             return jsonify({"status": "already_processed"}), 200
                         PROCESSED_MESSAGES.add(msg_id)

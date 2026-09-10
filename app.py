@@ -23,7 +23,7 @@ def load_hotel_data():
             return f.read()
     except Exception as e:
         print(f"Error loading hotel_data.txt: {e}")
-        return f"Hotel Ganga Palace Haridwar. Deluxe AC ₹1,800, Super Deluxe ₹2,600. Contact: {HOTEL_PHONE}"
+        return f"Hotel Ganga Palace Haridwar. Rooms: Deluxe AC ₹1,800, Super Deluxe ₹2,600. Contact: {HOTEL_PHONE}"
 
 HOTEL_CONTEXT = load_hotel_data()
 
@@ -43,53 +43,54 @@ def mark_message_as_read(message_id):
     except Exception as e:
         print(f"Read receipt error: {e}")
 
-def clean_qwen_reasoning(text):
-    """Reasoning aur thinking process ko 100% remove karke sirf actual reply nikalna"""
-    if not text:
+def sanitize_qwen_output(raw_text):
+    if not raw_text:
         return ""
 
-    raw = text.strip()
+    raw = raw_text.strip()
 
-    # 1. Agar </think> tag hai toh uske aage ka hissa uthao
+    # 1. Think tags nikalna
     if "</think>" in raw:
-        cleaned = raw.split("</think>")[-1].strip()
-        if cleaned:
-            return cleaned
+        raw = raw.split("</think>")[-1].strip()
 
-    # 2. Agar unclosed <think> hai (jaisa screenshot me dikha)
-    if "<think>" in raw:
-        # Qwen hamesha aakhri refined reply ko quotes me deta hai
-        quotes = re.findall(r'"([^"\n\r]{15,})"', raw)
-        if quotes:
-            return quotes[-1].strip()
+    # 2. Agar quote ke andar clean answer ho
+    quotes = re.findall(r'"([^"\n\r]{10,})"', raw)
+    if quotes:
+        candidate = quotes[-1].strip()
+        if not any(k in candidate.lower() for k in ["agar details", "system", "instruction", "prompt"]):
+            return candidate
 
-        # Agar quotes na mile toh <think> Here's a thinking process: ke baad ki pehli 2 lines uthao
-        content_after_think = re.sub(r'<think>.*?thinking process:?', '', raw, flags=re.IGNORECASE | re.DOTALL).strip()
-        lines = [l.strip() for l in content_after_think.split("\n") if l.strip()]
-        
-        # Meta reasoning lines chhod kar actual response pick karna
-        valid_lines = [
-            l for l in lines 
-            if not any(keyword in l.lower() for keyword in ["adjustment", "sentence", "rule", "instruction", "output"])
-        ]
-        if valid_lines:
-            return valid_lines[0]
+    # 3. Line by line filter (Prompt echo aur meta phrases hatana)
+    lines = [l.strip() for l in raw.split("\n") if l.strip()]
+    cleaned_lines = []
+    banned_keywords = [
+        "agar details", "hotel data", "system prompt", "here's a thinking",
+        "final output", "thinking process", "instruction", "rule 1", "rule 2"
+    ]
 
-    # 3. Clean any remaining artifacts
-    cleaned = re.sub(r'\[Final Output Generation\]\s*->?', '', raw, flags=re.IGNORECASE).strip()
-    return cleaned if cleaned else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise madad karu?"
+    for line in lines:
+        if any(banned in line.lower() for banned in banned_keywords):
+            continue
+        if re.match(r'^(\d+\.|\*|\-|\#)', line):
+            continue
+        cleaned_lines.append(line)
+
+    if cleaned_lines:
+        final_text = cleaned_lines[-1].strip("`'\" ")
+        return final_text
+
+    return f"Ji namaste! Is baare me confirm karne ke liye kripya reception par call kar lijiye: {HOTEL_PHONE}"
 
 def get_ai_reply(user_message):
     system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain.
-Aapka andaz polite aur helpful WhatsApp typing jaisa hona chahiye.
+Aap Hotel Ganga Palace Haridwar ke manager 'Aman' hain. Aap WhatsApp par guest se baat kar rahe hain.
 
-DIRECT OUTPUT INSTRUCTION:
-Do not explain your thoughts. Do not write 'Here's a thinking process'.
-Direct guest ko answer karein 1 ya 2 lines me respectful Hinglish me.
-Agar details data me hain toh answer dein, agar bilkul nahi hain toh call karne ko kahein: {HOTEL_PHONE}.
+Aapko sirf aur sirf guest ko bhejne wala 1 short polite Hinglish sentence likhna hai. Kabhi bhi instructions ya rules ko repeat mat kijiye.
 
-HOTEL DATA:
+- Agar guest room, rate, timings, ya restaurant dishes (Chinese, Parotta, Shakes, Falooda etc.) puche, toh data dekhkar seedha jawab dein.
+- Agar aisi cheez puche jo data me nahi hai (jaise Dal Makhni ya swimming pool), toh politely kahein ki yeh available nahi hai aur call karne ko kahein: {HOTEL_PHONE}.
+
+DATA:
 {HOTEL_CONTEXT}
 """
     try:
@@ -100,17 +101,17 @@ HOTEL DATA:
             ],
             model=ACTIVE_MODEL,
             temperature=0.2,
-            max_tokens=500
+            max_tokens=450
         )
         raw_text = completion.choices[0].message.content
-        print(f"--- RAW QWEN RESPONSE: {raw_text} ---")
+        print(f"--- RAW OUTPUT: '{raw_text}' ---")
 
-        reply = clean_qwen_reasoning(raw_text)
-        print(f"--- FINAL CLEAN REPLY: {reply} ---")
+        reply = sanitize_qwen_output(raw_text)
+        print(f"--- FINAL CLEAN: '{reply}' ---")
         return reply
     except Exception as e:
         print(f"--- GROQ ERROR: {e} ---")
-        return f"Namaste ji! Front desk par thoda rush hai, kripya direct call kar lijiye: {HOTEL_PHONE}"
+        return f"Namaste ji! Reception par call kar lijiye: {HOTEL_PHONE}"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

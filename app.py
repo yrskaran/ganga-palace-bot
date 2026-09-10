@@ -12,8 +12,6 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
 co = cohere.ClientV2(api_key=COHERE_API_KEY)
 PROCESSED_MESSAGES = set()
-
-# Har user ki pichli chat history store karne ke liye
 USER_CHATS = {}
 
 ACTIVE_MODEL = "command-r-08-2024"
@@ -47,27 +45,25 @@ def get_ai_reply(sender_phone, user_message):
     hotel_context = load_hotel_data()
     
     preamble = f"""
-Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
-Aapka andaz bilkul humble, short aur natural WhatsApp typing jaisa hona chahiye.
+Aap Hotel Ganga Palace Haridwar ke receptionist manager 'Aman' hain. 
+Aapka andaz polite, humble aur fast WhatsApp typing jaisa hona chahiye.
 
 RULES:
-1. Har jawab 1 ya 2 short sentences me respectful Hinglish me dein ('Ji', 'Aap' use karein).
-2. Pichli baatcheet (context) ka dhyan rakhein. Agar guest kisi item ke baad 'kitne ka hai' puche, toh usi specific item ka price batayein, room ka nahi.
-3. Niche diye gaye HOTEL DATA se rooms, rates, timings aur restaurant items confirm karke batayein.
-4. Agar aisi cheez puchi jaye jo data me nahi hai, toh politely reception number {HOTEL_PHONE} par call karne ko kahein.
-5. Direct reply dein, koi system rules ya notes repeat na karein.
+1. Respectful Hinglish use karein ('Ji', 'Aap'). Max 1-2 short sentences.
+2. Agar guest kisi dish/item ke baare me puche (jaise 'Shahi paneer hai?'), toh seedha availability AUR rate ek sath batayein (jaise: 'Ji bilkul, Shahi Paneer available hai ₹150 me.'). Yeh mat puchiye ki 'kya aap price janna chahenge?'.
+3. Agar guest 'sabka btao', 'options btao' ya kisi category (jaise paneer, chinese, shakes) ki list maange, toh menu se dekhkar saare relevant items rates ke sath bataiye.
+4. Agar aisi koi cheez puche jo menu ya data me bilkul nahi hai, politely kahein ki yeh item available nahi hai aur call karne ko kahein: {HOTEL_PHONE}.
+5. Direct answer karein, koi reasoning ya system text chat me na likhein.
 
-HOTEL DATA:
+HOTEL DATA & MENU:
 {hotel_context}
 """
-    # User ki pichli history lena (last 4 messages context ke liye)
     if sender_phone not in USER_CHATS:
         USER_CHATS[sender_phone] = []
 
     history = USER_CHATS[sender_phone]
     history.append({"role": "user", "content": user_message})
 
-    # Message payload tayyar karna
     messages_payload = [{"role": "system", "content": preamble}] + history[-5:]
 
     try:
@@ -79,7 +75,6 @@ HOTEL DATA:
         reply = response.message.content[0].text.strip()
         print(f"--- BOT CLEAN REPLY: '{reply}' ---")
 
-        # Bot ka reply history me add karna
         history.append({"role": "assistant", "content": reply})
         if len(history) > 10:
             USER_CHATS[sender_phone] = history[-6:]
@@ -87,7 +82,7 @@ HOTEL DATA:
         return reply if reply else "Namaste ji! Hotel Ganga Palace me aapka swagat hai. Batayein kaise help kar sakta hu?"
     except Exception as e:
         print(f"--- COHERE ERROR: {e} ---")
-        return f"Namaste ji! Front desk par call kar lijiye: {HOTEL_PHONE}"
+        return f"Namaste ji! Reception par call kar lijiye: {HOTEL_PHONE}"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

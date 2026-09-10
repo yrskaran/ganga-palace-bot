@@ -14,22 +14,26 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
 
-# EXACT MODEL FROM YOUR SERVER LOG
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
 
 def clean_reply(text):
     if not text:
         return ""
-    cleaned = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
-    return cleaned if cleaned else text.strip()
+    # Agar closing </think> tag hai, toh uske baad ka actual answer uthao
+    if "</think>" in text:
+        text = text.split("</think>")[-1].strip()
+    # Agar model token limit ki wajah se beech me hi ruk gaya aur </think> nahi aaya
+    elif "<think>" in text:
+        text = text.split("<think>")[0].strip()
+        
+    return text.strip()
 
 def get_ai_reply(user_message):
     system_prompt = (
-        "Aap Hotel Ganga Palace Haridwar ke helpful concierge hain. "
-        "Guest ke sawal ka seedha, polite aur short Hinglish me jawab dein (1-2 sentences). "
+        "Aap Hotel Ganga Palace Haridwar ke digital concierge hain. "
+        "Guest ke sawal ka short, polite aur helpful Hinglish me reply karein. "
         "Deluxe AC: ₹2000/night, Super Deluxe: ₹2800/night. "
-        "Location: Har Ki Pauri se sirf 500 meter door, Upper Road, Haridwar. "
-        "Check-in: 12 PM, Check-out: 11 AM. 24/7 Room Service & Hot Water available."
+        "Location: Har Ki Pauri se 500m door. Check-in: 12 PM, Check-out: 11 AM."
     )
     
     try:
@@ -40,13 +44,18 @@ def get_ai_reply(user_message):
             ],
             model=ACTIVE_MODEL,
             temperature=0.3,
-            max_tokens=180
+            max_tokens=600  # Token limit badha di taaki actual answer cut na ho
         )
-        reply = clean_reply(completion.choices[0].message.content)
+        raw_output = completion.choices[0].message.content
+        reply = clean_reply(raw_output)
+        
+        if not reply:
+            reply = "Namaste! Hotel Ganga Palace Haridwar me aapka swagat hai. Ji haan, hamare paas Deluxe aur Super Deluxe rooms available hain."
+            
         return reply
     except Exception as e:
         print(f"--- GROQ REAL ERROR: {e} ---")
-        return "Namaste! Hotel Ganga Palace Haridwar me aapka swagat hai. Kripya batayein aapko room booking ya kisi service me sahayata chahiye?"
+        return "Namaste! Hotel Ganga Palace me aapka swagat hai. Kripya batayein aapko room booking ya kisi service me sahayata chahiye?"
 
 def send_whatsapp_message(to_number, message_text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"

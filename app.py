@@ -1,6 +1,5 @@
 import os
 import re
-import time
 import requests
 from flask import Flask, request, jsonify
 from groq import Groq
@@ -14,27 +13,19 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 PROCESSED_MESSAGES = set()
-
-# Safe active model
 ACTIVE_MODEL = "qwen/qwen3.6-27b"
 HOTEL_PHONE = "+91-9876543210"
 
-HOTEL_CONTEXT = f"""
-Hotel: Hotel Ganga Palace Haridwar
-Location: Upper Road, Haridwar (Har Ki Pauri se sirf 450 meter door, paidal 5 minute).
-Contact Number: {HOTEL_PHONE}
-Rooms & Rates: Deluxe AC Room: ₹1,800/night, Super Deluxe: ₹2,600/night.
-Timings: Check-in 12:00 PM, Check-out 11:00 AM.
-Sightseeing: Har Ki Pauri Evening Aarti: 6:30 PM, Morning: 5:30 AM. Mansa Devi Ropeway: 1.5 km door.
-Facilities: Free Wi-Fi, 24/7 hot water, pure veg dining, parking available.
+# hotel_data.txt se automatic data read karna
+def load_hotel_data():
+    try:
+        with open("hotel_data.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        print(f"Error loading hotel_data.txt: {e}")
+        return "Hotel Ganga Palace Haridwar. Contact: " + HOTEL_PHONE
 
---- RESTAURANT MENU (Brief) ---
-- Shakes: Vanilla (₹75), Strawberry (₹75), Chocolate (₹80), Badam Shake (₹100), Oreo Shake (₹80)
-- Falooda: Royal (₹150), Pista (₹160), Butter (₹170)
-- Non-Veg Starters: Mutton Chops (₹190), Mutton Fry (₹120), Fish Fry (₹100), Prawns Fry (₹170), Chilli Chicken (₹120)
-- Breads/Dinner: Parotta (₹15), Veechu Parotta (₹25), Egg Parotta (₹70), Chicken Dum Parotta (₹300), Chappathi (₹40), Dosa (₹120-160)
-- Rice & Noodles: Veg Fried Rice (₹80), Chicken Fried Rice (₹120), Veg Noodles (₹80), Chicken Noodles (₹110)
-"""
+HOTEL_CONTEXT = load_hotel_data()
 
 def mark_message_as_read(message_id):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -63,11 +54,12 @@ def clean_reply(text):
 
 def get_ai_reply(user_message):
     system_prompt = f"""
-Aap Hotel Ganga Palace Haridwar ke polite reception manager 'Aman' hain.
+Aap Hotel Ganga Palace Haridwar ke polite manager 'Aman' hain.
 Rules:
 1. Har jawab 1 ya 2 short sentences me dein. Hamesha 'Ji', 'Aap', aur respectful Hinglish use karein.
-2. Agar guest aisi koi cheez puche jo HOTEL DATA ya MENU me NAHI hai, toh man se na banayein. Seedha bole: "Ji, is baare me confirm nahi hai. Kripya aap reception number {HOTEL_PHONE} par call kar lijiye."
-3. Kabhi apna reasoning ya think tag show na karein.
+2. FOOD ORDERS: Guest ke order ka rate aur total upar diye gaye RESTAURANT MENU se calculate karke batao.
+3. STRICT RULE: Agar guest aisi koi cheez puche jo data me NAHI hai, toh man se na banayein. Seedha bole: "Ji, is baare me confirm nahi hai. Kripya aap reception number {HOTEL_PHONE} par call kar lijiye."
+4. Kabhi apna reasoning ya think tag show na karein.
 
 HOTEL DATA:
 {HOTEL_CONTEXT}

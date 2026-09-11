@@ -16,7 +16,7 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Separate Alert Numbers
+# Alert Numbers
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
 STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
@@ -25,7 +25,7 @@ HOTEL_NAME = "Hotel Ganga View"
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
 
-# Render external URL
+# Render external URL for self-ping
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 # In-memory chat history (per user)
@@ -39,46 +39,64 @@ Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional AI Receptionist aur Loc
 
 MUKHYA NIYAM:
 
-1. STRICTLY PURE VEGETARIAN MENU (HARIDWAR POLICY):
-   - Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
-   - Roti/Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
-   - Paneer: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
-   - Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
-   - Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
-   - Extras: Mineral Water (Rs. 20)
+1. COMPLETE & EXCLUSIVE PURE VEGETARIAN MENU:
+   Kewal aur kewal niche diye gaye items hi uplabdh hain:
+   - Chai:
+     * Normal Chai: Rs. 30
+     * Masala Chai: Rs. 40
+   - Roti/Breads:
+     * Tandoori Roti: Rs. 15
+     * Butter Roti: Rs. 20
+     * Butter Naan: Rs. 45
+   - Paneer Dishes:
+     * Paneer Butter Masala: Rs. 220
+     * Matar Paneer: Rs. 200
+     * Kadhai Paneer: Rs. 230
+     * Shahi Paneer: Rs. 220
+   - Dal:
+     * Dal Makhani: Rs. 180
+     * Dal Tadka: Rs. 150
+   - Rice:
+     * Plain Rice: Rs. 100
+     * Veg Fried Rice: Rs. 150
+     * Jeera Rice: Rs. 120
+   - Extras:
+     * Mineral Water: Rs. 20
+
+   *NOTE:* Agar guest is menu ke bahar ka koi item mange, toh kripya vinamrata se batayein ki kewal upar diye gaye shuddh shakahari vyanjan hi uplabdh hain.
 
 2. FOOD ORDER RULES:
-   - AMBIGUOUS DISH: Agar generic naam ho (jaise sirf 'paneer' ya 'daal'), toh options poochein.
-   - MANDATORY ROOM NUMBER: Bina room number ke food order confirm na karein.
-   - Final hone par end me tag lagayein:
+   - AMBIGUOUS DISH: Agar guest sirf 'paneer', 'daal', ya 'chai' bole, toh apne mann se choose na karein. Pehle unse option poochein (jaise Paneer Butter Masala, Matar Paneer, Kadhai Paneer, Shahi Paneer).
+   - MANDATORY ROOM NUMBER: Bina Room Number ke food order confirm na karein.
+   - Order confirm hone par aakhiri me ye exact tag lagayein:
      [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
 3. STAFF & HOUSEKEEPING REQUESTS:
-   - Towel, safai, pani, luggage ke liye bina room number alert na lagayein.
-   - Room number milne par end me tag lagayein:
+   - Safai, extra towel, blanket, ya luggage ke liye pehle Room Number poochein.
+   - Confirm hone par aakhiri me ye tag lagayein:
      [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-4. CHECK-IN / DOCUMENT RULES:
-   - Guest documents bhejne ki baat kare toh ROOM NUMBER MAT POOCHO (room check-in ke baad milta hai).
-   - Seedha kaho: "Ji bilkul! Aap sabhi adult guests ke Govt ID Proof (Aadhaar Card, Driving License, ya Passport) ki saaf photo yahan send kar dijiye." (Agar English ho toh English me kahein).
-   - KABHI BHI koi [CHECKIN_ALERT] tag message me mat likho.
+4. CHECK-IN / ID GUIDANCE:
+   - Agar guest documents bhejne ya check-in formalities ki baat kare, toh ROOM NUMBER MAT POOCHEIN.
+   - Seedha kahein: "Ji bilkul! Aap sabhi adult guests ke Govt ID Proof (Aadhaar, Driving License, ya Passport) ki saaf photo yahan send kar dijiye."
+   - Chat me koi bhi [CHECKIN_ALERT] tag message me mat likhein.
 
 5. LOCAL TOURIST GUIDANCE:
-   - Har Ki Pauri Aarti: 5:15 PM tak pahunchein.
-   - Mansa Devi / Chandi Devi Ropeway: 7:00 AM se open.
+   - Har Ki Pauri Sandhya Aarti: 5:15 PM tak pahunchne ki salah dein.
+   - Mansa Devi / Chandi Devi Ropeway: Subah 7:00 AM se open rehta hai.
    - Local Food: Mohan Ji Puri Wale aur Pandit Sevaram Doodh Jalebi.
 
-6. LANGUAGE & TONE RULES (STRICT MIRRORING):
-   - IF USER SPEAKS ENGLISH: Respond ONLY in clear, courteous English.
-   - IF USER SPEAKS HINDI / HINGLISH: Respond in polite Hindi / Hinglish.
-   - Keep answers crisp, warm, and professional.
+6. LANGUAGE & TONE RULES:
+   - IF USER SPEAKS ENGLISH: Reply in crisp, polite English.
+   - IF USER SPEAKS HINDI / HINGLISH: Reply in polite Hindi / Hinglish.
+   - Tone hamesha respectful aur hospitable rakhein.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS & BACKGROUND THREADS
 # ==========================================
 def keep_awake_ping():
-    """Render auto-ping to prevent sleep"""
+    """Render ko sleep mode me jane se rokne ke liye auto self-ping"""
     time.sleep(30)
     while True:
         try:
@@ -106,7 +124,7 @@ def send_whatsapp_message(to_number, text):
         res = requests.post(url, json=payload, headers=headers)
         return res.json()
     except Exception as e:
-        print(f"Failed to send message: {e}")
+        print(f"Failed to send message to {to_number}: {e}")
         return None
 
 def download_media(media_id):
@@ -221,7 +239,7 @@ def ask_cohere(user_message, sender_phone):
         return "Namaste! Hamari service me thodi takneeki samasya aa rahi hai."
 
 def process_and_reply(user_text, sender_phone):
-    """Text handler for orders and housekeeping"""
+    """Order, service requests aur general chat router"""
     bot_reply = ask_cohere(user_text, sender_phone)
     
     # 1. Kitchen Alert
@@ -310,14 +328,14 @@ def handle_webhook():
                 send_whatsapp_message(
                     sender_phone,
                     f"Dhanyawad! 🙏 Aapka ID Proof successfully verify ho gaya hai.\n\n"
-                    f"Aapka fast check-in register update kar diya gaya hai. Hotel arrival par aapko kamre ki chabi turant mil jayegi."
+                    f"Aapka fast check-in register update kar diya gaya hai. Hotel aane par aapko kamre ki chabi turant mil jayegi."
                 )
 
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
                     f"📋 *Doc Details:* {verification_result}\n"
                     f"📞 *Guest Contact:* +{sender_phone}\n\n"
-                    f"✅ Pre-check-in verified. Check-in entry ready rakhein!"
+                    f"✅ Pre-check-in verified. Entry register taiyar rakhein!"
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
 
@@ -325,10 +343,10 @@ def handle_webhook():
                 send_whatsapp_message(
                     sender_phone,
                     "Kshama karein, yeh valid ya saaf Government ID Proof nahi lag raha hai. "
-                    "Kripya Aadhaar Card, Driving License ya Passport ki saaf photo bhejein taaki check-in proceed ho sake."
+                    "Kripya Aadhaar, Driving License ya Passport ki saaf photo bhejein taaki check-in proceed ho sake."
                 )
 
-        # 4. LOCATION SHARING (DIRECT ROUTE LINK)
+        # 4. LOCATION SHARING (DIRECT NAVIGATION LINK)
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")
@@ -341,7 +359,7 @@ def handle_webhook():
                 f"📍 *Hotel Navigation Route Link:*\n"
                 f"{maps_route_url}\n\n"
                 f"🚗 *Directions:*\n"
-                f"Upar diye gaye Google Maps link par click karke rasta follow karein ya auto/cab driver ko yeh route dikha dein."
+                f"Upar diye gaye Google Maps link par click karke rasta follow karein ya driver ko yeh route dikha dein."
             )
             send_whatsapp_message(sender_phone, nav_reply)
 

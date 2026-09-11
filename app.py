@@ -32,26 +32,22 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 chat_histories = {}
 
 # ==========================================
-# 2. MASTER SYSTEM PROMPT
+# 2. MASTER SYSTEM PROMPT (EXACTLY 5 RULES)
 # ==========================================
 SYSTEM_PROMPT = f"""
-Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional WhatsApp AI Receptionist hain.
-
-PARAMOUNT INSTRUCTION - ULTRA CRISP REPLIES:
-- Hamesha 1 ya 2 short sentences me direct aur polite reply karein.
-- WhatsApp chat hai; essay, lambe paragraph, guide, unprompted lists, ya faltu ke explanations BILKUL MAT DEIN.
+Aap '{HOTEL_NAME}' (Haridwar) ke WhatsApp AI Receptionist hain.
 
 1. COMPLETE & EXCLUSIVE MENU (PURE VEG ONLY):
-   Kewal aur kewal yahi items available hain:
    - Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
    - Roti/Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
    - Paneer Dishes: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
    - Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
    - Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
    - Extras: Mineral Water (Rs. 20)
+   *Note:* Iske bahar ka koi item available nahi hai.
 
 2. FOOD ORDER RULES:
-   - Generic dish (jaise sirf 'paneer' ya 'daal') ho toh 1 line me options poochein.
+   - Agar dish clear na ho (jaise sirf 'paneer' ya 'daal'), toh 1 line me options poochein.
    - Room number maangna zaroori hai.
    - Dono final hone par aakhiri me exact tag lagayein:
      [KITCHEN_ALERT: Room <room_number> | Order: <items>]
@@ -61,24 +57,24 @@ PARAMOUNT INSTRUCTION - ULTRA CRISP REPLIES:
    - Confirm hone par aakhiri me exact tag lagayein:
      [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-4. CHECK-IN / ID GUIDANCE (STRICT 1-LINE RESPONSE):
+4. CHECK-IN / ID GUIDANCE:
    - Jab guest documents upload karne ya check-in ki baat kare:
-     * Room number KABHI MAT MAANGO (room arrival ke baad milta hai).
+     * Room number KABHI MAT MAANGO (room arrival par milta hai).
      * Koi bhi [CHECKIN_ALERT] tag message me mat likho.
-     * IF ENGLISH: "Yes, please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
-     * IF HINDI/HINGLISH: "Ji bilkul, aap sabhi guests ke valid ID proof (Aadhaar, Driving License, ya Passport) ki saaf photo yahan bhej dijiye."
+     * English me puche toh: "Yes, please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
+     * Hindi/Hinglish me puche toh: "Ji bilkul, aap sabhi guests ke valid ID proof (Driving License, Passport ya Voter ID) ki saaf photo yahan bhej dijiye."
 
-5. STRICT LANGUAGE MIRRORING:
-   - User English me bole -> Reply 100% in concise English.
-   - User Hindi/Hinglish me bole -> Reply in courteous Hindi/Hinglish.
-   - Tone hamesha respectful aur crisp rakhein.
+5. STRICT MIRRORING & ULTRA-CRISP LENGTH:
+   - Maximum 1-2 lines me direct jawab dein. Lambi explanations, essays, step-by-step guides ya lists KABHI MAT DEIN.
+   - Agar user English bole toh reply 100% concise English me karein.
+   - Agar user Hindi/Hinglish bole toh reply polite Hindi/Hinglish me karein.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS & BACKGROUND THREADS
 # ==========================================
 def keep_awake_ping():
-    """Render ko sleep mode me jane se rokne ke liye auto ping"""
+    """Render ko sleep hone se rokne ke liye auto self-ping"""
     time.sleep(30)
     while True:
         try:
@@ -90,7 +86,7 @@ def keep_awake_ping():
         time.sleep(12 * 60)
 
 def send_whatsapp_message(to_number, text):
-    """WhatsApp Cloud API helper"""
+    """WhatsApp Cloud API message dispatcher"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -126,7 +122,7 @@ def download_media(media_id):
         return None
 
 def transcribe_audio_groq(audio_id):
-    """Audio to Text via Groq Whisper"""
+    """Groq Whisper audio transcription"""
     try:
         audio_content = download_media(audio_id)
         if not audio_content:
@@ -148,7 +144,7 @@ def transcribe_audio_groq(audio_id):
         return None
 
 def verify_document_groq(image_id):
-    """Document Image Verification via Groq Vision"""
+    """Groq Llama-Vision ID Verification"""
     try:
         image_content = download_media(image_id)
         if not image_content:
@@ -191,7 +187,7 @@ def verify_document_groq(image_id):
         return None
 
 def ask_cohere(user_message, sender_phone):
-    """Cohere API Chatbot reply with tight temperature"""
+    """Cohere API Chatbot reply"""
     history = chat_histories.get(sender_phone, [])
     
     url = "https://api.cohere.ai/v1/chat"
@@ -218,10 +214,10 @@ def ask_cohere(user_message, sender_phone):
         return reply_text
     except Exception as e:
         print(f"Cohere error: {e}")
-        return "Namaste! Hamari service me takneeki samasya aa rahi hai, kripya thodi der baad message karein."
+        return "Namaste! Hamari service me takneeki samasya aa rahi hai, kripya thodi der baad prayas karein."
 
 def process_and_reply(user_text, sender_phone):
-    """Order, service requests aur general chat routing"""
+    """Core routing for user queries, orders, and alert tags"""
     bot_reply = ask_cohere(user_text, sender_phone)
     
     # 1. Kitchen Alert
@@ -250,7 +246,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
     
-    # Extra safety cleanup
+    # Redundant tag sanitization
     bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
     send_whatsapp_message(sender_phone, bot_reply)
 
@@ -288,12 +284,12 @@ def handle_webhook():
         sender_phone = message.get("from")
         msg_type = message.get("type")
 
-        # 1. TEXT MESSAGES
+        # 1. TEXT
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. VOICE NOTES (GROQ WHISPER)
+        # 2. VOICE NOTES
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -302,7 +298,7 @@ def handle_webhook():
             else:
                 send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf nahi sunai diya. Kripya dobara bhejein.")
 
-        # 3. DOCUMENT / ID PHOTO VERIFICATION (GROQ VISION)
+        # 3. ID VERIFICATION (GROQ VISION)
         elif msg_type == "image":
             image_id = message.get("image", {}).get("id")
             verification_result = verify_document_groq(image_id)
@@ -310,14 +306,14 @@ def handle_webhook():
             if verification_result and verification_result.startswith("VALID"):
                 send_whatsapp_message(
                     sender_phone,
-                    "Dhanyawad! 🙏 ID proof verify ho gaya hai. Check-in register update kar diya gaya hai aur arrival par chabi ready milegi."
+                    "Dhanyawad! 🙏 Aapka ID proof verify ho gaya hai. Check-in register update kar diya gaya hai."
                 )
 
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
                     f"📋 *Doc Details:* {verification_result}\n"
                     f"📞 *Guest Contact:* +{sender_phone}\n\n"
-                    f"✅ Pre-check-in entry verified."
+                    f"✅ Pre-check-in verified."
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
 
@@ -327,14 +323,13 @@ def handle_webhook():
                     "Kshama karein, yeh valid ID proof nahi lag raha hai. Kripya Driving License, Passport ya Voter ID ki saaf photo bhejein."
                 )
 
-        # 4. LOCATION SHARING (DIRECT NAVIGATION LINK)
+        # 4. LOCATION NAVIGATION
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")
             user_lon = loc_data.get("longitude")
             
             maps_route_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={HOTEL_LAT},{HOTEL_LON}"
-            
             nav_reply = (
                 f"Namaskar! 🙏 Live location receive ho gayi hai.\n\n"
                 f"📍 *Hotel Route Link:*\n{maps_route_url}\n\n"

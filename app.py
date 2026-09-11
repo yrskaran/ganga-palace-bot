@@ -16,82 +16,78 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Separate Alert Numbers
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
 STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
-# Hotel Info
-HOTEL_NAME = "Hotel Ganga View"
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
 
-# Render external URL for self-ping
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-
-# In-memory chat history (per user)
 chat_histories = {}
 
 # ==========================================
-# 2. MASTER SYSTEM PROMPT (HOTEL DATA + CLEAN LOGIC)
+# 2. DYNAMIC HOTEL DATA LOADER
 # ==========================================
-SYSTEM_PROMPT = f"""
-You are the WhatsApp AI Receptionist for '{HOTEL_NAME}' in Haridwar.
+def load_hotel_data():
+    """hotel_data.txt file se fresh hotel knowledge uthata hai"""
+    file_path = os.path.join(os.path.dirname(__file__), "hotel_data.txt")
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    return "Hotel Ganga View, Haridwar."
 
-### HOTEL DATA (KNOWLEDGE BASE) ###
-ROOM CATEGORIES & TARIFFS:
-- Deluxe Room (Non-AC): Rs. 1000/night
-- Super Deluxe (AC): Rs. 1500/night
-- Executive Ganga View (AC): Rs. 2200/night
-- Family Suite (4 Bed AC): Rs. 3200/night
+def build_system_prompt():
+    """Live hotel data inject karke system prompt banata hai"""
+    hotel_info = load_hotel_data()
+    return f"""
+You are the WhatsApp AI Receptionist for 'Hotel Ganga View' in Haridwar.
 
-RESTAURANT MENU (STRICTLY PURE VEGETARIAN):
-- Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
-- Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
-- Paneer: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
-- Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
-- Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
-- Extras: Mineral Water (Rs. 20)
+==================================================
+HOTEL DATABASE (FETCHED FROM TXT FILE)
+==================================================
+{hotel_info}
 
-LOCAL ATTRACTIONS:
-- Har Ki Pauri Sandhya Aarti: Recommended arrival by 5:15 PM.
-- Mansa Devi & Chandi Devi Ropeway: Opens 7:00 AM.
-- Famous Food Spots: Mohan Ji Puri Wale, Pandit Sevaram Doodh Jalebi.
-
-### OPERATIONAL RULES ###
+==================================================
+OPERATIONAL LOGIC & RULES
+==================================================
 1. BREVITY & SCRIPT:
-   - Always reply in maximum 1 to 2 short sentences. No essays, guides, or bulleted dumps.
-   - NEVER use Devanagari script (क, ख, ग) unless the user typed in Devanagari. Always use Latin script.
-   - User writes in English -> reply in English. User writes in Hindi/Hinglish -> reply in polite Hinglish.
+   - Maximum 1 to 2 short sentences reply. No essays or bullet dumps.
+   - NEVER use Devanagari script (क, ख, ग) unless user typed in Devanagari. Always use Latin alphabet.
+   - User writes/speaks in English -> reply in English. User writes/speaks in Hindi/Hinglish -> reply in polite Hinglish.
 
-2. ROOM INQUIRIES:
-   - When asked about room availability ("Room hai?", "Room chahiye"): Mention room category names from HOTEL DATA and ask for dates/guests. DO NOT quote prices unless explicitly asked. DO NOT ask for ID proofs.
-   - When asked for prices/tariff: Quote the exact rates from HOTEL DATA for the requested rooms.
+2. ROOM AVAILABILITY & RATES:
+   - When asked about room availability ("Room hai?", "Room chahiye"):
+     * Mention room categories from HOTEL DATABASE.
+     * DO NOT mention rates/prices automatically.
+     * Ask for their check-in date and guest count.
+     * DO NOT ask for ID proofs.
+   - When asked about rates ("Kitne ka hai?", "Tariff?", "Price?"):
+     * Fetch exact prices from HOTEL DATABASE and quote them directly.
 
 3. FOOD ORDERS:
-   - For generic dishes (e.g. only 'paneer' or 'dal'), ask which option they prefer in 1 line.
-   - Room number is mandatory.
+   - For generic dishes (e.g. only 'paneer' or 'dal'), ask which option they prefer from the menu in 1 line.
+   - Room number is mandatory before confirming.
    - Once items and room number are confirmed, append:
      [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
-4. STAFF REQUESTS:
-   - Require room number for towels, cleaning, luggage, or water.
+4. STAFF & HOUSEKEEPING:
+   - Ask for room number for towels, cleaning, water, or luggage.
    - Once confirmed, append:
      [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-5. CHECK-IN / ID PROOF:
+5. CHECK-IN / ID GUIDANCE:
    - Only ask for ID when user specifically says they want to send documents or check in.
    - Never ask for room number during pre-check-in document requests.
-   - Never write any system tag in document guidance replies.
+   - Never write any bracketed alert tag in document guidance.
 
 6. GREETINGS:
-   - On "Hi" or "Hello", reply strictly with 1 short welcoming sentence. Do not dump the menu or rules.
+   - On "Hi" or "Hello", reply strictly with 1 short welcoming sentence. Do not dump the database or menu.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS & KEEP-ALIVE
 # ==========================================
 def keep_awake_ping():
-    """Render sleep prevention self-ping loop"""
     time.sleep(30)
     while True:
         try:
@@ -103,7 +99,6 @@ def keep_awake_ping():
         time.sleep(12 * 60)
 
 def mark_message_as_read(message_id):
-    """WhatsApp message ko read mark karta hai taaki blue/green tick ban sake"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -120,7 +115,6 @@ def mark_message_as_read(message_id):
         print(f"Failed to mark as read: {e}")
 
 def send_whatsapp_message(to_number, text):
-    """WhatsApp Cloud API dispatcher"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -140,7 +134,6 @@ def send_whatsapp_message(to_number, text):
         return None
 
 def download_media(media_id):
-    """WhatsApp Media download helper"""
     try:
         res = requests.get(
             f"https://graph.facebook.com/v20.0/{media_id}",
@@ -157,7 +150,6 @@ def download_media(media_id):
         return None
 
 def transcribe_audio_groq(audio_id):
-    """Groq Whisper audio transcription with auto-detected language"""
     try:
         audio_content = download_media(audio_id)
         if not audio_content:
@@ -180,7 +172,6 @@ def transcribe_audio_groq(audio_id):
         return None
 
 def verify_document_groq(image_id):
-    """Groq Llama-Vision ID Verification"""
     try:
         image_content = download_media(image_id)
         if not image_content:
@@ -190,7 +181,6 @@ def verify_document_groq(image_id):
 
         prompt = (
             "You are a Hotel Document Verification Assistant. "
-            "Examine this image carefully. "
             "Determine if this is a valid Indian Government ID Proof (Aadhaar, Driving License, Passport, or Voter ID). "
             "Do NOT print any numeric identity numbers. "
             "If YES, respond strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
@@ -222,7 +212,6 @@ def verify_document_groq(image_id):
         return None
 
 def ask_cohere(user_message, sender_phone):
-    """Cohere API Chatbot reply"""
     history = chat_histories.get(sender_phone, [])
     
     url = "https://api.cohere.ai/v1/chat"
@@ -232,7 +221,7 @@ def ask_cohere(user_message, sender_phone):
     }
     payload = {
         "message": user_message,
-        "preamble": SYSTEM_PROMPT,
+        "preamble": build_system_prompt(),
         "chat_history": history,
         "temperature": 0.1
     }
@@ -252,10 +241,8 @@ def ask_cohere(user_message, sender_phone):
         return "Namaste! Please try again in a moment."
 
 def process_and_reply(user_text, sender_phone):
-    """Core routing for user queries, orders, and alert tags"""
     bot_reply = ask_cohere(user_text, sender_phone)
     
-    # 1. Kitchen Alert
     if "[KITCHEN_ALERT:" in bot_reply:
         order_details = bot_reply.split("[KITCHEN_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[KITCHEN_ALERT:")[0].strip()
@@ -268,7 +255,6 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
 
-    # 2. Staff Alert
     if "[STAFF_ALERT:" in bot_reply:
         service_details = bot_reply.split("[STAFF_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
@@ -281,7 +267,6 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
     
-    # Strip any stray bracketed leak
     bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
     send_whatsapp_message(sender_phone, bot_reply)
 
@@ -320,16 +305,13 @@ def handle_webhook():
         msg_type = message.get("type")
         message_id = message.get("id")
 
-        # INSTANT READ RECEIPT: Green/Blue tick activate karega
         if message_id:
             mark_message_as_read(message_id)
 
-        # 1. TEXT
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. VOICE NOTES
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -338,7 +320,6 @@ def handle_webhook():
             else:
                 send_whatsapp_message(sender_phone, "Voice note clear nahi tha, please try again.")
 
-        # 3. ID VERIFICATION (GROQ VISION)
         elif msg_type == "image":
             image_id = message.get("image", {}).get("id")
             verification_result = verify_document_groq(image_id)
@@ -348,7 +329,6 @@ def handle_webhook():
                     sender_phone,
                     "Thank you! 🙏 Your ID document has been verified. Pre-check-in register has been updated."
                 )
-
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
                     f"📋 *Doc Details:* {verification_result}\n"
@@ -356,14 +336,12 @@ def handle_webhook():
                     f"✅ Pre-check-in verified."
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
-
             else:
                 send_whatsapp_message(
                     sender_phone,
                     "Please share a clear photo of a valid Government ID proof (Aadhaar, Driving License, Passport, or Voter ID)."
                 )
 
-        # 4. LOCATION NAVIGATION
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")

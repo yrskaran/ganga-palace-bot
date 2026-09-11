@@ -129,6 +129,7 @@ def verify_document_groq(image_id):
     try:
         image_content = download_media(image_id)
         if not image_content:
+            print("[VISION ERROR] Could not download media from WhatsApp")
             return None
 
         base64_image = base64.b64encode(image_content).decode("utf-8")
@@ -136,12 +137,12 @@ def verify_document_groq(image_id):
         prompt = (
             "You are a Hotel Document Verification Assistant. "
             "Examine this image carefully. "
-            "Determine if this is a valid Indian Government ID Proof (Aadhaar Card, e-Aadhaar, Driving License, Passport, or Voter ID). "
-            "Do NOT output any personal numeric identification numbers. "
-            "If YES, respond strictly in this exact format: "
-            "VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
-            "If NO, respond strictly in this exact format: "
-            "INVALID | REASON: <blurry/unreadable/not_govt_id>"
+            "Determine if this is an Indian Government ID Proof (Aadhaar Card, e-Aadhaar, Voter ID, Driving License, or Passport). "
+            "Do NOT print any Aadhaar or ID numbers. "
+            "If it is a valid Govt ID, respond strictly: "
+            "VALID | ID_TYPE: Aadhaar/DL/Passport/VoterID | NAME: <guest name or Not Visible> "
+            "If it is blurry, unreadable, or not a government ID, respond strictly: "
+            "INVALID | REASON: <blurry or not_govt_id>"
         )
 
         headers = {
@@ -155,22 +156,37 @@ def verify_document_groq(image_id):
                     "role": "user",
                     "content": [
                         {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
                     ]
                 }
             ],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_tokens": 150
         }
 
         res = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=25
+            timeout=30
         )
-        return res.json()["choices"][0]["message"]["content"].strip()
+        
+        if res.status_code != 200:
+            print(f"[GROQ VISION HTTP ERROR] {res.status_code}: {res.text}")
+            return None
+            
+        data = res.json()
+        result = data["choices"][0]["message"]["content"].strip()
+        print(f"[GROQ VISION SUCCESS]: {result}")
+        return result
+        
     except Exception as e:
-        print(f"Document verification error: {e}")
+        print(f"[GROQ VISION EXCEPTION]: {e}")
         return None
 
 def ask_cohere(user_message, sender_phone):
@@ -206,7 +222,7 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(user_text, sender_phone)
     
-    # Kitchen Tag
+    # Kitchen Tag Alert
     if "[KITCHEN_ALERT:" in bot_reply:
         order_details = bot_reply.split("[KITCHEN_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[KITCHEN_ALERT:")[0].strip()
@@ -219,7 +235,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
 
-    # Staff Tag
+    # Staff Tag Alert
     if "[STAFF_ALERT:" in bot_reply:
         service_details = bot_reply.split("[STAFF_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
@@ -273,12 +289,12 @@ def handle_webhook():
         if message_id:
             mark_message_as_read(message_id)
 
-        # 1. Text Message
+        # 1. Text Messages
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. Voice Notes
+        # 2. Voice Notes (Groq Whisper)
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -321,7 +337,7 @@ def handle_webhook():
                     "Photo verify nahi ho paayi. Kripya saaf photo dobara send karein."
                 )
 
-        # 4. Location Directions
+        # 4. Location Navigation
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")

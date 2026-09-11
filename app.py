@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 import time
 import threading
@@ -68,6 +69,9 @@ def mark_message_as_read(message_id):
         print(f"[READ TICK ERROR]: {e}", flush=True)
 
 def send_whatsapp_message(to_number, text):
+    # Clean phone number (strip spaces, +, hyphens)
+    clean_number = re.sub(r"\D", "", str(to_number))
+    
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -75,15 +79,20 @@ def send_whatsapp_message(to_number, text):
     }
     payload = {
         "messaging_product": "whatsapp",
-        "to": to_number,
+        "to": clean_number,
         "type": "text",
         "text": {"body": text}
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        return res.json()
+        res = requests.post(url, json=payload, headers=headers, timeout=12)
+        res_json = res.json()
+        if res.status_code != 200:
+            print(f"[WHATSAPP DISPATCH ERROR] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
+        else:
+            print(f"[WHATSAPP DISPATCH SUCCESS] Target: {clean_number}", flush=True)
+        return res_json
     except Exception as e:
-        print(f"[SEND MSG ERROR]: {e}", flush=True)
+        print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
         return None
 
 def download_media(media_id):
@@ -213,11 +222,13 @@ def ask_cohere(user_message, sender_phone):
 
 def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(user_text, sender_phone)
-    
-    # Kitchen Alert Routing
+    print(f"[COHERE RAW REPLY for {sender_phone}]: {bot_reply}", flush=True)
+
+    # 1. Kitchen Alert Routing
     if "[KITCHEN_ALERT:" in bot_reply:
-        order_details = bot_reply.split("[KITCHEN_ALERT:")[1].split("]")[0].strip()
-        bot_reply = bot_reply.split("[KITCHEN_ALERT:")[0].strip()
+        match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)\]", bot_reply)
+        order_details = match.group(1) if match else "New Order"
+        bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
         
         kitchen_msg = (
             f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
@@ -230,10 +241,11 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = "Ji, aapka order note kar liya gaya hai aur jald room me deliver ho jayega."
 
-    # Staff Alert Routing
+    # 2. Staff Alert Routing
     if "[STAFF_ALERT:" in bot_reply:
-        service_details = bot_reply.split("[STAFF_ALERT:")[1].split("]")[0].strip()
-        bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
+        match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
+        service_details = match.group(1) if match else "Staff Assistance Requested"
+        bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
         
         staff_msg = (
             f"🛎️ *STAFF ALERT*\n\n"
@@ -246,7 +258,8 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = "Ji, staff ko request bhej di gayi hai."
     
-    bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
+    # Strip any rogue bracket tags
+    bot_reply = re.sub(r"\[.*?\]", "", bot_reply).strip()
     
     if bot_reply:
         send_whatsapp_message(sender_phone, bot_reply)
@@ -294,7 +307,7 @@ def handle_webhook():
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. Voice Note
+        # 2. Voice Notes
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)

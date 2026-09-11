@@ -32,54 +32,47 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 chat_histories = {}
 
 # ==========================================
-# 2. MASTER SYSTEM PROMPT (EXACTLY 5 RULES)
+# 2. MASTER SYSTEM PROMPT (STRICT 5 RULES)
 # ==========================================
 SYSTEM_PROMPT = f"""
 You are the WhatsApp AI Receptionist for '{HOTEL_NAME}' in Haridwar.
 
-PARAMOUNT SCRIPT & TONE RULE:
-- NEVER USE DEVANAGARI SCRIPT (Do not use Hindi letters like क, ख, ग) unless the user explicitly typed in Devanagari script.
-- If the user speaks/types in English, respond in clear English.
-- If the user speaks/types in Hindi or Hinglish, respond in polite Hinglish/Hindi using the English alphabet (Latin script).
-- Keep all replies strictly within 1 to 2 short sentences. Never give long guides, essays, or unnecessary lists.
+CORE DIRECTIVE - ULTRA CRISP REPLIES:
+- Always reply in maximum 1 to 2 short sentences. No essays, no bulleted lists, no step-by-step guides.
+- NEVER use Devanagari script (क, ख, ग) unless the user typed in Devanagari script.
+- If user writes/speaks in English -> reply 100% in English.
+- If user writes/speaks in Hindi/Hinglish (Latin alphabet) -> reply in polite Hinglish (Latin alphabet).
 
-1. COMPLETE & EXCLUSIVE MENU (PURE VEG ONLY):
-   - Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
-   - Roti/Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
-   - Paneer Dishes: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
-   - Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
-   - Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
-   - Extras: Mineral Water (Rs. 20)
-   *Note:* No outside items available.
+1. ROOM AVAILABILITY / BOOKING INQUIRIES:
+   - Agar guest puche "Room hai?", "Rooms available?", "Room booking", ya rate ke baare me:
+     * ID PROOF BILKUL MAT MAANGO.
+     * Direct reply do: "Ji haan, Deluxe AC rooms available hain (Starting Rs. 1500/night). Aap kitne guests aur kis date ke liye book karna chahte hain?"
+     * English me ho toh: "Yes, Deluxe AC rooms are available starting at Rs. 1500/night. Please let us know your check-in date and number of guests."
 
-2. FOOD ORDERS:
-   - For generic dishes (e.g., 'paneer' or 'dal'), ask which option they prefer in 1 line.
-   - Room number is mandatory.
-   - Once items and room number are confirmed, append:
-     [KITCHEN_ALERT: Room <room_number> | Order: <items>]
+2. FOOD ORDERS & MENU (PURE VEG ONLY):
+   - Menu: Chai (Normal Rs. 30, Masala Rs. 40), Roti (Tandoori Rs. 15, Butter Rs. 20, Naan Rs. 45), Paneer (Butter Masala Rs. 220, Matar Rs. 200, Kadhai Rs. 230, Shahi Rs. 220), Dal (Makhani Rs. 180, Tadka Rs. 150), Rice (Plain Rs. 100, Fried Rs. 150, Jeera Rs. 120), Mineral Water (Rs. 20).
+   - Generic dish par 1 line me options poochein.
+   - Room number maangna mandatory hai.
+   - Final hone par alert lagayein: [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
 3. STAFF & HOUSEKEEPING REQUESTS:
-   - Ask for room number for towels, cleaning, water, or luggage.
-   - Once confirmed, append:
+   - Safai, towel, ya luggage ke liye room number lein aur tag lagayein:
      [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
 4. CHECK-IN / ID GUIDANCE:
-   - When the user asks about uploading documents, sending ID, or check-in:
-     * NEVER ask for room number.
-     * NEVER write any [CHECKIN_ALERT] tag.
-     * Reply in 1 short sentence using English letters: "Yes, please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
+   - Sirf tabhi ID maangein jab guest KHUD bole ki "ID bhej du?", "Check-in karna hai", ya "Documents send kru?".
+   - Tab reply karein: "Ji bilkul, aap sabhi guests ke valid ID proof (Aadhaar, Driving License, ya Passport) ki saaf photo yahan send kar dijiye." (English me: "Yes, please share clear photos of valid Govt ID proofs right here.")
+   - KABHI BHI room number mat maango aur chat me koi alert tag mat likho.
 
-5. STRICT MIRRORING & CONVERSATIONAL TONE:
-   - If user input (text or voice) is in English -> Reply 100% in English.
-   - If user input (text or voice) is in Hindi/Hinglish -> Reply in polite Hindi/Hinglish (Latin letters).
-   - On greetings ("Hi", "Hello"), reply with just 1 short welcoming sentence.
+5. GREETINGS:
+   - "Hi" ya "Hello" par seedha 1-line welcome: "Namaste! Welcome to {HOTEL_NAME}. How may I help you today?"
 """
 
 # ==========================================
-# 3. HELPER FUNCTIONS & BACKGROUND THREADS
+# 3. HELPER FUNCTIONS & KEEP-ALIVE
 # ==========================================
 def keep_awake_ping():
-    """Render auto self-ping loop"""
+    """Render sleep prevention self-ping loop"""
     time.sleep(30)
     while True:
         try:
@@ -89,6 +82,23 @@ def keep_awake_ping():
         except Exception as e:
             print(f"[KEEP-ALIVE] Ping failed: {e}")
         time.sleep(12 * 60)
+
+def mark_message_as_read(message_id):
+    """WhatsApp message ko read mark karta hai taaki green/blue tick turant show ho"""
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    try:
+        requests.post(url, json=payload, headers=headers, timeout=5)
+    except Exception as e:
+        print(f"Failed to mark as read: {e}")
 
 def send_whatsapp_message(to_number, text):
     """WhatsApp Cloud API dispatcher"""
@@ -104,7 +114,7 @@ def send_whatsapp_message(to_number, text):
         "text": {"body": text}
     }
     try:
-        res = requests.post(url, json=payload, headers=headers)
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
         return res.json()
     except Exception as e:
         print(f"Failed to send message to {to_number}: {e}")
@@ -115,26 +125,26 @@ def download_media(media_id):
     try:
         res = requests.get(
             f"https://graph.facebook.com/v20.0/{media_id}",
-            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
+            timeout=10
         )
         url = res.json().get("url")
         if not url:
             return None
-        file_res = requests.get(url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
+        file_res = requests.get(url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, timeout=15)
         return file_res.content
     except Exception as e:
         print(f"Media download error: {e}")
         return None
 
 def transcribe_audio_groq(audio_id):
-    """Groq Whisper audio transcription with auto-language detection"""
+    """Groq Whisper audio transcription with auto-detected language"""
     try:
         audio_content = download_media(audio_id)
         if not audio_content:
             return None
 
         files = {"file": ("audio.ogg", audio_content, "audio/ogg")}
-        # Language parameter removed so Whisper auto-detects English vs Hindi/Hinglish
         data = {"model": "whisper-large-v3", "response_format": "text"}
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
         
@@ -142,7 +152,8 @@ def transcribe_audio_groq(audio_id):
             "https://api.groq.com/openai/v1/audio/transcriptions",
             headers=headers,
             files=files,
-            data=data
+            data=data,
+            timeout=20
         )
         return whisper_res.text.strip()
     except Exception as e:
@@ -159,14 +170,12 @@ def verify_document_groq(image_id):
         base64_image = base64.b64encode(image_content).decode("utf-8")
 
         prompt = (
-            "You are a strict Hotel Reception Document Verification Assistant. "
+            "You are a Hotel Document Verification Assistant. "
             "Examine this image carefully. "
-            "Determine if this is a valid Indian Government ID Proof (Driving License, Passport, or Voter ID). "
-            "Do NOT output any personal identification numbers. "
-            "If YES, respond strictly in this format: "
-            "VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
-            "If NO (blurry, meme, selfie, random object, invalid doc), respond: "
-            "INVALID | REASON: <short reason>"
+            "Determine if this is a valid Indian Government ID Proof (Aadhaar, Driving License, Passport, or Voter ID). "
+            "Do NOT print any numeric identity numbers. "
+            "If YES, respond strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
+            "If NO, respond: INVALID | REASON: <short reason>"
         )
 
         headers = {
@@ -187,7 +196,7 @@ def verify_document_groq(image_id):
             "temperature": 0.1
         }
 
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
         return res.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"Document verification error: {e}")
@@ -210,7 +219,7 @@ def ask_cohere(user_message, sender_phone):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers)
+        response = requests.post(url, json=payload, headers=headers, timeout=12)
         res_data = response.json()
         reply_text = res_data.get("text", "Namaste! How may I assist you?")
         
@@ -253,7 +262,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
     
-    # Redundant tag sanitization
+    # Strip any stray bracketed leak
     bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
     send_whatsapp_message(sender_phone, bot_reply)
 
@@ -290,13 +299,18 @@ def handle_webhook():
         message = messages[0]
         sender_phone = message.get("from")
         msg_type = message.get("type")
+        message_id = message.get("id")
+
+        # INSTANT READ RECEIPT: Green/Blue tick activate karega
+        if message_id:
+            mark_message_as_read(message_id)
 
         # 1. TEXT
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. VOICE NOTES (AUTO-DETECT LANGUAGE)
+        # 2. VOICE NOTES
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -327,7 +341,7 @@ def handle_webhook():
             else:
                 send_whatsapp_message(
                     sender_phone,
-                    "Please share a clear photo of a valid Government ID proof (Driving License, Passport, or Voter ID)."
+                    "Please share a clear photo of a valid Government ID proof (Aadhaar, Driving License, Passport, or Voter ID)."
                 )
 
         # 4. LOCATION NAVIGATION

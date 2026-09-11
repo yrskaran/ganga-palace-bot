@@ -16,7 +16,7 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Alert Numbers
+# Separate Alert Numbers
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
 STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
@@ -35,71 +35,50 @@ chat_histories = {}
 # 2. MASTER SYSTEM PROMPT
 # ==========================================
 SYSTEM_PROMPT = f"""
-Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional AI Receptionist aur Local Concierge hain.
+Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional WhatsApp AI Receptionist hain.
 
-MUKHYA NIYAM:
+PARAMOUNT INSTRUCTION - ULTRA CRISP REPLIES:
+- Hamesha 1 ya 2 short sentences me direct aur polite reply karein.
+- WhatsApp chat hai; essay, lambe paragraph, guide, unprompted lists, ya faltu ke explanations BILKUL MAT DEIN.
 
-1. COMPLETE & EXCLUSIVE PURE VEGETARIAN MENU:
-   Kewal aur kewal niche diye gaye items hi uplabdh hain:
-   - Chai:
-     * Normal Chai: Rs. 30
-     * Masala Chai: Rs. 40
-   - Roti/Breads:
-     * Tandoori Roti: Rs. 15
-     * Butter Roti: Rs. 20
-     * Butter Naan: Rs. 45
-   - Paneer Dishes:
-     * Paneer Butter Masala: Rs. 220
-     * Matar Paneer: Rs. 200
-     * Kadhai Paneer: Rs. 230
-     * Shahi Paneer: Rs. 220
-   - Dal:
-     * Dal Makhani: Rs. 180
-     * Dal Tadka: Rs. 150
-   - Rice:
-     * Plain Rice: Rs. 100
-     * Veg Fried Rice: Rs. 150
-     * Jeera Rice: Rs. 120
-   - Extras:
-     * Mineral Water: Rs. 20
-
-   *NOTE:* Agar guest is menu ke bahar ka koi item mange, toh kripya vinamrata se batayein ki kewal upar diye gaye shuddh shakahari vyanjan hi uplabdh hain.
+1. COMPLETE & EXCLUSIVE MENU (PURE VEG ONLY):
+   Kewal aur kewal yahi items available hain:
+   - Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
+   - Roti/Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
+   - Paneer Dishes: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
+   - Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
+   - Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
+   - Extras: Mineral Water (Rs. 20)
 
 2. FOOD ORDER RULES:
-   - AMBIGUOUS DISH: Agar guest sirf 'paneer', 'daal', ya 'chai' bole, toh apne mann se choose na karein. Pehle unse option poochein (jaise Paneer Butter Masala, Matar Paneer, Kadhai Paneer, Shahi Paneer).
-   - MANDATORY ROOM NUMBER: Bina Room Number ke food order confirm na karein.
-   - Order confirm hone par aakhiri me ye exact tag lagayein:
+   - Generic dish (jaise sirf 'paneer' ya 'daal') ho toh 1 line me options poochein.
+   - Room number maangna zaroori hai.
+   - Dono final hone par aakhiri me exact tag lagayein:
      [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
 3. STAFF & HOUSEKEEPING REQUESTS:
-   - Safai, extra towel, blanket, ya luggage ke liye pehle Room Number poochein.
-   - Confirm hone par aakhiri me ye tag lagayein:
+   - Safai, extra towel, blanket ya luggage ke liye room number maangein.
+   - Confirm hone par aakhiri me exact tag lagayein:
      [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-4. CHECK-IN / DOCUMENT RULES:
-   - Agar guest documents bhejne ya check-in ki baat kare:
-     * Room number KABHI MAT MAANGO.
+4. CHECK-IN / ID GUIDANCE (STRICT 1-LINE RESPONSE):
+   - Jab guest documents upload karne ya check-in ki baat kare:
+     * Room number KABHI MAT MAANGO (room arrival ke baad milta hai).
      * Koi bhi [CHECKIN_ALERT] tag message me mat likho.
-     * Response Language:
-       - English me ho toh strictly English: "Yes, certainly! Please share clear photos of valid Govt ID proofs (such as Passport, Driving License, or Voter ID) for all adult guests right here."
-       - Hindi/Hinglish me ho: "Ji bilkul! Aap sabhi adult guests ke Govt ID Proof ki saaf photo yahan send kar dijiye.
+     * IF ENGLISH: "Yes, please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
+     * IF HINDI/HINGLISH: "Ji bilkul, aap sabhi guests ke valid ID proof (Aadhaar, Driving License, ya Passport) ki saaf photo yahan bhej dijiye."
 
-5. LOCAL TOURIST GUIDANCE:
-   - Har Ki Pauri Sandhya Aarti: 5:15 PM tak pahunchne ki salah dein.
-   - Mansa Devi / Chandi Devi Ropeway: Subah 7:00 AM se open rehta hai.
-   - Local Food: Mohan Ji Puri Wale aur Pandit Sevaram Doodh Jalebi.
-
-6. LANGUAGE & TONE RULES:
-   - IF USER SPEAKS ENGLISH: Reply in crisp, polite English.
-   - IF USER SPEAKS HINDI / HINGLISH: Reply in polite Hindi / Hinglish.
-   - Tone hamesha respectful aur hospitable rakhein.
+5. STRICT LANGUAGE MIRRORING:
+   - User English me bole -> Reply 100% in concise English.
+   - User Hindi/Hinglish me bole -> Reply in courteous Hindi/Hinglish.
+   - Tone hamesha respectful aur crisp rakhein.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS & BACKGROUND THREADS
 # ==========================================
 def keep_awake_ping():
-    """Render ko sleep mode me jane se rokne ke liye auto self-ping"""
+    """Render ko sleep mode me jane se rokne ke liye auto ping"""
     time.sleep(30)
     while True:
         try:
@@ -180,7 +159,7 @@ def verify_document_groq(image_id):
         prompt = (
             "You are a strict Hotel Reception Document Verification Assistant. "
             "Examine this image carefully. "
-            "Determine if this is a valid Indian Government ID Proof (Aadhaar Card, Driving License, Passport, or Voter ID). "
+            "Determine if this is a valid Indian Government ID Proof (Driving License, Passport, or Voter ID). "
             "If YES, respond strictly in this format: "
             "VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
             "If NO (blurry, meme, selfie, random object, invalid doc), respond: "
@@ -212,7 +191,7 @@ def verify_document_groq(image_id):
         return None
 
 def ask_cohere(user_message, sender_phone):
-    """Cohere API Chatbot reply"""
+    """Cohere API Chatbot reply with tight temperature"""
     history = chat_histories.get(sender_phone, [])
     
     url = "https://api.cohere.ai/v1/chat"
@@ -224,7 +203,7 @@ def ask_cohere(user_message, sender_phone):
         "message": user_message,
         "preamble": SYSTEM_PROMPT,
         "chat_history": history,
-        "temperature": 0.2
+        "temperature": 0.1
     }
     
     try:
@@ -239,10 +218,10 @@ def ask_cohere(user_message, sender_phone):
         return reply_text
     except Exception as e:
         print(f"Cohere error: {e}")
-        return "Namaste! Hamari service me thodi takneeki samasya aa rahi hai."
+        return "Namaste! Hamari service me takneeki samasya aa rahi hai, kripya thodi der baad message karein."
 
 def process_and_reply(user_text, sender_phone):
-    """Order, service requests aur general chat router"""
+    """Order, service requests aur general chat routing"""
     bot_reply = ask_cohere(user_text, sender_phone)
     
     # 1. Kitchen Alert
@@ -254,7 +233,7 @@ def process_and_reply(user_text, sender_phone):
             f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
             f"📋 *Details:* {order_details}\n"
             f"📞 *Guest Contact:* +{sender_phone}\n\n"
-            f"⚡ Kripya order turant deliver karein!"
+            f"⚡ Order deliver karein!"
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
 
@@ -264,13 +243,14 @@ def process_and_reply(user_text, sender_phone):
         bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
         
         staff_msg = (
-            f"🛎️ *STAFF / HOUSEKEEPING ALERT*\n\n"
+            f"🛎️ *STAFF ALERT*\n\n"
             f"📌 *Details:* {service_details}\n"
             f"📞 *Guest Contact:* +{sender_phone}\n\n"
-            f"⚡ Kripya turant attend karein!"
+            f"⚡ Turant attend karein!"
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
     
+    # Extra safety cleanup
     bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
     send_whatsapp_message(sender_phone, bot_reply)
 
@@ -320,7 +300,7 @@ def handle_webhook():
             if transcribed_text:
                 process_and_reply(transcribed_text, sender_phone)
             else:
-                send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf nahi tha. Kripya dobara bhejein.")
+                send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf nahi sunai diya. Kripya dobara bhejein.")
 
         # 3. DOCUMENT / ID PHOTO VERIFICATION (GROQ VISION)
         elif msg_type == "image":
@@ -330,23 +310,21 @@ def handle_webhook():
             if verification_result and verification_result.startswith("VALID"):
                 send_whatsapp_message(
                     sender_phone,
-                    f"Dhanyawad! 🙏 Aapka ID Proof successfully verify ho gaya hai.\n\n"
-                    f"Aapka fast check-in register update kar diya gaya hai. Hotel aane par aapko kamre ki chabi turant mil jayegi."
+                    "Dhanyawad! 🙏 ID proof verify ho gaya hai. Check-in register update kar diya gaya hai aur arrival par chabi ready milegi."
                 )
 
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
                     f"📋 *Doc Details:* {verification_result}\n"
                     f"📞 *Guest Contact:* +{sender_phone}\n\n"
-                    f"✅ Pre-check-in verified. Entry register taiyar rakhein!"
+                    f"✅ Pre-check-in entry verified."
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
 
             else:
                 send_whatsapp_message(
                     sender_phone,
-                    "Kshama karein, yeh valid ya saaf Government ID Proof nahi lag raha hai. "
-                    "Kripya Aadhaar, Driving License ya Passport ki saaf photo bhejein taaki check-in proceed ho sake."
+                    "Kshama karein, yeh valid ID proof nahi lag raha hai. Kripya Driving License, Passport ya Voter ID ki saaf photo bhejein."
                 )
 
         # 4. LOCATION SHARING (DIRECT NAVIGATION LINK)
@@ -358,11 +336,9 @@ def handle_webhook():
             maps_route_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={HOTEL_LAT},{HOTEL_LON}"
             
             nav_reply = (
-                f"Namaskar! 🙏 Aapki live location mil gayi hai.\n\n"
-                f"📍 *Hotel Navigation Route Link:*\n"
-                f"{maps_route_url}\n\n"
-                f"🚗 *Directions:*\n"
-                f"Upar diye gaye Google Maps link par click karke rasta follow karein ya driver ko yeh route dikha dein."
+                f"Namaskar! 🙏 Live location receive ho gayi hai.\n\n"
+                f"📍 *Hotel Route Link:*\n{maps_route_url}\n\n"
+                f"Is link par click karke aap seedha Google Maps route follow kar sakte hain."
             )
             send_whatsapp_message(sender_phone, nav_reply)
 

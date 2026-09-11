@@ -135,10 +135,13 @@ def verify_document_groq(image_id):
 
         prompt = (
             "You are a Hotel Document Verification Assistant. "
-            "Determine if this is a valid Indian Government ID Proof (Aadhaar, Driving License, Passport, or Voter ID). "
-            "Do NOT print any numeric identity numbers. "
-            "If YES, respond strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
-            "If NO, respond: INVALID | REASON: <short reason>"
+            "Examine this image carefully. "
+            "Determine if this is a valid Indian Government ID Proof (Aadhaar Card, e-Aadhaar, Driving License, Passport, or Voter ID). "
+            "Do NOT output any personal numeric identification numbers. "
+            "If YES, respond strictly in this exact format: "
+            "VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
+            "If NO, respond strictly in this exact format: "
+            "INVALID | REASON: <blurry/unreadable/not_govt_id>"
         )
 
         headers = {
@@ -159,7 +162,12 @@ def verify_document_groq(image_id):
             "temperature": 0.1
         }
 
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=25
+        )
         return res.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         print(f"Document verification error: {e}")
@@ -174,6 +182,7 @@ def ask_cohere(user_message, sender_phone):
         "Content-Type": "application/json"
     }
     payload = {
+        "model": "command-r",
         "message": user_message,
         "preamble": get_system_prompt(),
         "chat_history": history,
@@ -181,7 +190,7 @@ def ask_cohere(user_message, sender_phone):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=12)
+        response = requests.post(url, json=payload, headers=headers, timeout=50)
         res_data = response.json()
         reply_text = res_data.get("text", "Namaste! How may I assist you?")
         
@@ -264,12 +273,12 @@ def handle_webhook():
         if message_id:
             mark_message_as_read(message_id)
 
-        # Text Handling
+        # 1. Text Message
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # Voice Note Handling
+        # 2. Voice Notes
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -278,7 +287,7 @@ def handle_webhook():
             else:
                 send_whatsapp_message(sender_phone, "Voice note clear nahi tha, please try again.")
 
-        # Document Verification
+        # 3. ID Document Verification (Groq Vision)
         elif msg_type == "image":
             image_id = message.get("image", {}).get("id")
             verification_result = verify_document_groq(image_id)
@@ -286,7 +295,7 @@ def handle_webhook():
             if verification_result and verification_result.startswith("VALID"):
                 send_whatsapp_message(
                     sender_phone,
-                    "Thank you! 🙏 Your ID document has been verified. Pre-check-in register has been updated."
+                    "Thank you! 🙏 Aapka ID document verify ho gaya hai. Pre-check-in register update kar diya gaya hai."
                 )
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
@@ -295,13 +304,24 @@ def handle_webhook():
                     f"✅ Pre-check-in verified."
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
+
+            elif verification_result and verification_result.startswith("INVALID"):
+                reason = verification_result.split("REASON:")[1].strip().lower() if "REASON:" in verification_result else ""
+                
+                if any(k in reason for k in ["blur", "unreadable", "clear", "quality", "dark"]):
+                    reply_msg = "Aapki bheji gayi photo clear nahi hai ya text padha nahi ja raha. Kripya saaf photo dobara bhejein."
+                else:
+                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Aadhaar, Driving License, Passport ya Voter ID share karein."
+
+                send_whatsapp_message(sender_phone, reply_msg)
+
             else:
                 send_whatsapp_message(
                     sender_phone,
-                    "Please share a clear photo of a valid Government ID proof (Aadhaar, Driving License, Passport, or Voter ID)."
+                    "Photo verify nahi ho paayi. Kripya saaf photo dobara send karein."
                 )
 
-        # Location Navigation
+        # 4. Location Directions
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")

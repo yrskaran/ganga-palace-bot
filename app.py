@@ -25,6 +25,7 @@ HOTEL_LON = "78.1700"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 chat_histories = {}
+processed_msg_ids = set()
 
 # ==========================================
 # 2. FILE-BASED SYSTEM PROMPT LOADER
@@ -69,9 +70,7 @@ def mark_message_as_read(message_id):
         print(f"[READ TICK ERROR]: {e}", flush=True)
 
 def send_whatsapp_message(to_number, text):
-    # Clean phone number (strip spaces, +, hyphens)
     clean_number = re.sub(r"\D", "", str(to_number))
-    
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -258,50 +257,14 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = "Ji, staff ko request bhej di gayi hai."
     
-    # Strip any rogue bracket tags
     bot_reply = re.sub(r"\[.*?\]", "", bot_reply).strip()
     
     if bot_reply:
         send_whatsapp_message(sender_phone, bot_reply)
 
-# ==========================================
-# 4. WEBHOOK & HEALTH ENDPOINTS
-# ==========================================
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "active", "service": "hotel-bot"}), 200
-
-@app.route("/webhook", methods=["GET"])
-def verify_webhook():
-    mode = request.args.get("hub.mode")
-    token = request.args.get("hub.verify_token")
-    challenge = request.args.get("hub.challenge")
-    
-    if mode == "subscribe" and token == VERIFY_TOKEN:
-        return challenge, 200
-    return "Forbidden", 403
-
-@app.route("/webhook", methods=["POST"])
-def handle_webhook():
-    data = request.get_json()
-    
+def handle_incoming_async(message, sender_phone, msg_type):
+    """Background processor to prevent Meta Webhook duplicate retries"""
     try:
-        entry = data.get("entry", [])[0]
-        changes = entry.get("changes", [])[0]
-        value = changes.get("value", {})
-        messages = value.get("messages", [])
-        
-        if not messages:
-            return jsonify({"status": "ignored"}), 200
-            
-        message = messages[0]
-        sender_phone = message.get("from")
-        msg_type = message.get("type")
-        message_id = message.get("id")
-
-        if message_id:
-            mark_message_as_read(message_id)
-
         # 1. Text Message
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
@@ -360,6 +323,62 @@ def handle_webhook():
                 f"Click the link above to view directions on Google Maps."
             )
             send_whatsapp_message(sender_phone, nav_reply)
+            
+    except Exception as e:
+        print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
+
+# ==========================================
+# 4. WEBHOOK & HEALTH ENDPOINTS
+# ==========================================
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "active", "service": "hotel-bot"}), 200
+
+@app.route("/webhook", methods=["GET"])
+def verify_webhook():
+    mode = request.args.get("hub.mode")
+    token = request.args.get("hub.verify_token")
+    challenge = request.args.get("hub.challenge")
+    
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        return challenge, 200
+    return "Forbidden", 403
+
+@app.route("/webhook", methods=["POST"])
+def handle_webhook():
+    data = request.get_json()
+    
+    try:
+        entry = data.get("entry", [])[0]
+        changes = entry.get("changes", [])[0]
+        value = changes.get("value", {})
+        messages = value.get("messages", [])
+        
+        if not messages:
+            return jsonify({"status": "ignored"}), 200
+            
+        message = messages[0]
+        sender_phone = message.get("from")
+        msg_type = message.get("type")
+        message_id = message.get("id")
+
+        # Dedup: Agar yahi message_id pehle process ho chuka hai toh drop karein
+        if message_id in processed_msg_ids:
+            return jsonify({"status": "already_processed"}), 200
+            
+        if message_id:
+            processed_msg_ids.add(message_id)
+            # Cache size limit (keep last 500 messages)
+            if len(processed_msg_ids) > 500:
+                processed_msg_ids.pop()
+            mark_message_as_read(message_id)
+
+        # Process message in background thread to avoid Meta 15s timeout
+        threading.Thread(
+            target=handle_incoming_async,
+            args=(message, sender_phone, msg_type),
+            daemon=True
+        ).start()
 
     except Exception as e:
         print(f"[WEBHOOK PROCESS ERROR]: {e}", flush=True)

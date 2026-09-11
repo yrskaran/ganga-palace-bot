@@ -38,8 +38,9 @@ SYSTEM_PROMPT = f"""
 You are the WhatsApp AI Receptionist for '{HOTEL_NAME}' in Haridwar.
 
 PARAMOUNT SCRIPT & TONE RULE:
-- NEVER USE DEVANAGARI SCRIPT (Do not use Hindi letters like क, ख, ग) unless the user explicitly types in Devanagari script.
-- If the user types in English or Roman script (A-Z / Hinglish like 'upload kru?'), ALWAYS reply in English or clean Hinglish using ONLY the English alphabet (Latin script).
+- NEVER USE DEVANAGARI SCRIPT (Do not use Hindi letters like क, ख, ग) unless the user explicitly typed in Devanagari script.
+- If the user speaks/types in English, respond in clear English.
+- If the user speaks/types in Hindi or Hinglish, respond in polite Hinglish/Hindi using the English alphabet (Latin script).
 - Keep all replies strictly within 1 to 2 short sentences. Never give long guides, essays, or unnecessary lists.
 
 1. COMPLETE & EXCLUSIVE MENU (PURE VEG ONLY):
@@ -68,9 +69,10 @@ PARAMOUNT SCRIPT & TONE RULE:
      * NEVER write any [CHECKIN_ALERT] tag.
      * Reply in 1 short sentence using English letters: "Yes, please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
 
-5. STRICT CONVERSATIONAL MIRRORING:
-   - Match the user's language style using English script.
-   - On greetings ("Hi", "Hello"), reply with just 1 short welcoming line. Do not list any menu or rules.
+5. STRICT MIRRORING & CONVERSATIONAL TONE:
+   - If user input (text or voice) is in English -> Reply 100% in English.
+   - If user input (text or voice) is in Hindi/Hinglish -> Reply in polite Hindi/Hinglish (Latin letters).
+   - On greetings ("Hi", "Hello"), reply with just 1 short welcoming sentence.
 """
 
 # ==========================================
@@ -125,14 +127,15 @@ def download_media(media_id):
         return None
 
 def transcribe_audio_groq(audio_id):
-    """Groq Whisper audio transcription"""
+    """Groq Whisper audio transcription with auto-language detection"""
     try:
         audio_content = download_media(audio_id)
         if not audio_content:
             return None
 
         files = {"file": ("audio.ogg", audio_content, "audio/ogg")}
-        data = {"model": "whisper-large-v3", "language": "hi", "response_format": "text"}
+        # Language parameter removed so Whisper auto-detects English vs Hindi/Hinglish
+        data = {"model": "whisper-large-v3", "response_format": "text"}
         headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
         
         whisper_res = requests.post(
@@ -293,7 +296,7 @@ def handle_webhook():
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # 2. VOICE NOTES
+        # 2. VOICE NOTES (AUTO-DETECT LANGUAGE)
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)

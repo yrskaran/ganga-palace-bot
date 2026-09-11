@@ -12,11 +12,11 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 
-# Separate Alert Numbers
+# Alert Numbers (Kitchen & Staff)
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
 STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
-# Hotel Info & Coordinates (Haridwar)
+# Hotel Information (Haridwar)
 HOTEL_NAME = "Hotel Ganga View"
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
@@ -25,39 +25,43 @@ HOTEL_LON = "78.1700"
 chat_histories = {}
 
 # ==========================================
-# 2. MASTER SYSTEM PROMPT
+# 2. MASTER SYSTEM PROMPT (STRICT RULES)
 # ==========================================
 SYSTEM_PROMPT = f"""
-Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional AI Receptionist aur Local Tourist Guide hain.
+Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional AI Receptionist aur Local Concierge hain.
 
-MUKHYA NIYAM & KARYA:
-1. PURE VEGETARIAN ONLY (HARIDWAR POLICY):
-   - Haridwar me non-veg strictly mana hai. Keval shuddh satvik shakahari bhojan uplabdh hai.
+MUKHYA NIYAM (STRICT RULES):
+
+1. STRICTLY PURE VEGETARIAN (HARIDWAR POLICY):
+   - Haridwar me non-veg strictly mana hai. Keval shuddh shakahari/satvik bhojan uplabdh hai.
    - Menu Options: Chai (₹30), Masala Chai (₹40), Veg Fried Rice (₹150), Dal Makhani (₹180), Paneer Butter Masala (₹220), Tandoori Roti (₹15), Mineral Water (₹20).
 
-2. KITCHEN ORDER CONFIRMATION TAG:
-   - Jab guest room number aur food order confirm kare:
-     End me ye tag likhein: [KITCHEN_ALERT: Room <room_number> | Items: <order_items>]
+2. FOOD ORDER RULES & ALERT:
+   - Jab koi khana/peena order kare, PEHLE UNKA ROOM NUMBER POOCHEIN agar unhone nahi bataya hai.
+   - BINA ROOM NUMBER KE ORDER CONFIRM NA KAREIN.
+   - Room number milne par confirm karein aur message ke aakhiri me ye exact tag lagayein:
+     [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
-3. STAFF SERVICE ALERT TAG:
-   - Jab guest housekeeping, cleaning, extra towel/blanket, luggage help, ya checkout/staff assistance maange:
-     End me ye tag likhein: [STAFF_ALERT: Room <room_number> | Service: <request_details>]
+3. STAFF & HOUSEKEEPING REQUESTS (MANDATORY ROOM NUMBER):
+   - Agar guest towel, pani, safai (cleaning), luggage, blanket ya room service maangta hai:
+     * AGAR ROOM NUMBER NAHI BATAYA HAI: Toh alert trigger NA karein. Pehle vinamrata se room number maangein: "Ji bilkul, kripya apna Room Number bata dijiye taaki mai staff ko turant bhej sakun."
+     * JAB ROOM NUMBER MIL JAYE: Tab confirm karein aur message ke aakhiri me ye exact tag lagayein:
+       [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-4. LOCAL TOURIST GUIDE:
-   - Har Ki Pauri Sandhya Aarti: 5:15 PM tak pahunchein.
-   - Mansa Devi & Chandi Devi Ropeway: Subah 7:00 AM se open.
-   - Food Outlets: Mohan Ji Puri Wale aur Pandit Sevaram Doodh Jalebi.
-   - Local Transport: Battery rickshaw (E-rickshaw) suggest karein.
+4. LOCAL TOURIST GUIDANCE:
+   - Har Ki Pauri: Sandhya Aarti ke liye 5:15 PM tak pahunchne ki salah dein.
+   - Mansa Devi / Chandi Devi Ropeway (Udan Khatola): Subah 7:00 AM se open rehta hai.
+   - Local Food: Mohan Ji Puri Wale (Har Ki Pauri) aur Pandit Sevaram (Doodh Jalebi).
 
 5. TONE:
-   - Namaskar sahit aadarpoorvak Hinglish/Hindi me crisp jawab dein.
+   - Namaskar/Pranaam sahit shisht Hinglish ya Hindi me crisp aur helpful jawab dein.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS
 # ==========================================
 def send_whatsapp_message(to_number, text):
-    """WhatsApp Cloud API se message bhejne ka function"""
+    """WhatsApp Cloud API se message bhejne ka helper"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -73,7 +77,7 @@ def send_whatsapp_message(to_number, text):
         res = requests.post(url, json=payload, headers=headers)
         return res.json()
     except Exception as e:
-        print(f"Failed to send message: {e}")
+        print(f"Failed to send message to {to_number}: {e}")
         return None
 
 def ask_cohere(user_message, sender_phone):
@@ -90,7 +94,7 @@ def ask_cohere(user_message, sender_phone):
         "message": user_message,
         "preamble": SYSTEM_PROMPT,
         "chat_history": history,
-        "temperature": 0.3
+        "temperature": 0.2
     }
     
     try:
@@ -98,15 +102,15 @@ def ask_cohere(user_message, sender_phone):
         res_data = response.json()
         reply_text = res_data.get("text", "Kshama karein, mai abhi samajh nahi paya.")
         
-        # History update
+        # Update rolling chat history (last 6 messages)
         history.append({"role": "USER", "message": user_message})
         history.append({"role": "CHATBOT", "message": reply_text})
         chat_histories[sender_phone] = history[-6:]
         
         return reply_text
     except Exception as e:
-        print(f"Cohere error: {e}")
-        return "Namaste! Hamari service me thodi samasya aa rahi hai, kripya thodi der me koshish karein."
+        print(f"Cohere API error: {e}")
+        return "Namaste! Hamari service me thodi takneeki samasya aa rahi hai, kripya thodi der me message karein."
 
 # ==========================================
 # 4. WEBHOOK ROUTES
@@ -139,7 +143,7 @@ def handle_webhook():
         msg_type = message.get("type")
 
         # --------------------------------------------------
-        # FLOW 1: TEXT MESSAGES (FOOD / STAFF / CHAT)
+        # FLOW 1: TEXT MESSAGES (ORDERS, STAFF, CHAT)
         # --------------------------------------------------
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
@@ -153,8 +157,8 @@ def handle_webhook():
                 kitchen_msg = (
                     f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
                     f"📋 *Details:* {order_details}\n"
-                    f"📞 *Guest Phone:* +{sender_phone}\n\n"
-                    f"⚡ Kripya turant taiyar karke bhejwayein!"
+                    f"📞 *Guest Contact:* +{sender_phone}\n\n"
+                    f"⚡ Kripya order turant taiyar karke deliver karein!"
                 )
                 send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
 
@@ -164,31 +168,37 @@ def handle_webhook():
                 bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
                 
                 staff_msg = (
-                    f"🛎️ *HOTEL STAFF / HOUSEKEEPING ALERT*\n\n"
-                    f"📌 *Task:* {service_details}\n"
+                    f"🛎️ *STAFF / HOUSEKEEPING ALERT*\n\n"
+                    f"📌 *Details:* {service_details}\n"
                     f"📞 *Guest Contact:* +{sender_phone}\n\n"
-                    f"⚡ Kripya turant attend karein!"
+                    f"⚡ Kripya kamre me turant sahayata bhejein!"
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_msg)
             
-            # Guest ko clean reply bhejo
+            # Send clean reply to the guest
             send_whatsapp_message(sender_phone, bot_reply)
 
         # --------------------------------------------------
-        # FLOW 2: LOCATION SHARING & DIRECTIONS
+        # FLOW 2: LOCATION SHARING & ACCURATE NAVIGATION
         # --------------------------------------------------
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")
             user_lon = loc_data.get("longitude")
             
+            # Accurate dynamic turn-by-turn navigation link
             maps_route_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={HOTEL_LAT},{HOTEL_LON}"
             
+            # Context without hardcoding imaginary chowks
             nav_prompt = (
-                f"[SYSTEM: Guest ne apni live location share ki hai (Lat: {user_lat}, Lon: {user_lon}). "
-                f"Google Maps Route Link: {maps_route_url}. "
-                f"Guest ko polite tone me route link provide karein, "
-                f"aur Haridwar ke Devpura Chowk / Valmiki Chowk ke hisab se battery rickshaw ki advice dein.]"
+                f"[SYSTEM EVENT: Guest ne apni live GPS location bheji hai]\n"
+                f"- Guest Coordinates: Lat {user_lat}, Lon {user_lon}\n"
+                f"- Destination Hotel: {HOTEL_NAME}\n"
+                f"- Dynamic Route Link: {maps_route_url}\n\n"
+                f"INSTRUCTIONS:\n"
+                f"1. Apne mann se koi landmark (jaise Devpura Chowk, Valmiki Chowk ya Har Ki Pauri) mat assume karo.\n"
+                f"2. Guest ko batayein ki unki location receive ho gayi hai aur direct hotel navigation link provide karein.\n"
+                f"3. Salah dein ki link par click karke Google Maps route follow karein ya apne auto/cab driver ko yeh route dikha dein."
             )
             bot_reply = ask_cohere(nav_prompt, sender_phone)
             send_whatsapp_message(sender_phone, bot_reply)

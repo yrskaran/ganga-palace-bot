@@ -30,7 +30,7 @@ chat_histories = {}
 SYSTEM_PROMPT = f"""
 Aap '{HOTEL_NAME}' (Haridwar) ke polite aur professional AI Receptionist aur Local Concierge hain.
 
-MUKHYA NIYAM (STRICT RULES):
+MUKHYA NIYAM:
 
 1. STRICTLY PURE VEGETARIAN (HARIDWAR POLICY):
    - Haridwar me non-veg strictly mana hai. Keval shuddh shakahari/satvik bhojan uplabdh hai.
@@ -44,7 +44,7 @@ MUKHYA NIYAM (STRICT RULES):
 
 3. STAFF & HOUSEKEEPING REQUESTS (MANDATORY ROOM NUMBER):
    - Agar guest towel, pani, safai (cleaning), luggage, blanket ya room service maangta hai:
-     * AGAR ROOM NUMBER NAHI BATAYA HAI: Toh alert trigger NA karein. Pehle vinamrata se room number maangein: "Ji bilkul, kripya apna Room Number bata dijiye taaki mai staff ko turant bhej sakun."
+     * AGAR ROOM NUMBER NAHI BATAYA HAI: Toh alert tag trigger NA karein. Pehle vinamrata se room number maangein: "Ji bilkul, kripya apna Room Number bata dijiye taaki mai staff ko turant bhej sakun."
      * JAB ROOM NUMBER MIL JAYE: Tab confirm karein aur message ke aakhiri me ye exact tag lagayein:
        [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
@@ -102,7 +102,7 @@ def ask_cohere(user_message, sender_phone):
         res_data = response.json()
         reply_text = res_data.get("text", "Kshama karein, mai abhi samajh nahi paya.")
         
-        # Update rolling chat history (last 6 messages)
+        # Update rolling chat history
         history.append({"role": "USER", "message": user_message})
         history.append({"role": "CHATBOT", "message": reply_text})
         chat_histories[sender_phone] = history[-6:]
@@ -175,33 +175,29 @@ def handle_webhook():
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_msg)
             
-            # Send clean reply to the guest
             send_whatsapp_message(sender_phone, bot_reply)
 
         # --------------------------------------------------
-        # FLOW 2: LOCATION SHARING & ACCURATE NAVIGATION
+        # FLOW 2: LOCATION SHARING (DIRECT NAVIGATION, NO LLM)
         # --------------------------------------------------
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")
             user_lon = loc_data.get("longitude")
             
-            # Accurate dynamic turn-by-turn navigation link
             maps_route_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={HOTEL_LAT},{HOTEL_LON}"
             
-            # Context without hardcoding imaginary chowks
-            nav_prompt = (
-                f"[SYSTEM EVENT: Guest ne apni live GPS location bheji hai]\n"
-                f"- Guest Coordinates: Lat {user_lat}, Lon {user_lon}\n"
-                f"- Destination Hotel: {HOTEL_NAME}\n"
-                f"- Dynamic Route Link: {maps_route_url}\n\n"
-                f"INSTRUCTIONS:\n"
-                f"1. Apne mann se koi landmark (jaise Devpura Chowk, Valmiki Chowk ya Har Ki Pauri) mat assume karo.\n"
-                f"2. Guest ko batayein ki unki location receive ho gayi hai aur direct hotel navigation link provide karein.\n"
-                f"3. Salah dein ki link par click karke Google Maps route follow karein ya apne auto/cab driver ko yeh route dikha dein."
+            nav_reply = (
+                f"Namaskar! 🙏 Aapki live location receive ho gayi hai.\n\n"
+                f"📍 *Hotel Navigation Route Link:*\n"
+                f"{maps_route_url}\n\n"
+                f"🚗 *Directions:*\n"
+                f"Upar diye gaye Google Maps link par click karke aap seedha hotel ka rasta follow kar sakte hain, "
+                f"ya apne auto/cab driver ko yeh route dikha dijiye.\n\n"
+                f"Hotel pahunchne me koi pareshani ho toh humein batayein!"
             )
-            bot_reply = ask_cohere(nav_prompt, sender_phone)
-            send_whatsapp_message(sender_phone, bot_reply)
+            
+            send_whatsapp_message(sender_phone, nav_reply)
 
     except Exception as e:
         print(f"Error processing webhook: {e}")

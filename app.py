@@ -182,7 +182,6 @@ def ask_cohere(user_message, sender_phone):
         "Authorization": f"Bearer {COHERE_API_KEY}",
         "Content-Type": "application/json"
     }
-    # Clean payload compatible with standard Cohere chat endpoint
     payload = {
         "message": user_message,
         "preamble": get_system_prompt(),
@@ -191,7 +190,7 @@ def ask_cohere(user_message, sender_phone):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=40)
+        response = requests.post(url, json=payload, headers=headers, timeout=50)
         
         if response.status_code != 200:
             print(f"[COHERE HTTP FAIL] Status: {response.status_code} | Body: {response.text}", flush=True)
@@ -227,6 +226,9 @@ def process_and_reply(user_text, sender_phone):
             f"⚡ Order deliver karein!"
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
+        
+        if not bot_reply:
+            bot_reply = "Ji, aapka order note kar liya gaya hai aur jald room me deliver ho jayega."
 
     # Staff Alert Routing
     if "[STAFF_ALERT:" in bot_reply:
@@ -240,9 +242,14 @@ def process_and_reply(user_text, sender_phone):
             f"⚡ Turant attend karein!"
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
+
+        if not bot_reply:
+            bot_reply = "Ji, staff ko request bhej di gayi hai."
     
     bot_reply = bot_reply.replace("[CHECKIN_ALERT: Room <room_number> | Documents Shared]", "").strip()
-    send_whatsapp_message(sender_phone, bot_reply)
+    
+    if bot_reply:
+        send_whatsapp_message(sender_phone, bot_reply)
 
 # ==========================================
 # 4. WEBHOOK & HEALTH ENDPOINTS

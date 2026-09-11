@@ -1,131 +1,27 @@
-HOTEL DETAILS:
-Hotel Name: Hotel Ganga Palace
-Location: Haridwar, Uttarakhand
-Reception Contact: +91-7500058655
-Check-in Time: 12:00 PM
-Check-out Time: 11:00 AM
+HOTEL GENERAL INFO:
+- Name: Hotel Ganga View
+- Location: Haridwar (Near Ganga Ghat)
+- Check-in Time: 12:00 PM
+- Check-out Time: 11:00 AM
+- Parking: Free on-site parking available
+- Wi-Fi: High-speed complimentary Wi-Fi in all rooms
+- Distance to Har Ki Pauri: Approx 1.5 km (5-7 mins drive / e-rickshaw available)
 
-DISTANCE & CONNECTIVITY:
-- Har Ki Pauri: Lagbhag 1.5 km se 2 km (Auto/E-rickshaw se 5-10 minute ka rasta)
-- Haridwar Railway Station: Lagbhag 2 km
-- Haridwar Bus Stand (ISBT): Lagbhag 2 km
-- Local Conveyance: Hotel ke bahar 24 ghante E-rickshaw aur auto aasaani se mil jate hain.
+ROOM CATEGORIES & TARIFFS:
+- Deluxe Room (Non-AC): Rs. 1000 per night
+- Super Deluxe Room (AC): Rs. 1500 per night
+- Executive Ganga View Room (AC): Rs. 2200 per night
+- Family Suite (4 Bed AC): Rs. 3200 per night
 
-ROOM TYPES & TARIFF:
-- Deluxe AC Room: ₹1,800 per night
-- Super Deluxe AC Room: ₹2,600 per night
+RESTAURANT MENU (STRICTLY PURE VEGETARIAN):
+- Chai: Normal Chai (Rs. 30), Masala Chai (Rs. 40)
+- Breads: Tandoori Roti (Rs. 15), Butter Roti (Rs. 20), Butter Naan (Rs. 45)
+- Paneer: Paneer Butter Masala (Rs. 220), Matar Paneer (Rs. 200), Kadhai Paneer (Rs. 230), Shahi Paneer (Rs. 220)
+- Dal: Dal Makhani (Rs. 180), Dal Tadka (Rs. 150)
+- Rice: Plain Rice (Rs. 100), Veg Fried Rice (Rs. 150), Jeera Rice (Rs. 120)
+- Extras: Mineral Water (Rs. 20)
 
-ROOM AMENITIES:
-- Air Conditioning (AC)
-- Free High-Speed Wi-Fi
-- 24/7 Hot & Cold Running Water
-- Flat Screen TV with Cable Channels
-- Room Service Available
-- Daily Housekeeping
-- Parking Facility Available
-
-RESTAURANT FOOD MENU & RATES:
-
-MILK SHAKE & ICE CREAM:
-- Vanilla: ₹75
-- Strawberry: ₹75
-- Chocolate: ₹80
-- Butter Scotch: ₹80
-- Pista: ₹80
-- Spanish Delite: ₹80
-- Black Current: ₹80
-- Cherry: ₹80
-- Cashew: ₹90
-- Fig Fruit: ₹100
-- Kashmir: ₹85
-- Oman: ₹80
-- Saudi: ₹80
-- Thamam: ₹80
-- Mango: ₹80
-
-FALOODA:
-- Royal Falooda: ₹150
-- Pista Falooda: ₹160
-- Butter Falooda: ₹170
-- MGS Special Falooda: ₹210
-
-FRESH LIMES:
-- Fresh Limes: ₹20
-- Ginger Limes: ₹20
-- Mint Limes: ₹35
-- Soda Limes: ₹25
-- Grapes Limes: ₹30
-- Curry Leaves Limes: ₹35
-
-FRUITS SALAD:
-- Fruits Salad Pudding: ₹100
-- Dry Fruits Salad: ₹80
-
-MAIN COURSE & CURRY (VEG):
-- Dal Makhani: ₹120
-- Shahi Paneer: ₹150
-- Paneer Gravy: ₹130
-
-MUTTON (NON-VEG):
-- Mutton Chops: ₹190
-- Mutton Chukka: ₹130
-- Mutton Fry: ₹120
-- Mutton Boti Fry: ₹80
-
-FISH & PRAWNS (NON-VEG):
-- Fish Fry: ₹100
-- Fish Curry: ₹100
-- Fish 65: ₹100
-- Fish Masala: ₹120
-- Chilli Fish: ₹130
-- Prawns Fry: ₹170
-- Prawns Masala: ₹180
-- Prawns Curry: ₹180
-- Chilli Prawns: ₹180
-
-DINNER SPECIALS (PAROTTA):
-- Parotta: ₹15
-- Veechu Parotta: ₹25
-- Open Veechu Parotta: ₹25
-- Piece Parotta: ₹25
-- Veechu Egg Parotta: ₹70
-- Kothu Parotta: ₹70
-- Chicken Kaima Parotta: ₹170
-- Mutton Kaima Parotta: ₹180
-- Chicken Murtabak Parotta: ₹170
-- Mutton Murtabak Parotta: ₹180
-
-CHINESE (VEG & NON-VEG):
-- Veg Manchurian: ₹100
-- Gobi Manchurian: ₹90
-- Chilli Gobi Manchurian: ₹90
-- Paneer Manchurian: ₹120
-- Mushroom Gravy: ₹120
-- Mushroom Manchurian: ₹120
-- Crispy Veg: ₹120
-- Chilli Chicken: ₹120
-- Ginger Chicken: ₹140
-- Szechwan Chicken: ₹150
-- Dragon Chicken: ₹150
-
-FRIED RICE:
-- Veg Fried Rice: ₹80
-- Mushroom Fried Rice: ₹100
-- Paneer Fried Rice: ₹110
-- Schezwan Veg Fried Rice: ₹100
-- Egg Fried Rice: ₹90
-- Chicken Fried Rice: ₹120
-- Mixed Fried Rice: ₹140
-- Schezwan Chicken Fried Rice: ₹140
-- Taiwanese Fried Rice: ₹130
-
-NOODLES:
-- Veg Noodles: ₹80
-- Paneer Noodles: ₹110
-- Schezwan Veg Noodles: ₹100
-- Egg Noodles: ₹90
-- Chicken Noodles: ₹120
-
-roti: 10 rs
-butter roti:25 rs
-- Schezwan Chicken Noodles: ₹140
+LOCAL ATTRACTIONS & TIPS:
+- Har Ki Pauri Sandhya Aarti: Recommended arrival by 5:15 PM.
+- Mansa Devi & Chandi Devi Ropeway: Opens at 7:00 AM.
+- Famous Local Food: Mohan Ji Puri Wale, Pandit Sevaram Doodh Jalebi.

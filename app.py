@@ -1,5 +1,7 @@
 import os
 import base64
+import time
+import threading
 import requests
 from flask import Flask, request, jsonify
 
@@ -22,6 +24,9 @@ STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 HOTEL_NAME = "Hotel Ganga View"
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
+
+# Render external URL (Render automatically sets this, or add manually in env)
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 # In-memory chat history (per user)
 chat_histories = {}
@@ -71,8 +76,23 @@ MUKHYA NIYAM:
 """
 
 # ==========================================
-# 3. HELPER FUNCTIONS
+# 3. HELPER FUNCTIONS & BACKGROUND THREADS
 # ==========================================
+def keep_awake_ping():
+    """Render ko sleep mode me jane se rokne ke liye har 12 minute me self-ping"""
+    time.sleep(30)  # Boot up hone ka intazar
+    while True:
+        try:
+            if RENDER_EXTERNAL_URL:
+                ping_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
+                res = requests.get(ping_url, timeout=10)
+                print(f"[KEEP-ALIVE] Ping successful to {ping_url} | Status: {res.status_code}")
+            else:
+                print("[KEEP-ALIVE] RENDER_EXTERNAL_URL not set. Skipping self-ping.")
+        except Exception as e:
+            print(f"[KEEP-ALIVE] Ping failed: {e}")
+        time.sleep(12 * 60)  # Har 12 minute me ping karega
+
 def send_whatsapp_message(to_number, text):
     """WhatsApp Cloud API helper"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -237,8 +257,12 @@ def process_and_reply(user_text, sender_phone):
     send_whatsapp_message(sender_phone, bot_reply)
 
 # ==========================================
-# 4. WEBHOOK ROUTES
+# 4. WEBHOOK & HEALTH ROUTES
 # ==========================================
+@app.route("/health", methods=["GET"])
+def health_check():
+    return jsonify({"status": "active", "service": "hotel-bot"}), 200
+
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
     mode = request.args.get("hub.mode")
@@ -266,16 +290,12 @@ def handle_webhook():
         sender_phone = message.get("from")
         msg_type = message.get("type")
 
-        # --------------------------------------------------
         # 1. TEXT MESSAGES
-        # --------------------------------------------------
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
-        # --------------------------------------------------
         # 2. VOICE NOTES (GROQ WHISPER)
-        # --------------------------------------------------
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
@@ -284,27 +304,23 @@ def handle_webhook():
             else:
                 send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf nahi tha. Kripya dobara bhejein.")
 
-        # --------------------------------------------------
         # 3. DOCUMENT / ID PHOTO VERIFICATION (GROQ VISION)
-        # --------------------------------------------------
         elif msg_type == "image":
             image_id = message.get("image", {}).get("id")
             verification_result = verify_document_groq(image_id)
 
             if verification_result and verification_result.startswith("VALID"):
-                # Clean notification to Guest
                 send_whatsapp_message(
                     sender_phone,
                     f"Dhanyawad! 🙏 Aapka ID Proof successfully verify ho gaya hai.\n\n"
-                    f"Aapka fast check-in register humari taraf se update kar diya gaya hai. Hotel arrival par aapko kamre ki chabi turant mil jayegi."
+                    f"Aapka fast check-in register update kar diya gaya hai. Hotel aane par aapko kamre ki chabi turant mil jayegi."
                 )
 
-                # Alert to Staff / Front Desk (9058514488)
                 staff_doc_msg = (
                     f"🪪 *NEW GUEST ID VERIFIED*\n\n"
                     f"📋 *Doc Details:* {verification_result}\n"
                     f"📞 *Guest Contact:* +{sender_phone}\n\n"
-                    f"✅ Pre-check-in entry verified. Chabi taiyar rakhein!"
+                    f"✅ Pre-check-in entry verified. Chabi ready rakhein!"
                 )
                 send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
 
@@ -315,9 +331,7 @@ def handle_webhook():
                     "Kripya Aadhaar Card, Driving License ya Passport ki saaf photo bhejein taaki check-in proceed ho sake."
                 )
 
-        # --------------------------------------------------
         # 4. LOCATION SHARING (DIRECT ROUTE LINK)
-        # --------------------------------------------------
         elif msg_type == "location":
             loc_data = message.get("location", {})
             user_lat = loc_data.get("latitude")
@@ -339,5 +353,10 @@ def handle_webhook():
 
     return jsonify({"status": "success"}), 200
 
+# ==========================================
+# 5. START DAEMON THREAD & RUN APP
+# ==========================================
 if __name__ == "__main__":
+    # Self-ping background thread start
+    threading.Thread(target=keep_awake_ping, daemon=True).start()
     app.run(host="0.0.0.0", port=5000)

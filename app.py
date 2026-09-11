@@ -1,4 +1,5 @@
 import os
+import base64
 import requests
 from flask import Flask, request, jsonify
 
@@ -43,34 +44,37 @@ MUKHYA NIYAM:
 
 2. FOOD ORDER RULES (NO GUESSWORK):
    - AMBIGUOUS DISH CLARIFICATION:
-     * Agar guest sirf 'paneer' ya 'paneer ki sabji' bole, toh apne mann se koi dish select MAT karo.
+     * Agar guest sirf 'paneer' ya 'paneer ki sabji' bole, toh apne mann se dish select MAT karo.
      * Pehle options poochein: "Humare paas Paneer Butter Masala (₹220), Matar Paneer (₹200), Kadhai Paneer (₹230) aur Shahi Paneer (₹220) uplabdh hain. Aap kaun sa pasand karenge?"
-     * Yahi rule Dal (Makhani ya Tadka) aur Chai (Normal ya Masala) par bhi lagayein.
+     * Yahi rule Dal aur Chai par bhi lagayein.
    - MANDATORY ROOM NUMBER:
-     * Agar dish final hai par room number nahi bataya, toh pehle room number poochein: "Ji bilkul, kripya apna Room Number bata dijiye taaki order confirm kiya ja sake."
-     * Dish aur Room Number dono milne ke baad hi confirm karein aur aakhiri me ye exact tag lagayein:
+     * Agar room number nahi bataya, pehle room number poochein: "Ji bilkul, kripya apna Room Number bata dijiye taaki order confirm kiya ja sake."
+     * Final hone par end me ye tag lagayein:
        [KITCHEN_ALERT: Room <room_number> | Order: <items>]
 
 3. STAFF & HOUSEKEEPING REQUESTS:
-   - Towel, safai (cleaning), extra blanket, pani, ya luggage help ke liye:
-     * Agar Room Number nahi pata, toh alert mat bhejo. Pehle room number poochein: "Ji zaroor, kripya apna Room Number bata dijiye taaki mai staff ko bhej sakun."
-     * Room number milne par confirm karein aur aakhiri me ye exact tag lagayein:
-       [STAFF_ALERT: Room <room_number> | Task: <service_details>]
+   - Towel, safai, luggage, pani ke liye bina room number ke alert trigger na karein.
+   - Room number milne par end me ye tag lagayein:
+     [STAFF_ALERT: Room <room_number> | Task: <service_details>]
 
-4. LOCAL TOURIST GUIDANCE:
-   - Har Ki Pauri Sandhya Aarti: 5:15 PM tak pahunchne ki salah dein.
-   - Mansa Devi / Chandi Devi Ropeway: Subah 7:00 AM se open rehta hai.
-   - Local Food Spots: Mohan Ji Puri Wale aur Pandit Sevaram Doodh Jalebi.
+4. CHECK-IN / DOCUMENT GUIDANCE:
+   - Agar guest check-in formalities ya room entry ke baare me pooche, toh kahein:
+     "Fast check-in ke liye aap apna Govt ID Proof (Aadhaar, Driving License, ya Passport) ki saaf photo yahan WhatsApp par share kar sakte hain."
 
-5. TONE:
-   - Namaskar/Pranaam sahit shisht Hinglish ya Hindi me crisp jawab dein.
+5. LOCAL TOURIST GUIDANCE:
+   - Har Ki Pauri Aarti: 5:15 PM tak pahunchein.
+   - Mansa Devi / Chandi Devi Ropeway: 7:00 AM se open.
+   - Local Food: Mohan Ji Puri Wale aur Pandit Sevaram Doodh Jalebi.
+
+6. TONE:
+   - Namaskar sahit shisht Hinglish/Hindi me crisp jawab dein.
 """
 
 # ==========================================
 # 3. HELPER FUNCTIONS
 # ==========================================
 def send_whatsapp_message(to_number, text):
-    """WhatsApp Cloud API se message bhejne ka helper"""
+    """WhatsApp Cloud API helper"""
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -86,40 +90,35 @@ def send_whatsapp_message(to_number, text):
         res = requests.post(url, json=payload, headers=headers)
         return res.json()
     except Exception as e:
-        print(f"Failed to send message to {to_number}: {e}")
+        print(f"Failed to send message: {e}")
+        return None
+
+def download_media(media_id):
+    """WhatsApp Media download helper"""
+    try:
+        res = requests.get(
+            f"https://graph.facebook.com/v20.0/{media_id}",
+            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+        )
+        url = res.json().get("url")
+        if not url:
+            return None
+        file_res = requests.get(url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"})
+        return file_res.content
+    except Exception as e:
+        print(f"Media download error: {e}")
         return None
 
 def transcribe_audio_groq(audio_id):
-    """WhatsApp se audio download karke Groq Whisper se Text me convert karna"""
+    """Audio to Text via Groq Whisper"""
     try:
-        # Step 1: Media URL get karna
-        media_url_res = requests.get(
-            f"https://graph.facebook.com/v20.0/{audio_id}",
-            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-        )
-        media_url = media_url_res.json().get("url")
-
-        if not media_url:
+        audio_content = download_media(audio_id)
+        if not audio_content:
             return None
 
-        # Step 2: Audio file download karna
-        audio_file_res = requests.get(
-            media_url,
-            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
-        )
-
-        # Step 3: Groq Whisper API ko bhejna
-        files = {
-            "file": ("audio.ogg", audio_file_res.content, "audio/ogg")
-        }
-        data = {
-            "model": "whisper-large-v3",
-            "language": "hi",  # Hindi / Hinglish transcription
-            "response_format": "text"
-        }
-        headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}"
-        }
+        files = {"file": ("audio.ogg", audio_content, "audio/ogg")}
+        data = {"model": "whisper-large-v3", "language": "hi", "response_format": "text"}
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
         
         whisper_res = requests.post(
             "https://api.groq.com/openai/v1/audio/transcriptions",
@@ -132,8 +131,51 @@ def transcribe_audio_groq(audio_id):
         print(f"Audio transcription error: {e}")
         return None
 
+def verify_document_groq(image_id):
+    """Document Image Verification via Groq Vision"""
+    try:
+        image_content = download_media(image_id)
+        if not image_content:
+            return None
+
+        base64_image = base64.b64encode(image_content).decode("utf-8")
+
+        prompt = (
+            "You are a strict Hotel Reception Document Verification Assistant. "
+            "Examine this image carefully. "
+            "Determine if this is a valid Indian Government ID Proof (Aadhaar Card, Driving License, Passport, or Voter ID). "
+            "If YES, respond strictly in this format: "
+            "VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
+            "If NO (blurry, meme, selfie, random object, invalid doc), respond: "
+            "INVALID | REASON: <short reason>"
+        )
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.2-11b-vision-preview",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                    ]
+                }
+            ],
+            "temperature": 0.1
+        }
+
+        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload)
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print(f"Document verification error: {e}")
+        return None
+
 def ask_cohere(user_message, sender_phone):
-    """Cohere API se context-aware response generate karna"""
+    """Cohere API Chatbot reply"""
     history = chat_histories.get(sender_phone, [])
     
     url = "https://api.cohere.ai/v1/chat"
@@ -141,7 +183,6 @@ def ask_cohere(user_message, sender_phone):
         "Authorization": f"Bearer {COHERE_API_KEY}",
         "Content-Type": "application/json"
     }
-    
     payload = {
         "message": user_message,
         "preamble": SYSTEM_PROMPT,
@@ -154,21 +195,20 @@ def ask_cohere(user_message, sender_phone):
         res_data = response.json()
         reply_text = res_data.get("text", "Kshama karein, mai abhi samajh nahi paya.")
         
-        # Rolling chat history (last 6 messages)
         history.append({"role": "USER", "message": user_message})
         history.append({"role": "CHATBOT", "message": reply_text})
         chat_histories[sender_phone] = history[-6:]
         
         return reply_text
     except Exception as e:
-        print(f"Cohere API error: {e}")
-        return "Namaste! Hamari service me thodi samasya aa rahi hai, kripya thodi der me dobara prayas karein."
+        print(f"Cohere error: {e}")
+        return "Namaste! Hamari service me thodi takneeki samasya aa rahi hai."
 
 def process_and_reply(user_text, sender_phone):
-    """Text process karke Cohere reply aur Kitchen/Staff alert bhejne ka core function"""
+    """Text handler for orders and housekeeping"""
     bot_reply = ask_cohere(user_text, sender_phone)
     
-    # 1. Kitchen Order Alert (9058514478)
+    # 1. Kitchen Alert
     if "[KITCHEN_ALERT:" in bot_reply:
         order_details = bot_reply.split("[KITCHEN_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[KITCHEN_ALERT:")[0].strip()
@@ -176,12 +216,12 @@ def process_and_reply(user_text, sender_phone):
         kitchen_msg = (
             f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
             f"📋 *Details:* {order_details}\n"
-            f"📞 *Guest Phone:* +{sender_phone}\n\n"
-            f"⚡ Kripya order taiyar karke deliver karein!"
+            f"📞 *Guest Contact:* +{sender_phone}\n\n"
+            f"⚡ Kripya order turant deliver karein!"
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
 
-    # 2. Staff / Housekeeping Alert (9058514488)
+    # 2. Staff Alert
     if "[STAFF_ALERT:" in bot_reply:
         service_details = bot_reply.split("[STAFF_ALERT:")[1].split("]")[0].strip()
         bot_reply = bot_reply.split("[STAFF_ALERT:")[0].strip()
@@ -189,7 +229,7 @@ def process_and_reply(user_text, sender_phone):
         staff_msg = (
             f"🛎️ *STAFF / HOUSEKEEPING ALERT*\n\n"
             f"📌 *Details:* {service_details}\n"
-            f"📞 *Guest Phone:* +{sender_phone}\n\n"
+            f"📞 *Guest Contact:* +{sender_phone}\n\n"
             f"⚡ Kripya turant attend karein!"
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
@@ -227,26 +267,56 @@ def handle_webhook():
         msg_type = message.get("type")
 
         # --------------------------------------------------
-        # FLOW 1: TEXT MESSAGES
+        # 1. TEXT MESSAGES
         # --------------------------------------------------
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
 
         # --------------------------------------------------
-        # FLOW 2: VOICE NOTES / AUDIO (GROQ WHISPER)
+        # 2. VOICE NOTES (GROQ WHISPER)
         # --------------------------------------------------
         elif msg_type in ["audio", "voice"]:
             audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
             transcribed_text = transcribe_audio_groq(audio_id)
-            
             if transcribed_text:
                 process_and_reply(transcribed_text, sender_phone)
             else:
-                send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf sunayi nahi diya. Kripya dobara bhejein ya text message karein.")
+                send_whatsapp_message(sender_phone, "Kshama karein, aapka voice note saaf nahi tha. Kripya dobara bhejein.")
 
         # --------------------------------------------------
-        # FLOW 3: LOCATION SHARING (DIRECT NAVIGATION LINK)
+        # 3. DOCUMENT / ID PHOTO VERIFICATION (GROQ VISION)
+        # --------------------------------------------------
+        elif msg_type == "image":
+            image_id = message.get("image", {}).get("id")
+            verification_result = verify_document_groq(image_id)
+
+            if verification_result and verification_result.startswith("VALID"):
+                # Clean notification to Guest
+                send_whatsapp_message(
+                    sender_phone,
+                    f"Dhanyawad! 🙏 Aapka ID Proof successfully verify ho gaya hai.\n\n"
+                    f"Aapka fast check-in register humari taraf se update kar diya gaya hai. Hotel arrival par aapko kamre ki chabi turant mil jayegi."
+                )
+
+                # Alert to Staff / Front Desk (9058514488)
+                staff_doc_msg = (
+                    f"🪪 *NEW GUEST ID VERIFIED*\n\n"
+                    f"📋 *Doc Details:* {verification_result}\n"
+                    f"📞 *Guest Contact:* +{sender_phone}\n\n"
+                    f"✅ Pre-check-in entry verified. Chabi taiyar rakhein!"
+                )
+                send_whatsapp_message(STAFF_PHONE, staff_doc_msg)
+
+            else:
+                send_whatsapp_message(
+                    sender_phone,
+                    "Kshama karein, yeh valid ya saaf Government ID Proof nahi lag raha hai. "
+                    "Kripya Aadhaar Card, Driving License ya Passport ki saaf photo bhejein taaki check-in proceed ho sake."
+                )
+
+        # --------------------------------------------------
+        # 4. LOCATION SHARING (DIRECT ROUTE LINK)
         # --------------------------------------------------
         elif msg_type == "location":
             loc_data = message.get("location", {})
@@ -260,9 +330,7 @@ def handle_webhook():
                 f"📍 *Hotel Navigation Route Link:*\n"
                 f"{maps_route_url}\n\n"
                 f"🚗 *Directions:*\n"
-                f"Upar diye gaye link par click karke aap seedha hotel ka Google Maps route follow kar sakte hain, "
-                f"ya apne auto/cab driver ko yeh route dikha dijiye.\n\n"
-                f"Hotel pahunchne me koi asuvidha ho toh batayein!"
+                f"Upar diye gaye Google Maps link par click karke rasta follow karein ya auto/cab driver ko yeh route dikha dein."
             )
             send_whatsapp_message(sender_phone, nav_reply)
 

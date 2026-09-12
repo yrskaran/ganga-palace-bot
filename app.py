@@ -1,3 +1,7 @@
+from flask import Flask, request, jsonify
+
+app = Flask(__name__)  # <--- Yeh exact line honi zaroori hai
+
 def get_guest_stay_status(sender_phone):
     """
     Checks real-time check-in status from Google Sheets CSV export.

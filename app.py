@@ -5,9 +5,12 @@ import io
 import base64
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import requests
 from flask import Flask, request, jsonify
+
+# Indian Standard Time (IST) built-in (No external pytz required)
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================================
 # 1. INITIALIZE APP & CONFIGURATION
@@ -32,9 +35,9 @@ RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot
 chat_histories = {}
 processed_msg_ids = set()
 
-# In-Memory Cache for Sheet & Concierge Alerts
+# In-Memory Cache for Sheet Data
 sheet_cache = {"data": [], "last_fetched": 0}
-CACHE_TTL_SECONDS = 45
+CACHE_TTL_SECONDS = 30
 
 welcomed_guests = set()
 alerts_sent_today = {
@@ -45,7 +48,7 @@ alerts_sent_today = {
 }
 
 # ==========================================
-# 2. FILE-BASED SYSTEM PROMPT LOADER
+# 2. SYSTEM PROMPT LOADER
 # ==========================================
 def get_system_prompt():
     file_path = os.path.join(os.path.dirname(__file__), "hotel_data.txt")
@@ -60,7 +63,6 @@ def get_system_prompt():
 # 3. HELPER FUNCTIONS & SHEET SYNC
 # ==========================================
 def keep_awake_ping():
-    """Pings the health endpoint every 8 minutes to prevent sleep."""
     time.sleep(15)
     while True:
         try:
@@ -68,7 +70,7 @@ def keep_awake_ping():
             res = requests.get(target_url, timeout=15)
             print(f"[KEEP-ALIVE PING]: Status {res.status_code}", flush=True)
         except Exception as e:
-            print(f"[KEEP-ALIVE PING FAIL]: {e}", flush=True)
+            print(f"[KEEP-ALIVE FAIL]: {e}", flush=True)
         time.sleep(8 * 60)
 
 def mark_message_as_read(message_id):
@@ -200,7 +202,7 @@ def verify_document_groq(image_id):
         return None
 
 def fetch_sheet_records():
-    """Caches sheet in memory for CACHE_TTL_SECONDS to avoid API lag"""
+    """Caches sheet in memory for CACHE_TTL_SECONDS"""
     now = time.time()
     if sheet_cache["data"] and (now - sheet_cache["last_fetched"] < CACHE_TTL_SECONDS):
         return sheet_cache["data"]
@@ -232,9 +234,48 @@ def get_guest_stay_status(sender_phone):
             return {
                 "is_inhouse": True,
                 "room": str(row.get("Room", "")).strip(),
-                "name": str(row.get("Guest Name", "")).strip()
+                "name": str(row.get("Guest Name", "")).strip(),
+                "category": str(row.get("Category", "Standard")).strip(),
+                "price": str(row.get("Price", "")).strip()
             }
     return None
+
+def get_room_inventory_summary():
+    """Calculates available free rooms, cheap/budget options, and premium rooms"""
+    records = fetch_sheet_records()
+    available_rooms = []
+    
+    for row in records:
+        status = str(row.get("Status", "")).strip().upper()
+        room_no = str(row.get("Room", "")).strip()
+        category = str(row.get("Category", "Deluxe")).strip()
+        price = str(row.get("Price", "2000")).strip()
+        
+        # If not checked in, consider available
+        if status != "CHECKED_IN" and room_no:
+            try:
+                num_price = int(re.sub(r"\D", "", price)) if re.sub(r"\D", "", price) else 2000
+            except:
+                num_price = 2000
+            available_rooms.append({
+                "room": room_no,
+                "category": category,
+                "price": num_price
+            })
+            
+    if not available_rooms:
+        return "All rooms are currently BOOKED. No rooms available right now."
+        
+    available_rooms.sort(key=lambda x: x["price"])
+    cheapest = available_rooms[0]
+    premium = available_rooms[-1]
+    
+    summary = (
+        f"Available Free Rooms Count: {len(available_rooms)}.\n"
+        f"Budget/Sasta Option: {cheapest['category']} (Room {cheapest['room']}) at Rs. {cheapest['price']}/night.\n"
+        f"Premium/Luxury Option: {premium['category']} (Room {premium['room']}) at Rs. {premium['price']}/night."
+    )
+    return summary
 
 def ask_cohere(user_message, sender_phone):
     history = chat_histories.get(sender_phone, [])
@@ -271,7 +312,7 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     
-    # Block fake orders from outside guests
+    # Block fake room service orders from outside callers
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in user_text.lower() for w in service_keywords)
     
@@ -282,17 +323,28 @@ def process_and_reply(user_text, sender_phone):
             "Agar aap hamare hotel me ruke hain, toh kripya reception counter par contact karke apna number register karwayein."
         )
         send_whatsapp_message(sender_phone, reject_reply)
-        return  # Stop here, preventing double replies
+        return
 
-    # Append guest context
+    # Dynamic Room Inventory & Pricing Context
+    room_summary = get_room_inventory_summary()
+    
     prompt_input = user_text
     if guest_info:
-        prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}] {user_text}"
+        prompt_input = (
+            f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']} | Category: {guest_info['category']}]\n"
+            f"{user_text}"
+        )
+    else:
+        # Outside guest enquiry: Inject live availability & tariff info
+        prompt_input = (
+            f"[HOTEL LIVE INVENTORY & PRICING CONTEXT]:\n{room_summary}\n"
+            f"[CUSTOMER INQUIRY]: {user_text}"
+        )
 
     bot_reply = ask_cohere(prompt_input, sender_phone)
     print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
 
-    # 1. Kitchen Alert
+    # Kitchen alert
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)\]", bot_reply)
         order_details = match.group(1) if match else "New Order"
@@ -310,7 +362,7 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = f"Ji, aapka order note ho gaya hai aur jald {room_tag} me deliver kar diya jayega."
 
-    # 2. Staff Alert
+    # Staff alert
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
@@ -388,7 +440,6 @@ def handle_incoming_async(message, sender_phone, msg_type):
 # 4. CONCIERGE & CHECK-IN AUTOMATIONS
 # ==========================================
 def send_checkin_feedback(phone, name, room):
-    """Waits 30 minutes and sends comfort check message"""
     time.sleep(30 * 60)
     guest = get_guest_stay_status(phone)
     if guest and guest["is_inhouse"]:
@@ -399,10 +450,8 @@ def send_checkin_feedback(phone, name, room):
             f"toh aap mujhe yahan WhatsApp par bata sakte hain. Have a wonderful stay! 🌸"
         )
         send_whatsapp_message(phone, feedback_msg)
-        print(f"[FEEDBACK SENT]: Delivered to {name} (Room {room})", flush=True)
 
 def monitor_new_checkins():
-    """Monitors Google Sheet for new CHECKED_IN guests for instant Welcome & 30-min Feedback"""
     while True:
         try:
             records = fetch_sheet_records()
@@ -413,7 +462,6 @@ def monitor_new_checkins():
                 room = str(row.get("Room", "")).strip()
 
                 if status == "CHECKED_IN" and phone and (phone not in welcomed_guests):
-                    # 1. Instant Welcome Message
                     welcome_msg = (
                         f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
                         f"Aapka check-in Room {room} me complete ho gaya hai.\n"
@@ -422,9 +470,7 @@ def monitor_new_checkins():
                     )
                     send_whatsapp_message(phone, welcome_msg)
                     welcomed_guests.add(phone)
-                    print(f"[WELCOME SENT]: {name} (Room {room})", flush=True)
 
-                    # 2. Schedule 30-Minute Feedback
                     threading.Thread(
                         target=send_checkin_feedback,
                         args=(phone, name, room),
@@ -436,7 +482,6 @@ def monitor_new_checkins():
         time.sleep(60)
 
 def broadcast_to_inhouse_guests(message_template_fn):
-    """Broadcasts targeted message only to currently CHECKED_IN guests"""
     records = fetch_sheet_records()
     for row in records:
         phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
@@ -450,53 +495,47 @@ def broadcast_to_inhouse_guests(message_template_fn):
             time.sleep(1)
 
 def daily_concierge_scheduler():
-    """Triggers timely concierge notifications throughout the day (IST)"""
-    ist = pytz.timezone("Asia/Kolkata")
-    
     while True:
         try:
-            now = datetime.now(ist)
+            now = datetime.now(IST)
             today_str = now.strftime("%Y-%m-%d")
             current_time_str = now.strftime("%H:%M")
 
-            # 1. 08:00 AM - Breakfast Buffet Alert
+            # 08:00 AM - Breakfast
             if current_time_str == "08:00" and alerts_sent_today["breakfast"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Shubh Prabhat {name} ji! ☀️\n\n"
                     f"Aapka fresh breakfast buffet dining hall me taiyar hai.\n"
                     f"⏰ *Timings:* 8:30 AM se 10:30 AM\n\n"
-                    f"Agar aap room me breakfast mangwana chahte hain, toh yahan reply karein. Have a great morning! 🍳"
+                    f"Agar aap room me mangwana chahte hain, toh yahan reply karein. 🍳"
                 ))
                 alerts_sent_today["breakfast"] = today_str
 
-            # 2. 10:30 AM - Sightseeing & Tourist Guide Alert
+            # 10:30 AM - Sightseeing
             elif current_time_str == "10:30" and alerts_sent_today["tourism"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Har Har Gange {name} ji! 🚩\n\n"
-                    f"Agar aap aaj Haridwar darshan ka plan bana rahe hain:\n"
-                    f"🚠 *Mansa Devi & Chandi Devi:* Ropeway 11:00 AM se 4:00 PM tak best rehta hai.\n"
-                    f"🛕 *Daksha Mahadev Temple:* Dopahar ka samay darshan ke liye sabse shant rehta hai.\n\n"
-                    f"Taxi booking ya guidance ke liye reception se contact karein ya yahan batayein!"
+                    f"Haridwar Darshan Updates:\n"
+                    f"🚠 Mansa Devi & Chandi Devi Ropeway timing 11:00 AM se 4:00 PM best hai.\n"
+                    f"Taxi booking ya guidance ke liye reception se contact karein!"
                 ))
                 alerts_sent_today["tourism"] = today_str
 
-            # 3. 05:00 PM - Har Ki Pauri Ganga Aarti Alert
+            # 05:00 PM - Sandhya Ganga Aarti
             elif current_time_str == "17:00" and alerts_sent_today["aarti"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Har Har Gange {name} ji! 🪔✨\n\n"
-                    f"Har Ki Pauri par *Sandhya Ganga Aarti* shaam 6:15 PM se shuru hoti hai.\n\n"
-                    f"📌 *Tip:* Bheed se bachne aur achhe darshan ke liye kripya 5:30 PM tak ghat par pahunch jayein.\n\n"
-                    f"Aapke hotel se Har Ki Pauri lagbhag 10-15 minute ki doori par hai. Shubh Darshan! 🙏"
+                    f"Har Ki Pauri par *Sandhya Ganga Aarti* shaam 6:15 PM par shuru hoti hai.\n"
+                    f"📌 Achhe darshan ke liye kripya 5:30 PM tak ghat par pahunch jayein. Shubh Darshan! 🙏"
                 ))
                 alerts_sent_today["aarti"] = today_str
 
-            # 4. 08:00 PM - Dinner Reminder Alert
+            # 08:00 PM - Dinner
             elif current_time_str == "20:00" and alerts_sent_today["dinner"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Namaste {name} ji! 🌙\n\n"
-                    f"Hotel Ganga View me dinner serve hona shuru ho gaya hai.\n"
-                    f"⏰ *Restaurant Timings:* 8:00 PM se 10:30 PM\n\n"
-                    f"Agar aap Room {room} me khana mangwana chahte hain, toh bas yahan apna order likhkar bhej dein!"
+                    f"Hotel Ganga View me dinner start ho gaya hai (8:00 PM - 10:30 PM).\n"
+                    f"Room {room} me order mangwane ke liye yahan message karein!"
                 ))
                 alerts_sent_today["dinner"] = today_str
 

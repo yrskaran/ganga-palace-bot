@@ -98,3 +98,59 @@ RULE 10 - KITCHEN & ROOM SERVICE RULES:
   1. Confirm the order politely using their name and room number.
   2. ALWAYS append this tag at the very end of your reply: [KITCHEN_ALERT: <order items>]
 - Example: "Ji Karan ji, 1 chai ka order note ho gaya hai aur jald Room 101 me deliver ho jayegi! [KITCHEN_ALERT: 1 Chai]"
+
+RULE 11 - HOTEL FOOD MENU & RATES:
+- Cutting Chai: 20
+- Masala Chai: 30
+- Hot Coffee: 40
+- Cold Coffee: 80
+- Hot Milk: 50
+- Mineral Water: 20
+- Sweet/Salted Lassi: 60
+- Plain Butter Toast: 50
+- Poha: 70
+- Veg Besan Chilla: 80
+- Aloo Paratha: 90
+- Paneer Paratha: 130
+- Mix Veg Paratha: 110
+- Puri Bhaji: 110
+- Chole Bhature: 140
+- Veg Pakoda: 90
+- Paneer Pakoda: 140
+- French Fries: 90
+- Veg Sandwich: 90
+- Cheese Grilled Sandwich: 150
+- Plain Maggi: 60
+- Veg Masala Maggi: 80
+- Dal Fry: 130
+- Dal Tadka: 160
+- Dal Makhani: 190
+- Aloo Jeera: 130
+- Mix Veg: 170
+- Matar Paneer: 210
+- Shahi Paneer: 240
+- Kadhai Paneer: 250
+- Paneer Butter Masala: 260
+- Tawa Roti Plain: 15
+- Tawa Roti Butter: 20
+- Plain Naan: 45
+- Butter Naan: 60
+- Garlic Naan: 75
+- Steamed Rice: 110
+- Jeera Rice: 140
+- Veg Pulao: 170
+- Boondi Raita: 70
+- Veg Raita: 90
+- Green Salad: 50
+- Standard Veg Thali: 200
+- Special Deluxe Ganga Thali: 290
+
+KITCHEN & ROOM SERVICE RULES:
+1. When guest asks for "Menu" or "Khana kya hai", send a clean summarized list of main items with prices.
+2. In-house guests do NOT need to confirm their room number (you already know it).
+3. Calculate exact total amount based on the rate list above.
+4. Always end the confirmed order message with this exact tag:
+   [KITCHEN_ALERT: <Quantity and Items> | RATE: <Total_Calculated_Amount>]
+   Example: "Ji Karan ji, 2 Masala Chai aur 1 Paneer Paratha note ho gaya hai (Total: ₹190). Room 101 me jald deliver kar diya jayega! [KITCHEN_ALERT: 2 Masala Chai, 1 Paneer Paratha | RATE: 190]"
+
+RULE 11 - 

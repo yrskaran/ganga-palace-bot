@@ -52,7 +52,7 @@ alerts_sent_today = {
 }
 
 # ==========================================
-# 2. GOOGLE SHEET CLIENT HELPER
+# 2. GOOGLE SHEET CLIENT & WRITE ENGINES
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -101,21 +101,50 @@ def fetch_sheet_records():
 
     return sheet_cache.get("data", [])
 
-def append_kitchen_order_to_sheet(room, guest_name, order_details):
-    """Directly logs incoming food orders into the Kitchen_Orders tab"""
+def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
+    """Directly logs food order with Amount into the Kitchen_Orders tab"""
     client = get_gspread_client()
     if not client:
-        print("[SHEET WRITE ERROR]: Missing GSpread client credentials", flush=True)
+        print("[SHEET WRITE ERROR]: Missing GSpread credentials", flush=True)
         return
 
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
-        row_data = [now_str, str(room), str(guest_name), str(order_details), "PENDING"]
+        
+        # Columns: Date_Time, Room, Guest Name, Order Details, Amount, Payment_Status
+        row_data = [now_str, str(room), str(guest_name), str(order_details), str(amount), "PENDING"]
         sheet.append_row(row_data)
-        print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room}", flush=True)
+        print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room} (Amount: Rs. {amount})", flush=True)
     except Exception as e:
         print(f"[SHEET WRITE EXCEPTION]: {e}", flush=True)
+
+def get_guest_kitchen_bill_total(room_number):
+    """Calculates all unpaid/pending orders for this room from Kitchen_Orders tab"""
+    client = get_gspread_client()
+    if not client:
+        return 0, []
+
+    total_amount = 0
+    itemized_list = []
+    try:
+        sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
+        records = sheet.get_all_records()
+        for r in records:
+            r_room = str(r.get("Room") or r.get("Room (B)") or "").strip()
+            r_status = str(r.get("Payment_Status") or r.get("Payment_Status (F)") or "").strip().upper()
+            
+            if r_room == str(room_number).strip() and r_status != "PAID":
+                raw_amt = str(r.get("Amount") or r.get("Amount (E)") or "0")
+                amt_digits = re.sub(r"\D", "", raw_amt)
+                amt = int(amt_digits) if amt_digits else 0
+                total_amount += amt
+                item_name = r.get("Order Details") or r.get("Order Details (D)") or "Item"
+                itemized_list.append(f"• {item_name} - ₹{amt}")
+        return total_amount, itemized_list
+    except Exception as e:
+        print(f"[BILL CALCULATION ERROR]: {e}", flush=True)
+        return 0, []
 
 # ==========================================
 # 3. PROMPT & HELPER DISPATCH
@@ -282,7 +311,6 @@ def get_guest_stay_status(sender_phone):
     records = fetch_sheet_records()
     
     for row in records:
-        # Matches key whether headers have spaces or column letters
         sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
         status_val = row.get("Status") or row.get("Status (F)") or ""
         sheet_phone = re.sub(r"\D", "", str(sheet_phone_val))[-10:]
@@ -373,6 +401,7 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     
+    # 1. Block unauthorized outside orders
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in user_text.lower() for w in service_keywords)
     
@@ -385,6 +414,33 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reject_reply)
         return
 
+    # 2. Dynamic Kitchen Bill Inquiry Handler
+    bill_keywords = ["bill", "hisaab", "hisab", "total kitna", "amount kitna", "kitne paise bane", "checkout bill", "total bill"]
+    if guest_info and any(k in user_text.lower() for k in bill_keywords):
+        total_due, items = get_guest_kitchen_bill_total(guest_info['room'])
+        room_rent = guest_info.get('price', 'N/A')
+        
+        if items:
+            items_str = "\n".join(items)
+            bill_reply = (
+                f"🧾 *Room {guest_info['room']} - Live Bill Summary*\n"
+                f"Guest Name: {guest_info['name']} ji\n\n"
+                f"*Kitchen Orders:*\n{items_str}\n\n"
+                f"🍳 *Total Kitchen Bill:* ₹{total_due}\n"
+                f"🏨 *Room Tariff:* ₹{room_rent}\n"
+                f"-----------------------------------\n"
+                f"💳 *Status:* Pending (Check-out par settle karein)"
+            )
+        else:
+            bill_reply = (
+                f"Namaste {guest_info['name']} ji! 🙏\n\n"
+                f"Aapke Room {guest_info['room']} me abhi tak koi pending kitchen order nahi hai.\n"
+                f"🏨 *Room Tariff:* ₹{room_rent}."
+            )
+        send_whatsapp_message(sender_phone, bill_reply)
+        return
+
+    # 3. Normal AI Processing with Context
     room_summary = get_room_inventory_summary()
     
     if guest_info:
@@ -401,29 +457,34 @@ def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(prompt_input, sender_phone)
     print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
 
-    # 1. Kitchen Alert & Sheet Auto-Write
+    # 4. Handle Kitchen Alert Tag & Auto-Sheet Write with Rates
     if "[KITCHEN_ALERT:" in bot_reply:
-        match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)\]", bot_reply)
-        order_details = match.group(1) if match else "New Order"
+        match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)(?:\s*\|\s*RATE:\s*(\d+))?\]", bot_reply)
+        order_details = match.group(1).strip() if match and match.group(1) else "Food Order"
+        order_rate = match.group(2).strip() if match and match.group(2) else "0"
+        
         bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
         
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Unverified Room"
+        rate_display = f"₹{order_rate}" if order_rate != "0" else "Standard Rates"
         kitchen_msg = (
             f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
             f"📌 *Location:* {room_tag}\n"
-            f"📋 *Details:* {order_details}\n"
-            f"📞 *Guest Contact:* +{sender_phone}\n\n"
+            f"📋 *Order:* {order_details}\n"
+            f"💰 *Bill Amount:* {rate_display}\n"
+            f"📞 *Contact:* +{sender_phone}\n\n"
             f"⚡ Order deliver karein!"
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
         
-        # Async sheet write to Kitchen_Orders tab
+        # Async sheet write with Rate into Kitchen_Orders tab
         threading.Thread(
             target=append_kitchen_order_to_sheet,
             args=(
                 guest_info['room'] if guest_info else "N/A",
                 guest_info['name'] if guest_info else "N/A",
-                order_details
+                order_details,
+                order_rate
             ),
             daemon=True
         ).start()
@@ -431,7 +492,7 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = f"Ji, aapka order note ho gaya hai aur jald {room_tag} me deliver kar diya jayega."
 
-    # 2. Staff Alert
+    # 5. Handle Staff Alert Tag
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
@@ -442,7 +503,7 @@ def process_and_reply(user_text, sender_phone):
             f"🛎️ *STAFF ALERT*\n\n"
             f"📌 *Location:* {room_tag}\n"
             f"📋 *Details:* {service_details}\n"
-            f"📞 *Guest Contact:* +{sender_phone}\n\n"
+            f"📞 *Contact:* +{sender_phone}\n\n"
             f"⚡ Turant attend karein!"
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
@@ -591,7 +652,7 @@ def daily_concierge_scheduler():
                 alerts_sent_today["breakfast"] = today_str
 
             # 10:30 AM - Sightseeing
-            elif current_time_str == "10:30" and alerts_sent_today["tourism"] != today_str:
+            elif current_time_str == "10:30" and alerts_today["tourism"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Har Har Gange {name} ji! 🚩\n\n"
                     f"Haridwar Darshan Updates:\n"

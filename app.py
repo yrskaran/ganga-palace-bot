@@ -26,9 +26,15 @@ HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
+# Render provides RENDER_EXTERNAL_URL automatically
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
+
 chat_histories = {}
 processed_msg_ids = set()
+
+# Sheet In-Memory Cache (Fast Lookup)
+sheet_cache = {"data": [], "last_fetched": 0}
+CACHE_TTL_SECONDS = 45  # 45 second tak cache rahega, taaki response superfast ho
 
 # ==========================================
 # 2. FILE-BASED SYSTEM PROMPT LOADER
@@ -46,15 +52,16 @@ def get_system_prompt():
 # 3. HELPER FUNCTIONS & SHEET VERIFICATION
 # ==========================================
 def keep_awake_ping():
-    time.sleep(30)
+    """Pings the health endpoint every 8 minutes to prevent sleep."""
+    time.sleep(15)
     while True:
         try:
-            if RENDER_EXTERNAL_URL:
-                ping_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
-                requests.get(ping_url, timeout=10)
+            target_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
+            res = requests.get(target_url, timeout=15)
+            print(f"[KEEP-ALIVE PING]: Status {res.status_code}", flush=True)
         except Exception as e:
-            print(f"[KEEP-ALIVE ERROR]: {e}", flush=True)
-        time.sleep(12 * 60)
+            print(f"[KEEP-ALIVE PING FAIL]: {e}", flush=True)
+        time.sleep(8 * 60)  # Har 8 minute me ping karega
 
 def mark_message_as_read(message_id):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -89,7 +96,7 @@ def send_whatsapp_message(to_number, text):
         res = requests.post(url, json=payload, headers=headers, timeout=12)
         res_json = res.json()
         if res.status_code != 200:
-            print(f"[WHATSAPP DISPATCH ERROR] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
+            print(f"[WHATSAPP DISPATCH ERROR] Target: {clean_number} | Body: {res_json}", flush=True)
         return res_json
     except Exception as e:
         print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
@@ -101,7 +108,6 @@ def download_media(media_id):
         res = requests.get(meta_url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, timeout=10)
         media_url = res.json().get("url")
         if not media_url:
-            print(f"[MEDIA ERROR]: No media URL returned by Meta: {res.text}", flush=True)
             return None
         
         file_res = requests.get(
@@ -185,34 +191,42 @@ def verify_document_groq(image_id):
         print(f"[GROQ VISION EXCEPTION]: {e}", flush=True)
         return None
 
-def get_guest_stay_status(sender_phone):
-    """Checks Google Sheets CSV export and matches last 10 digits"""
-    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
-    clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
-    
-    try:
-        response = requests.get(csv_url, timeout=10)
-        if response.status_code != 200:
-            print(f"[SHEET ACCESS FAIL]: HTTP {response.status_code}", flush=True)
-            return None
+def fetch_sheet_records():
+    """Caches sheet in memory for CACHE_TTL_SECONDS to avoid lag on every message"""
+    now = time.time()
+    if sheet_cache["data"] and (now - sheet_cache["last_fetched"] < CACHE_TTL_SECONDS):
+        return sheet_cache["data"]
 
-        content = response.content.decode("utf-8")
-        reader = csv.DictReader(io.StringIO(content))
-        
-        for row in reader:
-            sheet_phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
-            status = str(row.get("Status", "")).strip().upper()
-            
-            if sheet_phone and sheet_phone == clean_sender and status == "CHECKED_IN":
-                return {
-                    "is_inhouse": True,
-                    "room": str(row.get("Room", "")).strip(),
-                    "name": str(row.get("Guest Name", "")).strip()
-                }
-        return None
+    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+    try:
+        response = requests.get(csv_url, timeout=6)
+        if response.status_code == 200:
+            content = response.content.decode("utf-8")
+            reader = list(csv.DictReader(io.StringIO(content)))
+            sheet_cache["data"] = reader
+            sheet_cache["last_fetched"] = now
+            return reader
     except Exception as e:
-        print(f"[SHEET READ EXCEPTION]: {e}", flush=True)
-        return None
+        print(f"[SHEET CACHE REFRESH ERROR]: {e}", flush=True)
+    
+    return sheet_cache.get("data", [])
+
+def get_guest_stay_status(sender_phone):
+    """Matches last 10 digits against fast cached sheet records"""
+    clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
+    records = fetch_sheet_records()
+    
+    for row in records:
+        sheet_phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
+        status = str(row.get("Status", "")).strip().upper()
+        
+        if sheet_phone and sheet_phone == clean_sender and status == "CHECKED_IN":
+            return {
+                "is_inhouse": True,
+                "room": str(row.get("Room", "")).strip(),
+                "name": str(row.get("Guest Name", "")).strip()
+            }
+    return None
 
 def ask_cohere(user_message, sender_phone):
     history = chat_histories.get(sender_phone, [])
@@ -230,7 +244,7 @@ def ask_cohere(user_message, sender_phone):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=50)
+        response = requests.post(url, json=payload, headers=headers, timeout=25)
         if response.status_code != 200:
             return "Namaste! Batayein mai aapki kya madad kar sakta hoon?"
 
@@ -249,6 +263,7 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     
+    # Check if outside guest is trying to order
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in user_text.lower() for w in service_keywords)
     
@@ -259,8 +274,9 @@ def process_and_reply(user_text, sender_phone):
             "Agar aap hamare hotel me ruke hain, toh kripya reception counter par contact karke apna number register karwayein."
         )
         send_whatsapp_message(sender_phone, reject_reply)
-        return
+        return  # Strictly stop here! No extra welcome message.
 
+    # Append verified room context for Cohere
     prompt_input = user_text
     if guest_info:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}] {user_text}"
@@ -268,6 +284,7 @@ def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(prompt_input, sender_phone)
     print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
 
+    # Kitchen alert
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)\]", bot_reply)
         order_details = match.group(1) if match else "New Order"
@@ -285,6 +302,7 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = f"Ji, aapka order note ho gaya hai aur jald {room_tag} me deliver kar diya jayega."
 
+    # Staff alert
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"

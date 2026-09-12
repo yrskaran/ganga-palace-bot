@@ -96,18 +96,27 @@ def send_whatsapp_message(to_number, text):
 
 def download_media(media_id):
     try:
-        res = requests.get(
-            f"https://graph.facebook.com/v20.0/{media_id}",
-            headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"},
-            timeout=10
-        )
-        url = res.json().get("url")
-        if not url:
+        meta_url = f"https://graph.facebook.com/v20.0/{media_id}"
+        res = requests.get(meta_url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, timeout=10)
+        media_url = res.json().get("url")
+        if not media_url:
+            print(f"[MEDIA ERROR]: No media URL returned by Meta: {res.text}", flush=True)
             return None
-        file_res = requests.get(url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, timeout=15)
-        return file_res.content
+        
+        file_res = requests.get(
+            media_url,
+            headers={
+                "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+                "User-Agent": "curl/7.68.0"
+            },
+            timeout=20
+        )
+        if file_res.status_code == 200:
+            return file_res.content
+        print(f"[MEDIA DOWNLOAD HTTP FAIL]: {file_res.status_code}", flush=True)
+        return None
     except Exception as e:
-        print(f"[MEDIA DOWNLOAD ERROR]: {e}", flush=True)
+        print(f"[MEDIA DOWNLOAD EXCEPTION]: {e}", flush=True)
         return None
 
 def transcribe_audio_groq(audio_id):
@@ -136,18 +145,18 @@ def verify_document_groq(image_id):
     try:
         image_content = download_media(image_id)
         if not image_content:
-            print("[VISION ERROR]: Media download failed", flush=True)
+            print("[VISION ERROR]: Media content empty", flush=True)
             return None
 
         base64_image = base64.b64encode(image_content).decode("utf-8")
 
         prompt = (
             "You are a Hotel Document Verification Assistant. "
-            "Examine this image. Determine if this is a valid Indian Government ID Proof "
-            "(Aadhaar Card, e-Aadhaar, Voter ID, Driving License, or Passport). "
-            "Do NOT print any numeric identity numbers. "
-            "If valid Govt ID, reply strictly: VALID | ID_TYPE: Aadhaar/DL/Passport/VoterID | NAME: <guest name or Not Visible> "
-            "If invalid, blurry, or not Govt ID, reply strictly: INVALID | REASON: <blurry or not_govt_id>"
+            "Examine this image carefully. Determine if this image is a valid Indian Government ID Proof "
+            "(Aadhaar Card, e-Aadhaar, PAN Card, Voter ID, Driving License, or Passport). "
+            "Under no circumstances should you reproduce or print any government identification numbers. "
+            "If valid Govt ID, reply strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
+            "If invalid, blurry, upside down, unreadable, or not Govt ID, reply strictly: INVALID | REASON: <blurry or not_govt_id>"
         )
 
         headers = {
@@ -165,7 +174,8 @@ def verify_document_groq(image_id):
                     ]
                 }
             ],
-            "temperature": 0.1
+            "temperature": 0.1,
+            "max_tokens": 100
         }
 
         res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
@@ -202,7 +212,7 @@ def ask_cohere(user_message, sender_phone):
         
         if response.status_code != 200:
             print(f"[COHERE HTTP FAIL] Status: {response.status_code} | Body: {response.text}", flush=True)
-            return "Namaste! Room number batayein aur aapko kya order karna hai?"
+            return "Namaste! Batayein mai aapki kya madad kar sakta hoon?"
 
         res_data = response.json()
         reply_text = res_data.get("text", "").strip()
@@ -299,10 +309,10 @@ def handle_incoming_async(message, sender_phone, msg_type):
 
             elif verification_result and verification_result.startswith("INVALID"):
                 reason = verification_result.split("REASON:")[1].strip().lower() if "REASON:" in verification_result else ""
-                if any(k in reason for k in ["blur", "unreadable", "clear", "quality", "dark"]):
-                    reply_msg = "Aapki bheji gayi photo clear nahi hai ya text padha nahi ja raha. Kripya saaf photo dobara bhejein."
+                if any(k in reason for k in ["blur", "unreadable", "clear", "quality", "dark", "upside"]):
+                    reply_msg = "Aapki bheji gayi photo clear nahi hai ya text padha nahi ja raha. Kripya seedhi aur saaf photo dobara bhejein."
                 else:
-                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Aadhaar, Driving License, Passport ya Voter ID share karein."
+                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Aadhaar, PAN Card, Driving License, Passport ya Voter ID share karein."
                 send_whatsapp_message(sender_phone, reply_msg)
 
             else:
@@ -362,18 +372,15 @@ def handle_webhook():
         msg_type = message.get("type")
         message_id = message.get("id")
 
-        # Dedup: Agar yahi message_id pehle process ho chuka hai toh drop karein
         if message_id in processed_msg_ids:
             return jsonify({"status": "already_processed"}), 200
             
         if message_id:
             processed_msg_ids.add(message_id)
-            # Cache size limit (keep last 500 messages)
             if len(processed_msg_ids) > 500:
                 processed_msg_ids.pop()
             mark_message_as_read(message_id)
 
-        # Process message in background thread to avoid Meta 15s timeout
         threading.Thread(
             target=handle_incoming_async,
             args=(message, sender_phone, msg_type),

@@ -2,14 +2,17 @@ import os
 import re
 import csv
 import io
+import json
 import base64
 import time
 import threading
 from datetime import datetime, timezone, timedelta
 import requests
+import gspread
+from google.oauth2.service_account import Credentials
 from flask import Flask, request, jsonify
 
-# Indian Standard Time (IST) built-in (No external pytz required)
+# Indian Standard Time (IST) built-in
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================================
@@ -22,6 +25,7 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
 STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
@@ -48,7 +52,34 @@ alerts_sent_today = {
 }
 
 # ==========================================
-# 2. SYSTEM PROMPT LOADER
+# 2. GOOGLE SHEET WRITE ENGINE (ORDERS)
+# ==========================================
+def append_kitchen_order_to_sheet(room, guest_name, order_details):
+    """Directly appends live room orders into the Kitchen_Orders tab"""
+    try:
+        if not GOOGLE_SERVICE_ACCOUNT_JSON:
+            print("[SHEET WRITE]: GOOGLE_SERVICE_ACCOUNT_JSON environment variable missing!", flush=True)
+            return
+
+        creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
+        now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
+        
+        row_data = [now_str, str(room), str(guest_name), str(order_details), "PENDING"]
+        sheet.append_row(row_data)
+        print(f"[SHEET WRITE SUCCESS]: Logged order for Room {room} -> {order_details}", flush=True)
+    except Exception as e:
+        print(f"[SHEET WRITE EXCEPTION]: {e}", flush=True)
+
+# ==========================================
+# 3. SYSTEM PROMPT LOADER
 # ==========================================
 def get_system_prompt():
     file_path = os.path.join(os.path.dirname(__file__), "hotel_data.txt")
@@ -60,7 +91,7 @@ def get_system_prompt():
         return "You are the WhatsApp AI Receptionist for Hotel Ganga View in Haridwar. Reply politely in 1-2 lines."
 
 # ==========================================
-# 3. HELPER FUNCTIONS & SHEET SYNC
+# 4. HELPER FUNCTIONS & SHEET READ
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -251,7 +282,6 @@ def get_room_inventory_summary():
         category = str(row.get("Category", "Deluxe")).strip()
         price = str(row.get("Price", "2000")).strip()
         
-        # If not checked in, consider available
         if status != "CHECKED_IN" and room_no:
             try:
                 num_price = int(re.sub(r"\D", "", price)) if re.sub(r"\D", "", price) else 2000
@@ -312,7 +342,7 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     
-    # Block fake room service orders from outside callers
+    # Block fake orders from outside callers
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in user_text.lower() for w in service_keywords)
     
@@ -325,7 +355,6 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reject_reply)
         return
 
-    # Dynamic Room Inventory & Pricing Context
     room_summary = get_room_inventory_summary()
     
     prompt_input = user_text
@@ -335,7 +364,6 @@ def process_and_reply(user_text, sender_phone):
             f"{user_text}"
         )
     else:
-        # Outside guest enquiry: Inject live availability & tariff info
         prompt_input = (
             f"[HOTEL LIVE INVENTORY & PRICING CONTEXT]:\n{room_summary}\n"
             f"[CUSTOMER INQUIRY]: {user_text}"
@@ -344,7 +372,7 @@ def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(prompt_input, sender_phone)
     print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
 
-    # Kitchen alert
+    # 1. Kitchen Alert & Sheet Auto-Write
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)\]", bot_reply)
         order_details = match.group(1) if match else "New Order"
@@ -359,10 +387,22 @@ def process_and_reply(user_text, sender_phone):
             f"⚡ Order deliver karein!"
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
+        
+        # Auto-write order directly into Google Sheet
+        threading.Thread(
+            target=append_kitchen_order_to_sheet,
+            args=(
+                guest_info['room'] if guest_info else "N/A",
+                guest_info['name'] if guest_info else "N/A",
+                order_details
+            ),
+            daemon=True
+        ).start()
+
         if not bot_reply:
             bot_reply = f"Ji, aapka order note ho gaya hai aur jald {room_tag} me deliver kar diya jayega."
 
-    # Staff alert
+    # 2. Staff Alert
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
@@ -437,7 +477,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
         print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
 
 # ==========================================
-# 4. CONCIERGE & CHECK-IN AUTOMATIONS
+# 5. CONCIERGE & CHECK-IN AUTOMATIONS
 # ==========================================
 def send_checkin_feedback(phone, name, room):
     time.sleep(30 * 60)
@@ -545,7 +585,7 @@ def daily_concierge_scheduler():
         time.sleep(30)
 
 # ==========================================
-# 5. WEBHOOK & ENDPOINTS
+# 6. WEBHOOK & ENDPOINTS
 # ==========================================
 @app.route("/", methods=["GET"])
 def index():
@@ -603,7 +643,7 @@ def handle_webhook():
     return jsonify({"status": "success"}), 200
 
 # ==========================================
-# 6. ENTRY POINT
+# 7. ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
     threading.Thread(target=keep_awake_ping, daemon=True).start()

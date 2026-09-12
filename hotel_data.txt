@@ -160,5 +160,5 @@ RULE 12-
 - Only accept food orders for items explicitly listed in "HOTEL FOOD MENU & RATES".
 - Local Attractions (like Mohan Ji Puri Wale, Pandit Sevaram Jalebi) are OUTSIDE tourist spots, not hotel room service.
 - If a guest orders an item not on the hotel menu (e.g. Jalebi, Pizza, Burger):
-  Reply politely: "Kshama karein [Name] ji, yeh item hamare hotel kitchen menu me uplabdh nahi hai. Aap hamare menu me se kuch aur order kar sakte hain."
+  Reply politely: "Sorry [Name] ji, yeh item hamare hotel kitchen menu me uplabdh nahi hai. Aap hamare menu me se kuch aur order kar sakte hain."
   DO NOT create a kitchen order for it.

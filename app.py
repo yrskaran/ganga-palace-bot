@@ -1,6 +1,15 @@
+import os
+import re
+import csv
+import io
+import base64
+import time
+import threading
+import requests
 from flask import Flask, request, jsonify
 
-app = Flask(__name__)  # <--- Yeh exact line honi zaroori hai
+# Yeh line miss ho gayi thi:
+app = Flask(__name__)
 
 def get_guest_stay_status(sender_phone):
     """

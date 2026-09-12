@@ -12,7 +12,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from flask import Flask, request, jsonify
 
-# Indian Standard Time (IST) built-in
+# Indian Standard Time (IST)
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================================
@@ -41,7 +41,7 @@ processed_msg_ids = set()
 
 # In-Memory Cache for Sheet Data
 sheet_cache = {"data": [], "last_fetched": 0}
-CACHE_TTL_SECONDS = 30
+CACHE_TTL_SECONDS = 15
 
 welcomed_guests = set()
 alerts_sent_today = {
@@ -52,34 +52,73 @@ alerts_sent_today = {
 }
 
 # ==========================================
-# 2. GOOGLE SHEET WRITE ENGINE (ORDERS)
+# 2. GOOGLE SHEET CLIENT HELPER
 # ==========================================
-def append_kitchen_order_to_sheet(room, guest_name, order_details):
-    """Directly appends live room orders into the Kitchen_Orders tab"""
+def get_gspread_client():
+    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+        return None
     try:
-        if not GOOGLE_SERVICE_ACCOUNT_JSON:
-            print("[SHEET WRITE]: GOOGLE_SERVICE_ACCOUNT_JSON environment variable missing!", flush=True)
-            return
-
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-        client = gspread.authorize(creds)
-        
+        return gspread.authorize(creds)
+    except Exception as e:
+        print(f"[GSPREAD CLIENT ERROR]: {e}", flush=True)
+        return None
+
+def fetch_sheet_records():
+    """Directly reads the 'Rooms' tab using Google Service Account"""
+    now = time.time()
+    if sheet_cache["data"] and (now - sheet_cache["last_fetched"] < CACHE_TTL_SECONDS):
+        return sheet_cache["data"]
+
+    client = get_gspread_client()
+    if client:
+        try:
+            sheet = client.open_by_key(SHEET_ID).worksheet("Rooms")
+            records = sheet.get_all_records()
+            sheet_cache["data"] = records
+            sheet_cache["last_fetched"] = now
+            return records
+        except Exception as e:
+            print(f"[API ROOMS FETCH ERROR]: {e}", flush=True)
+
+    # Fallback to direct sheet query CSV if API fails
+    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
+    try:
+        response = requests.get(csv_url, timeout=6)
+        if response.status_code == 200:
+            content = response.content.decode("utf-8")
+            reader = list(csv.DictReader(io.StringIO(content)))
+            sheet_cache["data"] = reader
+            sheet_cache["last_fetched"] = now
+            return reader
+    except Exception as e:
+        print(f"[FALLBACK CSV ERROR]: {e}", flush=True)
+
+    return sheet_cache.get("data", [])
+
+def append_kitchen_order_to_sheet(room, guest_name, order_details):
+    """Directly logs incoming food orders into the Kitchen_Orders tab"""
+    client = get_gspread_client()
+    if not client:
+        print("[SHEET WRITE ERROR]: Missing GSpread client credentials", flush=True)
+        return
+
+    try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
-        
         row_data = [now_str, str(room), str(guest_name), str(order_details), "PENDING"]
         sheet.append_row(row_data)
-        print(f"[SHEET WRITE SUCCESS]: Logged order for Room {room} -> {order_details}", flush=True)
+        print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room}", flush=True)
     except Exception as e:
         print(f"[SHEET WRITE EXCEPTION]: {e}", flush=True)
 
 # ==========================================
-# 3. SYSTEM PROMPT LOADER
+# 3. PROMPT & HELPER DISPATCH
 # ==========================================
 def get_system_prompt():
     file_path = os.path.join(os.path.dirname(__file__), "hotel_data.txt")
@@ -90,9 +129,6 @@ def get_system_prompt():
         print(f"[PROMPT ERROR]: {e}", flush=True)
         return "You are the WhatsApp AI Receptionist for Hotel Ganga View in Haridwar. Reply politely in 1-2 lines."
 
-# ==========================================
-# 4. HELPER FUNCTIONS & SHEET READ
-# ==========================================
 def keep_awake_ping():
     time.sleep(15)
     while True:
@@ -223,7 +259,12 @@ def verify_document_groq(image_id):
             "max_tokens": 100
         }
 
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=30)
+        res = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
         if res.status_code != 200:
             return None
 
@@ -232,59 +273,50 @@ def verify_document_groq(image_id):
         print(f"[GROQ VISION EXCEPTION]: {e}", flush=True)
         return None
 
-def fetch_sheet_records():
-    """Caches sheet in memory for CACHE_TTL_SECONDS"""
-    now = time.time()
-    if sheet_cache["data"] and (now - sheet_cache["last_fetched"] < CACHE_TTL_SECONDS):
-        return sheet_cache["data"]
-
-    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
-    try:
-        response = requests.get(csv_url, timeout=6)
-        if response.status_code == 200:
-            content = response.content.decode("utf-8")
-            reader = list(csv.DictReader(io.StringIO(content)))
-            sheet_cache["data"] = reader
-            sheet_cache["last_fetched"] = now
-            return reader
-    except Exception as e:
-        print(f"[SHEET CACHE REFRESH ERROR]: {e}", flush=True)
-    
-    return sheet_cache.get("data", [])
-
+# ==========================================
+# 4. GUEST & INVENTORY ENGINE
+# ==========================================
 def get_guest_stay_status(sender_phone):
-    """Matches last 10 digits against cached sheet records"""
+    """Matches 10-digit number against cached Rooms records"""
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     records = fetch_sheet_records()
     
     for row in records:
-        sheet_phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
-        status = str(row.get("Status", "")).strip().upper()
+        # Matches key whether headers have spaces or column letters
+        sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
+        status_val = row.get("Status") or row.get("Status (F)") or ""
+        sheet_phone = re.sub(r"\D", "", str(sheet_phone_val))[-10:]
+        status = str(status_val).strip().upper()
         
         if sheet_phone and sheet_phone == clean_sender and status == "CHECKED_IN":
+            room_no = row.get("Room") or row.get("Room (A)") or ""
+            guest_name = row.get("Guest Name") or row.get("Guest Name (D)") or ""
+            cat_name = row.get("Category") or row.get("Category (B)") or "Standard"
+            price_val = row.get("Price") or row.get("Price (C)") or ""
+
             return {
                 "is_inhouse": True,
-                "room": str(row.get("Room", "")).strip(),
-                "name": str(row.get("Guest Name", "")).strip(),
-                "category": str(row.get("Category", "Standard")).strip(),
-                "price": str(row.get("Price", "")).strip()
+                "room": str(room_no).strip(),
+                "name": str(guest_name).strip(),
+                "category": str(cat_name).strip(),
+                "price": str(price_val).strip()
             }
     return None
 
 def get_room_inventory_summary():
-    """Calculates available free rooms, cheap/budget options, and premium rooms"""
+    """Calculates live free rooms and cheap vs premium options"""
     records = fetch_sheet_records()
     available_rooms = []
     
     for row in records:
-        status = str(row.get("Status", "")).strip().upper()
-        room_no = str(row.get("Room", "")).strip()
-        category = str(row.get("Category", "Deluxe")).strip()
-        price = str(row.get("Price", "2000")).strip()
+        status_val = str(row.get("Status") or row.get("Status (F)") or "").strip().upper()
+        room_no = str(row.get("Room") or row.get("Room (A)") or "").strip()
+        category = str(row.get("Category") or row.get("Category (B)") or "Deluxe").strip()
+        price_val = str(row.get("Price") or row.get("Price (C)") or "2000").strip()
         
-        if status != "CHECKED_IN" and room_no:
+        if status_val != "CHECKED_IN" and room_no:
             try:
-                num_price = int(re.sub(r"\D", "", price)) if re.sub(r"\D", "", price) else 2000
+                num_price = int(re.sub(r"\D", "", price_val)) if re.sub(r"\D", "", price_val) else 2000
             except:
                 num_price = 2000
             available_rooms.append({
@@ -300,12 +332,11 @@ def get_room_inventory_summary():
     cheapest = available_rooms[0]
     premium = available_rooms[-1]
     
-    summary = (
+    return (
         f"Available Free Rooms Count: {len(available_rooms)}.\n"
         f"Budget/Sasta Option: {cheapest['category']} (Room {cheapest['room']}) at Rs. {cheapest['price']}/night.\n"
-        f"Premium/Luxury Option: {premium['category']} (Room {premium['room']}) at Rs. {premium['price']}/night."
+        f"Premium Option: {premium['category']} (Room {premium['room']}) at Rs. {premium['price']}/night."
     )
-    return summary
 
 def ask_cohere(user_message, sender_phone):
     history = chat_histories.get(sender_phone, [])
@@ -342,7 +373,6 @@ def ask_cohere(user_message, sender_phone):
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     
-    # Block fake orders from outside callers
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in user_text.lower() for w in service_keywords)
     
@@ -357,7 +387,6 @@ def process_and_reply(user_text, sender_phone):
 
     room_summary = get_room_inventory_summary()
     
-    prompt_input = user_text
     if guest_info:
         prompt_input = (
             f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']} | Category: {guest_info['category']}]\n"
@@ -388,7 +417,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
         
-        # Auto-write order directly into Google Sheet
+        # Async sheet write to Kitchen_Orders tab
         threading.Thread(
             target=append_kitchen_order_to_sheet,
             args=(
@@ -496,10 +525,15 @@ def monitor_new_checkins():
         try:
             records = fetch_sheet_records()
             for row in records:
-                phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
-                status = str(row.get("Status", "")).strip().upper()
-                name = str(row.get("Guest Name", "")).strip()
-                room = str(row.get("Room", "")).strip()
+                phone_val = row.get("Phone") or row.get("Phone (E)") or ""
+                status_val = row.get("Status") or row.get("Status (F)") or ""
+                name_val = row.get("Guest Name") or row.get("Guest Name (D)") or ""
+                room_val = row.get("Room") or row.get("Room (A)") or ""
+
+                phone = re.sub(r"\D", "", str(phone_val))[-10:]
+                status = str(status_val).strip().upper()
+                name = str(name_val).strip()
+                room = str(room_val).strip()
 
                 if status == "CHECKED_IN" and phone and (phone not in welcomed_guests):
                     welcome_msg = (
@@ -524,10 +558,15 @@ def monitor_new_checkins():
 def broadcast_to_inhouse_guests(message_template_fn):
     records = fetch_sheet_records()
     for row in records:
-        phone = re.sub(r"\D", "", str(row.get("Phone", "")))[-10:]
-        status = str(row.get("Status", "")).strip().upper()
-        name = str(row.get("Guest Name", "")).strip()
-        room = str(row.get("Room", "")).strip()
+        phone_val = row.get("Phone") or row.get("Phone (E)") or ""
+        status_val = row.get("Status") or row.get("Status (F)") or ""
+        name_val = row.get("Guest Name") or row.get("Guest Name (D)") or ""
+        room_val = row.get("Room") or row.get("Room (A)") or ""
+
+        phone = re.sub(r"\D", "", str(phone_val))[-10:]
+        status = str(status_val).strip().upper()
+        name = str(name_val).strip()
+        room = str(room_val).strip()
 
         if status == "CHECKED_IN" and phone:
             msg = message_template_fn(name, room)

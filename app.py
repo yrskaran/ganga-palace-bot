@@ -146,6 +146,29 @@ def get_guest_kitchen_bill_total(room_number):
         print(f"[BILL CALCULATION ERROR]: {e}", flush=True)
         return 0, []
 
+def calculate_stay_nights(check_in_str):
+    """Calculates number of nights from check_in_str to today (defaults to 1)"""
+    if not check_in_str:
+        return 1
+    
+    clean_date = str(check_in_str).strip()
+    date_formats = ["%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y"]
+    check_in_dt = None
+
+    for fmt in date_formats:
+        try:
+            check_in_dt = datetime.strptime(clean_date, fmt).date()
+            break
+        except ValueError:
+            continue
+
+    if not check_in_dt:
+        return 1
+
+    today = datetime.now(IST).date()
+    days = (today - check_in_dt).days
+    return max(1, days)
+
 # ==========================================
 # 3. PROMPT & HELPER DISPATCH
 # ==========================================
@@ -321,13 +344,15 @@ def get_guest_stay_status(sender_phone):
             guest_name = row.get("Guest Name") or row.get("Guest Name (D)") or ""
             cat_name = row.get("Category") or row.get("Category (B)") or "Standard"
             price_val = row.get("Price") or row.get("Price (C)") or ""
+            check_in_val = row.get("Check_In_Date") or row.get("Check_In_Date (G)") or ""
 
             return {
                 "is_inhouse": True,
                 "room": str(room_no).strip(),
                 "name": str(guest_name).strip(),
                 "category": str(cat_name).strip(),
-                "price": str(price_val).strip()
+                "price": str(price_val).strip(),
+                "check_in_date": str(check_in_val).strip()
             }
     return None
 
@@ -400,10 +425,11 @@ def ask_cohere(user_message, sender_phone):
 
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
+    text_lower = user_text.lower()
     
     # 1. Block unauthorized outside orders
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
-    is_service_query = any(w in user_text.lower() for w in service_keywords)
+    is_service_query = any(w in text_lower for w in service_keywords)
     
     if not guest_info and is_service_query:
         reject_reply = (
@@ -414,28 +440,69 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reject_reply)
         return
 
-    # 2. Dynamic Kitchen Bill Inquiry Handler
-    bill_keywords = ["bill", "hisaab", "hisab", "total kitna", "amount kitna", "kitne paise bane", "checkout bill", "total bill"]
-    if guest_info and any(k in user_text.lower() for k in bill_keywords):
-        total_due, items = get_guest_kitchen_bill_total(guest_info['room'])
-        room_rent = guest_info.get('price', 'N/A')
+    # 2. Smart Dynamic Bill Inquiry Handler (Kitchen vs Room vs Total Multi-Night)
+    bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due)"
+    if guest_info and re.search(bill_pattern, text_lower):
+        total_kitchen, items = get_guest_kitchen_bill_total(guest_info['room'])
+        room_rent_base = guest_info.get('price', '0')
+        rent_per_night = int(re.sub(r'\D', '', str(room_rent_base))) if re.sub(r'\D', '', str(room_rent_base)) else 0
         
+        # Calculate Stay Nights dynamically
+        nights = calculate_stay_nights(guest_info.get('check_in_date'))
+        total_room_rent = rent_per_night * nights
+
+        # Scenario A: User specifically asked for "Sirf Kitchen / Khana / Food"
+        is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta"])
+        is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
+
+        if is_only_kitchen and not is_only_room:
+            if items:
+                items_str = "\n".join(items)
+                bill_reply = (
+                    f"🍳 *Room {guest_info['room']} - Kitchen Orders Bill*\n"
+                    f"Guest Name: {guest_info['name']} ji\n\n"
+                    f"*Items Details:*\n{items_str}\n\n"
+                    f"💰 *Sirf Kitchen Ka Total:* ₹{total_kitchen}\n"
+                    f"*(Yeh bill room tariff se alag hai)*"
+                )
+            else:
+                bill_reply = f"Namaste {guest_info['name']} ji! Room {guest_info['room']} me koi kitchen bill pending nahi hai."
+            send_whatsapp_message(sender_phone, bill_reply)
+            return
+
+        # Scenario B: User specifically asked for "Sirf Room Bill / Tariff"
+        if is_only_room and not is_only_kitchen:
+            bill_reply = (
+                f"🏨 *Room {guest_info['room']} - Room Rent Details*\n"
+                f"Guest Name: {guest_info['name']} ji\n"
+                f"Room Category: {guest_info['category']}\n"
+                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n\n"
+                f"💰 *Total Room Tariff:* ₹{total_room_rent} (₹{rent_per_night}/night)"
+            )
+            send_whatsapp_message(sender_phone, bill_reply)
+            return
+
+        # Scenario C: Overall Total Bill (Kitchen + Room Stay Nights)
+        grand_total = total_kitchen + total_room_rent
         if items:
             items_str = "\n".join(items)
             bill_reply = (
-                f"🧾 *Room {guest_info['room']} - Live Bill Summary*\n"
-                f"Guest Name: {guest_info['name']} ji\n\n"
+                f"🧾 *Room {guest_info['room']} - Complete Bill Summary*\n"
+                f"Guest Name: {guest_info['name']} ji\n"
+                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n\n"
                 f"*Kitchen Orders:*\n{items_str}\n\n"
-                f"🍳 *Total Kitchen Bill:* ₹{total_due}\n"
-                f"🏨 *Room Tariff:* ₹{room_rent}\n"
+                f"🍳 *Kitchen Total:* ₹{total_kitchen}\n"
+                f"🏨 *Room Rent ({nights} Night{'s' if nights > 1 else ''}):* ₹{total_room_rent}\n"
                 f"-----------------------------------\n"
-                f"💳 *Status:* Pending (Check-out par settle karein)"
+                f"💳 *Grand Total Payable:* ₹{grand_total}\n"
+                f"*(Check-out ke waqt counter par settle karein)*"
             )
         else:
             bill_reply = (
                 f"Namaste {guest_info['name']} ji! 🙏\n\n"
-                f"Aapke Room {guest_info['room']} me abhi tak koi pending kitchen order nahi hai.\n"
-                f"🏨 *Room Tariff:* ₹{room_rent}."
+                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n"
+                f"🏨 *Total Room Rent:* ₹{total_room_rent}\n"
+                f"🍳 *Kitchen Bill:* ₹0"
             )
         send_whatsapp_message(sender_phone, bill_reply)
         return
@@ -652,7 +719,7 @@ def daily_concierge_scheduler():
                 alerts_sent_today["breakfast"] = today_str
 
             # 10:30 AM - Sightseeing
-            elif current_time_str == "10:30" and alerts_today["tourism"] != today_str:
+            elif current_time_str == "10:30" and alerts_sent_today["tourism"] != today_str:
                 broadcast_to_inhouse_guests(lambda name, room: (
                     f"Har Har Gange {name} ji! 🚩\n\n"
                     f"Haridwar Darshan Updates:\n"

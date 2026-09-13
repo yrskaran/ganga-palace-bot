@@ -21,7 +21,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 app = Flask(__name__)
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1357005434155447")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -141,7 +141,7 @@ def fetch_sheet_records():
     # Fallback to direct sheet query CSV if API fails
     csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
     try:
-        response = requests.get(csv_url, timeout=6)
+        response = requests.get(csv_url, timeout=5)
         if response.status_code == 200:
             content = response.content.decode("utf-8")
             reader = list(csv.DictReader(io.StringIO(content)))
@@ -168,7 +168,6 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
         
-        # Columns: Date_Time, Room, Guest Name, Order Details, Amount, Payment_Status
         row_data = [now_str, str(room), str(guest_name), str(order_details), str(clean_amount), "PENDING"]
         sheet.append_row(row_data)
         print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room} (Amount: Rs. {clean_amount})", flush=True)
@@ -246,14 +245,15 @@ def keep_awake_ping():
     while True:
         try:
             target_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
-            res = requests.get(target_url, timeout=15)
+            res = requests.get(target_url, timeout=10)
             print(f"[KEEP-ALIVE PING]: Status {res.status_code}", flush=True)
         except Exception as e:
             print(f"[KEEP-ALIVE FAIL]: {e}", flush=True)
         time.sleep(8 * 60)
 
 def mark_message_as_read(message_id):
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    pid = PHONE_NUMBER_ID or "1357005434155447"
+    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
@@ -274,7 +274,8 @@ def send_whatsapp_message(to_number, text):
         print(f"[DISPATCH ABORTED]: Invalid number format for {to_number}", flush=True)
         return None
 
-    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    pid = PHONE_NUMBER_ID or "1357005434155447"
+    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
         "Content-Type": "application/json"
@@ -288,10 +289,7 @@ def send_whatsapp_message(to_number, text):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
         res_json = res.json()
-        if res.status_code != 200:
-            print(f"[WHATSAPP DISPATCH ERROR {res.status_code}] Target: {clean_number} | Body: {res_json}", flush=True)
-        else:
-            print(f"[MSG DELIVERED OK] Target: {clean_number}", flush=True)
+        print(f"[META API RESPONSE] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
         return res_json
     except Exception as e:
         print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
@@ -453,7 +451,7 @@ def get_room_inventory_summary():
     
     return (
         f"Available Free Rooms Count: {len(available_rooms)}.\n"
-        f"Budget/Sasta Option: {cheapest['category']} (Room {cheapest['room']}) at Rs. {cheapest['price']}/night.\n"
+        f"Budget Option: {cheapest['category']} (Room {cheapest['room']}) at Rs. {cheapest['price']}/night.\n"
         f"Premium Option: {premium['category']} (Room {premium['room']}) at Rs. {premium['price']}/night."
     )
 
@@ -473,7 +471,7 @@ def ask_cohere(user_message, sender_phone):
     }
     
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=25)
+        response = requests.post(url, json=payload, headers=headers, timeout=20)
         if response.status_code != 200:
             return "Namaste! Batayein mai aapki kya madad kar sakta hoon?"
 
@@ -490,11 +488,19 @@ def ask_cohere(user_message, sender_phone):
         return "Namaste! Kripya batayein aapko kya chahiye?"
 
 def process_and_reply(user_text, sender_phone):
-    guest_info = get_guest_stay_status(sender_phone)
+    print(f"[PROCESS] Processing reply for {sender_phone}...", flush=True)
     clean_phone_key = re.sub(r"\D", "", str(sender_phone))[-10:]
+    
+    guest_info = None
+    try:
+        guest_info = get_guest_stay_status(sender_phone)
+        print(f"[PROCESS] Guest Info: {guest_info}", flush=True)
+    except Exception as e:
+        print(f"[SHEET LOOKUP ERROR]: {e}", flush=True)
+
     text_lower = user_text.lower().strip()
     
-    # 1. GREETING & AUTO-WELCOME (Jab guest pehla Hi/Hello kare)
+    # 1. GREETING & AUTO-WELCOME
     greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
     is_greeting = text_lower in greetings or len(text_lower) <= 2
     
@@ -523,7 +529,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reject_reply)
         return
 
-    # 3. ACCURATE BILL INQUIRY HANDLER (Khana vs Room vs Grand Total)
+    # 3. ACCURATE BILL INQUIRY HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due)"
     if guest_info and re.search(bill_pattern, text_lower):
         total_kitchen, items = get_guest_kitchen_bill_total(guest_info['room'])
@@ -536,7 +542,7 @@ def process_and_reply(user_text, sender_phone):
         is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
         is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
 
-        # Case A: Sirf Khane / Kitchen ka Bill
+        # Case A: Sirf Kitchen / Food
         if is_only_kitchen and not is_only_room:
             if items:
                 items_str = "\n".join(items)
@@ -552,7 +558,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case B: Sirf Room Rent / Tariff
+        # Case B: Sirf Room Rent
         if is_only_room and not is_only_kitchen:
             bill_reply = (
                 f"🏨 *Room {guest_info['room']} - Room Rent Details*\n"
@@ -565,7 +571,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case C: Complete Overall Bill (Kitchen + Room Stay)
+        # Case C: Grand Total (Kitchen + Room Stay)
         grand_total = total_kitchen + total_room_rent
         if items:
             items_str = "\n".join(items)
@@ -593,7 +599,8 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
-    # 4. Normal AI Processing with Context
+    # 4. Cohere Processing
+    print("[PROCESS] Querying Cohere AI...", flush=True)
     room_summary = get_room_inventory_summary()
     
     if guest_info:
@@ -608,16 +615,15 @@ def process_and_reply(user_text, sender_phone):
         )
 
     bot_reply = ask_cohere(prompt_input, sender_phone)
-    print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
+    print(f"[COHERE REPLY]: {bot_reply}", flush=True)
 
-    # 5. Handle Kitchen Alert Tag & Auto-Sheet Write with Verified Rates
+    # 5. Handle Kitchen Order Alert
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)(?:\s*\|\s*RATE:\s*(\d+))?\]", bot_reply)
         order_details = match.group(1).strip() if match and match.group(1) else "Food Order"
         parsed_rate = match.group(2).strip() if match and match.group(2) else "0"
         
         final_rate = int(parsed_rate) if int(parsed_rate) > 0 else resolve_item_price(order_details)
-
         bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
         
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Unverified Room"
@@ -646,7 +652,7 @@ def process_and_reply(user_text, sender_phone):
         if not bot_reply:
             bot_reply = f"Ji {guest_info['name'] if guest_info else ''} ji, aapka order note ho gaya hai aur jald room me deliver kar diya jayega."
 
-    # 6. Handle Staff Alert Tag
+    # 6. Handle Staff Alert
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
@@ -931,7 +937,6 @@ def start_background_threads():
     threading.Thread(target=daily_concierge_scheduler, daemon=True).start()
     print("[SYSTEM]: All background threads started successfully under Gunicorn.", flush=True)
 
-# Gunicorn start hote hi saare background loops trigger ho jayenge
 start_background_threads()
 
 if __name__ == "__main__":

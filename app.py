@@ -19,11 +19,11 @@ IST = timezone(timedelta(hours=5, minutes=30))
 # ==========================================
 app = Flask(__name__)
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1357005434155447")
-VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
-COHERE_API_KEY = os.getenv("COHERE_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1357005434155447").strip()
+VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
+COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
@@ -35,7 +35,6 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
-# DIRECT PUBLIC / GITHUB RAW IMAGE LINKS
 HOTEL_IMAGES = {
     "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
     "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
@@ -45,7 +44,6 @@ HOTEL_IMAGES = {
 chat_histories = {}
 processed_msg_ids = set()
 
-# Lock-Free Shared Store in RAM
 shared_store = {
     "rooms": [],
     "kitchen_orders": [],
@@ -116,12 +114,12 @@ def get_gspread_client():
         return None
 
 def sync_sheets_in_background():
-    print("[SYNC WORKER]: Background sync thread active.", flush=True)
+    print("[SYNC WORKER]: Background sync loop active...", flush=True)
     while True:
         try:
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
             try:
-                res_r = requests.get(csv_url_rooms, timeout=5)
+                res_r = requests.get(csv_url_rooms, timeout=4)
                 if res_r.status_code == 200:
                     records = list(csv.DictReader(io.StringIO(res_r.content.decode("utf-8"))))
                     if records:
@@ -131,7 +129,7 @@ def sync_sheets_in_background():
 
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
             try:
-                res_k = requests.get(csv_url_kitch, timeout=5)
+                res_k = requests.get(csv_url_kitch, timeout=4)
                 if res_k.status_code == 200:
                     k_records = list(csv.DictReader(io.StringIO(res_k.content.decode("utf-8"))))
                     if k_records:
@@ -271,7 +269,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (TEXT & ASYNC IMAGES)
+# 3. DIRECT DISPATCH ENGINE (EXACT META DEBUGGING)
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -298,6 +296,7 @@ def mark_message_as_read(message_id):
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
     if not clean_number:
+        print(f"[DISPATCH ABORTED]: Invalid number {to_number}", flush=True)
         return None
 
     pid = PHONE_NUMBER_ID or "1357005434155447"
@@ -314,45 +313,42 @@ def send_whatsapp_message(to_number, text):
     }
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
-        print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
+        print(f"[META DISPATCH TEXT] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
         return res.json()
     except Exception as e:
         print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
         return None
 
 def send_whatsapp_image(to_number, image_url, caption=""):
-    """Non-blocking asynchronous image sender with text URL fallback"""
-    def _async_send():
-        clean_number = format_whatsapp_number(to_number)
-        if not clean_number:
-            return
+    clean_number = format_whatsapp_number(to_number)
+    if not clean_number:
+        return None
 
-        pid = PHONE_NUMBER_ID or "1357005434155447"
-        url = f"https://graph.facebook.com/v20.0/{pid}/messages"
-        headers = {
-            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-            "Content-Type": "application/json"
+    pid = PHONE_NUMBER_ID or "1357005434155447"
+    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": clean_number,
+        "type": "image",
+        "image": {
+            "link": image_url.strip(),
+            "caption": caption
         }
-        payload = {
-            "messaging_product": "whatsapp",
-            "to": clean_number,
-            "type": "image",
-            "image": {
-                "link": image_url.strip(),
-                "caption": caption
-            }
-        }
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=12)
-            print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
-            if res.status_code != 200:
-                # Fallback if Meta media download handshake fails
-                send_whatsapp_message(clean_number, f"{caption}\n\n📸 Photo Link: {image_url}")
-        except Exception as e:
-            print(f"[IMAGE SEND ERROR]: {e}", flush=True)
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=12)
+        print(f"[META DISPATCH IMAGE] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
+        if res.status_code != 200:
             send_whatsapp_message(clean_number, f"{caption}\n\n📸 Photo Link: {image_url}")
-
-    threading.Thread(target=_async_send, daemon=True).start()
+        return res.json()
+    except Exception as e:
+        print(f"[IMAGE SEND EXCEPTION]: {e}", flush=True)
+        send_whatsapp_message(clean_number, f"{caption}\n\n📸 Photo Link: {image_url}")
+        return None
 
 def ask_cohere(user_message, sender_phone):
     if not COHERE_API_KEY:
@@ -388,7 +384,7 @@ def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. PHOTO HANDLER (NON-BLOCKING BACKGROUND DISPATCH)
+    # 1. PHOTO HANDLER
     photo_keywords = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna hai", "kaisa dikhta", "dikhao"]
     if any(pk in text_lower for pk in photo_keywords):
         print(f"[PHOTO ENGINE TRIGGERED] for {sender_phone}", flush=True)
@@ -408,13 +404,13 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute ki doori par! Shandar view. ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute door! ✨"
             )
         else:
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke behad kareeb! ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke behad paas! ✨"
             )
             send_whatsapp_image(
                 sender_phone, 

@@ -44,6 +44,8 @@ sheet_cache = {"data": [], "last_fetched": 0}
 CACHE_TTL_SECONDS = 15
 
 welcomed_guests = set()
+checked_out_guests = set()
+
 alerts_sent_today = {
     "breakfast": None,
     "tourism": None,
@@ -194,7 +196,6 @@ def get_guest_kitchen_bill_total(room_number):
                 amt_digits = re.sub(r"\D", "", raw_amt)
                 amt = int(amt_digits) if amt_digits else 0
                 
-                # Sheet me agar rate missing ya 0 tha toh menu se auto calculate karein
                 if amt <= 0:
                     amt = resolve_item_price(item_name)
                     
@@ -532,7 +533,6 @@ def process_and_reply(user_text, sender_phone):
         nights = calculate_stay_nights(guest_info.get('check_in_date'))
         total_room_rent = rent_per_night * nights
 
-        # Check intent specifics
         is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
         is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
 
@@ -722,7 +722,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
         print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
 
 # ==========================================
-# 5. CONCIERGE & CHECK-IN AUTOMATIONS
+# 5. CONCIERGE & CHECK-IN / CHECK-OUT AUTOMATIONS
 # ==========================================
 def send_checkin_feedback(phone, name, room):
     time.sleep(30 * 60)
@@ -736,7 +736,8 @@ def send_checkin_feedback(phone, name, room):
         )
         send_whatsapp_message(phone, feedback_msg)
 
-def monitor_new_checkins():
+def monitor_guest_status_lifecycle():
+    """Monitors both CHECKED_IN (Welcome) and CHECKED_OUT (Farewell & Final Settlement)"""
     while True:
         try:
             records = fetch_sheet_records()
@@ -751,7 +752,11 @@ def monitor_new_checkins():
                 name = str(name_val).strip()
                 room = str(room_val).strip()
 
-                if status == "CHECKED_IN" and phone and (phone not in welcomed_guests):
+                if not phone:
+                    continue
+
+                # 1. Automatic Welcome upon Check-in
+                if status == "CHECKED_IN" and (phone not in welcomed_guests):
                     welcome_msg = (
                         f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
                         f"Aapka check-in Room {room} me complete ho gaya hai.\n"
@@ -766,10 +771,23 @@ def monitor_new_checkins():
                         args=(phone, name, room),
                         daemon=True
                     ).start()
+
+                # 2. Automatic Check-out Farewell & Final Settlement Message
+                elif status in ["CHECKED_OUT", "CHECKOUT"] and (phone not in checked_out_guests):
+                    checkout_farewell = (
+                        f"Namaste {name} ji! 🙏\n\n"
+                        f"Room {room} ka check-out complete ho gaya hai aur aapka bill account settle kar diya gaya hai.\n\n"
+                        f"Hotel Ganga View, Haridwar me rukne ke liye aapka bahut-bahut dhanyawad! ✨\n"
+                        f"Aasha hai aapka stay aaramdayak raha hoga. Aapki aage ki yatra mangalmay ho! 🚩🌸\n\n"
+                        f"*(Dobara zaroor padhariyega!)*"
+                    )
+                    send_whatsapp_message(phone, checkout_farewell)
+                    checked_out_guests.add(phone)
+
         except Exception as e:
-            print(f"[CHECKIN MONITOR ERROR]: {e}", flush=True)
+            print(f"[LIFECYCLE MONITOR ERROR]: {e}", flush=True)
             
-        time.sleep(60)
+        time.sleep(45)
 
 def broadcast_to_inhouse_guests(message_template_fn):
     records = fetch_sheet_records()
@@ -902,6 +920,6 @@ def handle_webhook():
 # ==========================================
 if __name__ == "__main__":
     threading.Thread(target=keep_awake_ping, daemon=True).start()
-    threading.Thread(target=monitor_new_checkins, daemon=True).start()
+    threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
     threading.Thread(target=daily_concierge_scheduler, daemon=True).start()
     app.run(host="0.0.0.0", port=5000)

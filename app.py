@@ -35,7 +35,7 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
-# DEMO & LIVE HOTEL PHOTOS (Replace with your actual photo URLs if needed)
+# DEMO & LIVE HOTEL PHOTOS
 HOTEL_IMAGES = {
     "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
     "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
@@ -45,7 +45,6 @@ HOTEL_IMAGES = {
 chat_histories = {}
 processed_msg_ids = set()
 
-# Thread-safe global memory store
 shared_store = {
     "rooms": [],
     "kitchen_orders": [],
@@ -133,7 +132,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. BULLETPROOF CACHED GOOGLE SHEETS
+# 2. FAIL-SAFE GOOGLE SHEET READ & WRITE
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -150,20 +149,27 @@ def get_gspread_client():
         print(f"[GSPREAD AUTH ERROR]: {e}", flush=True)
         return None
 
+def refresh_shared_rooms():
+    """Direct fast CSV sync to guarantee memory store is never empty"""
+    try:
+        csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
+        res = requests.get(csv_url, timeout=3)
+        if res.status_code == 200:
+            records = list(csv.DictReader(io.StringIO(res.content.decode("utf-8"))))
+            if records:
+                shared_store["rooms"] = records
+                return records
+    except Exception as e:
+        print(f"[DIRECT CSV ROOMS ERROR]: {e}", flush=True)
+    return shared_store.get("rooms", [])
+
 def sync_sheets_in_background():
-    """Background worker that continuously keeps local store fresh without blocking webhooks"""
     while True:
         try:
+            refresh_shared_rooms()
             client = get_gspread_client()
             if client:
                 sh = client.open_by_key(SHEET_ID)
-                try:
-                    r_records = sh.worksheet("Rooms").get_all_records()
-                    if r_records:
-                        shared_store["rooms"] = r_records
-                except Exception as ex:
-                    print(f"[SYNC ROOMS ERROR]: {ex}", flush=True)
-
                 try:
                     k_records = sh.worksheet("Kitchen_Orders").get_all_records()
                     if k_records:
@@ -173,9 +179,9 @@ def sync_sheets_in_background():
 
                 shared_store["last_synced"] = time.time()
         except Exception as e:
-            print(f"[SYNC MAIN ERROR]: {e}", flush=True)
+            print(f"[SYNC WORKER ERROR]: {e}", flush=True)
 
-        time.sleep(12)
+        time.sleep(15)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     client = get_gspread_client()
@@ -214,6 +220,8 @@ def calculate_stay_nights(check_in_str):
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     records = shared_store.get("rooms", [])
+    if not records:
+        records = refresh_shared_rooms()
 
     for row in records:
         sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
@@ -303,28 +311,8 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         "balance_due": balance_due
     }
 
-def get_room_inventory_summary():
-    records = shared_store.get("rooms", [])
-    available_rooms = []
-    for row in records:
-        status_val = str(row.get("Status") or row.get("Status (F)") or "").strip().upper()
-        room_no = str(row.get("Room") or row.get("Room (A)") or "").strip()
-        category = str(row.get("Category") or row.get("Category (B)") or "Deluxe").strip()
-        price_val = str(row.get("Price") or row.get("Price (C)") or "2000").strip()
-        if status_val != "CHECKED_IN" and room_no:
-            try:
-                num_price = int(re.sub(r"\D", "", price_val)) if re.sub(r"\D", "", price_val) else 2000
-            except:
-                num_price = 2000
-            available_rooms.append({"room": room_no, "category": category, "price": num_price})
-
-    if available_rooms:
-        available_rooms.sort(key=lambda x: x["price"])
-        return f"Rooms Available: {len(available_rooms)}. Budget: {available_rooms[0]['category']} at Rs. {available_rooms[0]['price']}/night."
-    return "Rooms available starting from Rs. 2000/night."
-
 # ==========================================
-# 3. PROMPT & DISPATCH (TEXT & IMAGES)
+# 3. PROMPT & DISPATCH
 # ==========================================
 def get_system_prompt():
     file_path = os.path.join(os.path.dirname(__file__), "hotel_data.txt")
@@ -418,69 +406,6 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         print(f"[IMAGE SEND ERROR]: {e}", flush=True)
         return None
 
-def download_media(media_id):
-    try:
-        meta_url = f"https://graph.facebook.com/v20.0/{media_id}"
-        res = requests.get(meta_url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}"}, timeout=8)
-        media_url = res.json().get("url")
-        if not media_url:
-            return None
-        file_res = requests.get(media_url, headers={"Authorization": f"Bearer {WHATSAPP_TOKEN}", "User-Agent": "curl/7.68.0"}, timeout=15)
-        if file_res.status_code == 200:
-            return file_res.content
-        return None
-    except:
-        return None
-
-def transcribe_audio_groq(audio_id):
-    try:
-        audio_content = download_media(audio_id)
-        if not audio_content:
-            return None
-        files = {"file": ("audio.ogg", audio_content, "audio/ogg")}
-        data = {"model": "whisper-large-v3", "response_format": "text"}
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
-        whisper_res = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data, timeout=15)
-        return whisper_res.text.strip()
-    except:
-        return None
-
-def verify_document_groq(image_id):
-    try:
-        image_content = download_media(image_id)
-        if not image_content:
-            return None
-        base64_image = base64.b64encode(image_content).decode("utf-8")
-        prompt = (
-            "You are a Hotel Document Verification Assistant. "
-            "Determine if this image is a valid Indian Government ID Proof "
-            "(Aadhaar, PAN Card, Driving License, Voter ID, or Passport). "
-            "Never output identification numbers. "
-            "If valid Govt ID, reply strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
-            "If invalid, blurry, or not Govt ID, reply strictly: INVALID | REASON: <blurry or not_govt_id>"
-        )
-        headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
-        payload = {
-            "model": "llama-3.2-11b-vision-preview",
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
-            "temperature": 0.1,
-            "max_tokens": 100
-        }
-        res = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=payload, timeout=20)
-        if res.status_code == 200:
-            return res.json()["choices"][0]["message"]["content"].strip()
-    except:
-        pass
-    return None
-
 def ask_cohere(user_message, sender_phone):
     history = chat_histories.get(sender_phone, [])
     url = "https://api.cohere.ai/v1/chat"
@@ -492,7 +417,7 @@ def ask_cohere(user_message, sender_phone):
         "temperature": 0.1
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
         if res.status_code == 200:
             reply_text = res.json().get("text", "").strip()
             if reply_text:
@@ -502,7 +427,7 @@ def ask_cohere(user_message, sender_phone):
                 return reply_text
     except Exception as e:
         print(f"[COHERE ERROR]: {e}", flush=True)
-    return "Namaste! Batayein Hotel Ganga View me aapki kya madad kar sakta hoon?"
+    return "Namaste! Batayein Hotel Ganga View me mai aapki kya seva kar sakta hoon? 🙏"
 
 # ==========================================
 # 4. MAIN MESSAGE PROCESSING PIPELINE
@@ -547,16 +472,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, welcome_reply)
         return
 
-    # 3. Block unauthorized outside orders
-    service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
-    if not guest_info and any(w in text_lower for w in service_keywords):
-        send_whatsapp_message(
-            sender_phone,
-            "Namaste! 🙏 Hamari room service suvidha sirf hotel me stay kar rahe registered guests ke liye hai. Counter par apna number register karwayein."
-        )
-        return
-
-    # 4. INSTANT COMPLETE BILL HANDLER (Total, Paid, Balance)
+    # 3. INSTANT COMPLETE BILL HANDLER (Total, Paid, Balance)
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
         print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
@@ -565,7 +481,6 @@ def process_and_reply(user_text, sender_phone):
         is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
         is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
 
-        # Case A: Sirf Kitchen Orders
         if is_only_kitchen and not is_only_room:
             pending_items = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi order pending nahi"
             paid_str = f"✅ *Paid Amount:* ₹{fin['paid_kitchen']}\n" if fin['paid_kitchen'] > 0 else ""
@@ -580,7 +495,6 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case B: Sirf Room Rent Details
         if is_only_room and not is_only_kitchen:
             adv_str = f"✅ *Advance Paid:* ₹{fin['room_advance_paid']}\n" if fin['room_advance_paid'] > 0 else ""
             room_due = max(0, fin['total_room_rent'] - fin['room_advance_paid'])
@@ -596,7 +510,6 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case C: Complete Overall Financial Statement
         bill_reply = (
             f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
             f"Guest Name: {fin['guest_name']} ji ({fin['nights']} Night{'s' if fin['nights'] > 1 else ''})\n\n"
@@ -612,17 +525,16 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
-    # 5. COMPLAINT INTERCEPTOR
+    # 4. COMPLAINT INTERCEPTOR
     complaint_words = ["thandi", "kharab", "thanda", "bekar", "nahi chal", "not working", "badbu", "late"]
     is_complaint = any(cw in text_lower for cw in complaint_words)
 
-    # 6. Cohere AI Process
+    # 5. Cohere AI Process (Non-blocking fallback)
     print("[PROCESS] Cohere query...", flush=True)
-    room_summary = get_room_inventory_summary()
-    prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\n{user_text}" if guest_info else f"[HOTEL INVENTORY]: {room_summary}\n[CUSTOMER INQUIRY]: {user_text}"
+    prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\n{user_text}" if guest_info else f"[CUSTOMER INQUIRY]: {user_text}"
     bot_reply = ask_cohere(prompt_input, sender_phone)
 
-    # 7. Kitchen Order vs Complaint Guardrail
+    # 6. Kitchen Order vs Complaint Guardrail
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)(?:\s*\|\s*RATE:\s*(\d+))?\]", bot_reply)
         order_details = match.group(1).strip() if match and match.group(1) else "Food Order"
@@ -689,31 +601,6 @@ def handle_incoming_async(message, sender_phone, msg_type):
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
-
-        elif msg_type in ["audio", "voice"]:
-            audio_id = message.get("audio", {}).get("id") or message.get("voice", {}).get("id")
-            transcribed_text = transcribe_audio_groq(audio_id)
-            if transcribed_text:
-                process_and_reply(transcribed_text, sender_phone)
-            else:
-                send_whatsapp_message(sender_phone, "Voice note clear nahi tha, kripya dobara bhejiyega.")
-
-        elif msg_type == "image":
-            image_id = message.get("image", {}).get("id")
-            verification_result = verify_document_groq(image_id)
-            if verification_result and verification_result.startswith("VALID"):
-                send_whatsapp_message(sender_phone, "Thank you! 🙏 Aapka ID document verify ho gaya hai.")
-                send_whatsapp_message(STAFF_PHONE, f"🪪 *GUEST ID VERIFIED*\n{verification_result}\nGuest: +{sender_phone}")
-            else:
-                send_whatsapp_message(sender_phone, "Photo saaf nahi hai ya valid Govt ID nahi hai. Kripya doosra document share karein.")
-
-        elif msg_type == "location":
-            loc_data = message.get("location", {})
-            user_lat = loc_data.get("latitude")
-            user_lon = loc_data.get("longitude")
-            maps_route_url = f"https://www.google.com/maps/dir/?api=1&origin={user_lat},{user_lon}&destination={HOTEL_LAT},{HOTEL_LON}"
-            send_whatsapp_message(sender_phone, f"📍 *Hotel Navigation Route:*\n{maps_route_url}")
-
     except Exception as e:
         print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
 
@@ -721,7 +608,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
 # 5. LIFECYCLE & REAL-TIME PAYMENT MONITOR
 # ==========================================
 def monitor_guest_status_lifecycle():
-    print("[LIFECYCLE MONITOR]: Background monitor active.", flush=True)
+    print("[LIFECYCLE MONITOR]: Running background listener.", flush=True)
     while True:
         try:
             records = shared_store.get("rooms", [])
@@ -847,7 +734,7 @@ def start_background_threads():
     threading.Thread(target=keep_awake_ping, daemon=True).start()
     threading.Thread(target=sync_sheets_in_background, daemon=True).start()
     threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
-    print("[SYSTEM]: Background workers started successfully.", flush=True)
+    print("[SYSTEM]: Non-blocking background workers initialized.", flush=True)
 
 start_background_threads()
 

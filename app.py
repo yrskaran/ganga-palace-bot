@@ -391,41 +391,31 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, loc_msg)
         return
 
-    # 2. PHOTO HANDLER
+    # 2. PHOTO HANDLER WITH GUARANTEED TEXT FALLBACK
     photo_words = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna", "dikhao", "dede", "kamra"]
     if any(pw in text_lower for pw in photo_words):
         print(f"[PHOTO DISPATCH] Executing for {sender_phone}", flush=True)
-        if "deluxe" in text_lower or "ac" in text_lower:
-            send_whatsapp_image(
-                sender_phone,
-                HOTEL_IMAGES["deluxe"],
-                caption="🛏️ *Deluxe Room View (Hotel Ganga View)*\nAttached Bath, King Bed, AC & Wi-Fi ✨\nRate: ₹2,500/night"
-            )
-        elif "standard" in text_lower or "budget" in text_lower or "sasta" in text_lower:
-            send_whatsapp_image(
-                sender_phone,
-                HOTEL_IMAGES["standard"],
-                caption="🛏️ *Standard Room (Hotel Ganga View)*\nClean Bed, Geyser, TV & Free Wi-Fi ✨\nRate: ₹1,800/night"
-            )
-        elif "hotel" in text_lower or "front" in text_lower or "building" in text_lower:
-            send_whatsapp_image(
-                sender_phone,
-                HOTEL_IMAGES["front"],
-                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute door! ✨"
-            )
-        else:
-            send_whatsapp_image(
-                sender_phone,
-                HOTEL_IMAGES["front"],
-                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke behad paas! ✨"
-            )
-            send_whatsapp_image(
-                sender_phone,
-                HOTEL_IMAGES["deluxe"],
-                caption="🛏️ *Deluxe Room View*\nTariff: ₹1,800 - ₹2,500/night. Booking ke liye batayein! 🙏"
-            )
-        return
+        
+        # Direct image dispatch attempt
+        send_whatsapp_image(
+            sender_phone,
+            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg",
+            caption="🏨 *Hotel Ganga View, Haridwar* (Near Har Ki Pauri)"
+        )
 
+        # Guaranteed text-link fallback card so the user instantly sees the link/photo
+        fallback_showcase = (
+            "🏨 *Hotel Ganga View, Haridwar* 🌸\n"
+            "📍 *Location:* Near Har Ki Pauri (2 mins walking)\n\n"
+            "📸 *Direct Photo Link:*\n"
+            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg\n\n"
+            "💰 *Tariff & Rates:*\n"
+            "• *Standard Non-AC:* ₹1,800 / night\n"
+            "• *Deluxe AC Room:* ₹2,500 / night\n\n"
+            "Booking ke liye apni dates batayein! 🙏"
+        )
+        send_whatsapp_message(sender_phone, fallback_showcase)
+        return
     # 3. IN-HOUSE BILL HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):

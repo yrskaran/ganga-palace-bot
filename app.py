@@ -31,7 +31,8 @@ STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
-SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
+# Render ke environment variable me SHEET_ID update karein agar doosri sheet hai
+SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
@@ -266,7 +267,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (TEXT & ASYNC IMAGES)
+# 3. DISPATCH ENGINE (TEXT, IMAGES & READ TICK)
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -284,28 +285,36 @@ def mark_message_as_read(message_id):
         if not pid or not WHATSAPP_TOKEN:
             return
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
-        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-        payload = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
+        headers = {
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id
+        }
         try:
-            requests.post(url, json=payload, headers=headers, timeout=5)
-        except Exception:
-            pass
+            res = requests.post(url, json=payload, headers=headers, timeout=6)
+            print(f"[META READ RECEIPT] Status: {res.status_code} | MsgID: {message_id}", flush=True)
+        except Exception as e:
+            print(f"[READ RECEIPT ERROR]: {e}", flush=True)
     threading.Thread(target=_mark, daemon=True).start()
 
 def send_whatsapp_message(to_number, text):
     def _do():
         clean_number = format_whatsapp_number(to_number)
         if not clean_number:
-            print(f"[DISPATCH ERROR]: Invalid phone number format: {to_number}", flush=True)
+            print(f"[DISPATCH ERROR]: Invalid phone number: {to_number}", flush=True)
             return
 
         pid = (PHONE_NUMBER_ID or "").strip()
         if not pid:
-            print("[DISPATCH ERROR]: PHONE_NUMBER_ID environment variable is missing!", flush=True)
+            print("[DISPATCH ERROR]: PHONE_NUMBER_ID missing!", flush=True)
             return
 
         if not WHATSAPP_TOKEN:
-            print("[DISPATCH ERROR]: WHATSAPP_TOKEN environment variable is missing!", flush=True)
+            print("[DISPATCH ERROR]: WHATSAPP_TOKEN missing!", flush=True)
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -334,7 +343,6 @@ def send_whatsapp_image(to_number, image_url, caption=""):
 
         pid = (PHONE_NUMBER_ID or "").strip()
         if not pid or not WHATSAPP_TOKEN:
-            print("[IMAGE ERROR]: PHONE_NUMBER_ID or WHATSAPP_TOKEN is missing!", flush=True)
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"

@@ -31,7 +31,6 @@ STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
-# Render ke environment variable me SHEET_ID update karein agar doosri sheet hai
 SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
@@ -51,9 +50,11 @@ shared_store = {
     "last_synced": 0
 }
 
+# State Tracking Sets
 welcomed_guests = set()
 checked_out_guests = set()
 notified_paid_orders = set()
+is_first_sync = True
 
 MENU_PRICES = {
     "chai": 30, "tea": 30, "coffee": 50, "aloo paratha": 90, "paratha": 90,
@@ -140,7 +141,7 @@ def sync_sheets_in_background():
         except Exception:
             pass
 
-        time.sleep(12)
+        time.sleep(10)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     client = get_gspread_client()
@@ -267,7 +268,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (TEXT, IMAGES & READ TICK)
+# 3. DISPATCH ENGINE (GREEN TICK + SEND)
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -280,41 +281,33 @@ def keep_awake_ping():
         time.sleep(8 * 60)
 
 def mark_message_as_read(message_id):
-    def _mark():
-        pid = (PHONE_NUMBER_ID or "").strip()
-        if not pid or not WHATSAPP_TOKEN:
-            return
-        url = f"https://graph.facebook.com/v20.0/{pid}/messages"
-        headers = {
-            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "messaging_product": "whatsapp",
-            "status": "read",
-            "message_id": message_id
-        }
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=6)
-            print(f"[META READ RECEIPT] Status: {res.status_code} | MsgID: {message_id}", flush=True)
-        except Exception as e:
-            print(f"[READ RECEIPT ERROR]: {e}", flush=True)
-    threading.Thread(target=_mark, daemon=True).start()
+    pid = (PHONE_NUMBER_ID or "").strip()
+    if not pid or not WHATSAPP_TOKEN:
+        return
+    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
+    headers = {
+        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": message_id
+    }
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        print(f"[META GREEN TICK] Status: {res.status_code} | Msg: {message_id}", flush=True)
+    except Exception as e:
+        print(f"[META GREEN TICK FAIL]: {e}", flush=True)
 
 def send_whatsapp_message(to_number, text):
     def _do():
         clean_number = format_whatsapp_number(to_number)
         if not clean_number:
-            print(f"[DISPATCH ERROR]: Invalid phone number: {to_number}", flush=True)
             return
 
         pid = (PHONE_NUMBER_ID or "").strip()
-        if not pid:
-            print("[DISPATCH ERROR]: PHONE_NUMBER_ID missing!", flush=True)
-            return
-
-        if not WHATSAPP_TOKEN:
-            print("[DISPATCH ERROR]: WHATSAPP_TOKEN missing!", flush=True)
+        if not pid or not WHATSAPP_TOKEN:
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -330,7 +323,7 @@ def send_whatsapp_message(to_number, text):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=10)
-            print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
+            print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
         except Exception as e:
             print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
     threading.Thread(target=_do, daemon=True).start()
@@ -361,7 +354,7 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=12)
-            print(f"[META IMAGE] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
+            print(f"[META IMAGE] Status: {res.status_code} | Target: {clean_number}", flush=True)
             if res.status_code != 200:
                 send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
         except Exception:
@@ -388,12 +381,12 @@ def ask_cohere(user_message, sender_phone):
             reply_text = res.json().get("text", "").strip()
             if reply_text:
                 return reply_text
-    except Exception as e:
-        print(f"[COHERE TIMEOUT/FAIL]: {e}", flush=True)
+    except Exception:
+        pass
     return None
 
 # ==========================================
-# 4. MAIN MESSAGE PROCESSING PIPELINE
+# 4. MESSAGE PROCESS PIPELINE
 # ==========================================
 def process_and_reply(user_text, sender_phone):
     print(f"[PROCESS START] '{user_text}' from {sender_phone}", flush=True)
@@ -402,37 +395,33 @@ def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. LOCATION / MAP HANDLER
-    loc_words = ["location", "map", "address", "kahan hai", "pauri", "reach", "direction", "rasta", "kahan sthit"]
+    # 1. LOCATION HANDLER
+    loc_words = ["location", "map", "address", "kahan hai", "pauri", "reach", "direction", "rasta", "kahan sthit", "kaha pe"]
     if any(lw in text_lower for lw in loc_words):
-        print(f"[LOCATION DISPATCH] For {sender_phone}", flush=True)
         loc_msg = (
             "📍 *Hotel Ganga View, Haridwar*\n"
             "Har Ki Pauri se sirf 2 minute ki walking distance par sthit hai!\n\n"
             "🗺️ *Google Maps Direction:*\n"
             "https://maps.google.com/?q=29.9530,78.1700\n\n"
-            "Koi bhi samasya ho toh aap humein direct call kar sakte hain! 🙏"
+            "Koi bhi sahayata ke liye aap direct call kar sakte hain! 🙏"
         )
         send_whatsapp_message(sender_phone, loc_msg)
         return
 
-    # 2. PHOTO HANDLER WITH GUARANTEED TEXT FALLBACK
+    # 2. PHOTO HANDLER
     photo_words = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna", "dikhao", "dede", "kamra"]
     if any(pw in text_lower for pw in photo_words):
-        print(f"[PHOTO DISPATCH] Executing for {sender_phone}", flush=True)
-        
         send_whatsapp_image(
             sender_phone,
             "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg",
             caption="🏨 *Hotel Ganga View, Haridwar* (Near Har Ki Pauri)"
         )
-
         fallback_showcase = (
             "🏨 *Hotel Ganga View, Haridwar* 🌸\n"
             "📍 *Location:* Near Har Ki Pauri (2 mins walking)\n\n"
-            "📸 *Direct Photo Link:*\n"
+            "📸 *Direct Photo:*\n"
             "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg\n\n"
-            "💰 *Tariff & Rates:*\n"
+            "💰 *Rates:*\n"
             "• *Standard Non-AC:* ₹1,800 / night\n"
             "• *Deluxe AC Room:* ₹2,500 / night\n\n"
             "Booking ke liye apni dates batayein! 🙏"
@@ -440,10 +429,9 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, fallback_showcase)
         return
 
-    # 3. IN-HOUSE BILL HANDLER
+    # 3. IN-HOUSE BILL HANDLER (Sirf Checked-in Guest ke liye)
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
-        print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
         fin = get_guest_comprehensive_financials(guest_info['room'], sender_phone)
         is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
         is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
@@ -452,55 +440,37 @@ def process_and_reply(user_text, sender_phone):
             pending_items = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi order pending nahi"
             paid_str = f"✅ *Paid Amount:* ₹{fin['paid_kitchen']}\n" if fin['paid_kitchen'] > 0 else ""
             bill_reply = (
-                f"🍳 *Room {guest_info['room']} - Kitchen Orders Summary*\n"
+                f"🍳 *Room {guest_info['room']} - Kitchen Orders*\n"
                 f"Guest: {fin['guest_name']} ji\n\n"
                 f"*Pending Orders:*\n{pending_items}\n\n"
-                f"💰 *Total Kitchen Orders:* ₹{fin['total_kitchen']}\n"
+                f"💰 *Total Kitchen:* ₹{fin['total_kitchen']}\n"
                 f"{paid_str}"
-                f"⚠️ *Kitchen Balance Due:* ₹{fin['pending_kitchen']}"
-            )
-            send_whatsapp_message(sender_phone, bill_reply)
-            return
-
-        if is_only_room and not is_only_kitchen:
-            adv_str = f"✅ *Advance Paid:* ₹{fin['room_advance_paid']}\n" if fin['room_advance_paid'] > 0 else ""
-            room_due = max(0, fin['total_room_rent'] - fin['room_advance_paid'])
-            bill_reply = (
-                f"🏨 *Room {guest_info['room']} - Room Rent Details*\n"
-                f"Guest Name: {fin['guest_name']} ji\n"
-                f"Stay Duration: {fin['nights']} Night{'s' if fin['nights'] > 1 else ''}\n"
-                f"Per Night Rate: ₹{fin['room_rate']}\n\n"
-                f"💰 *Total Room Tariff:* ₹{fin['total_room_rent']}\n"
-                f"{adv_str}"
-                f"⚠️ *Room Tariff Due:* ₹{room_due}"
+                f"⚠️ *Kitchen Balance:* ₹{fin['pending_kitchen']}"
             )
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
         bill_reply = (
-            f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
-            f"Guest Name: {fin['guest_name']} ji ({fin['nights']} Night{'s' if fin['nights'] > 1 else ''})\n\n"
-            f"🏨 *Room Rent ({fin['nights']}N @ ₹{fin['room_rate']}):* ₹{fin['total_room_rent']}\n"
-            f"🍳 *Kitchen Orders Total:* ₹{fin['total_kitchen']}\n"
-            f"-----------------------------------\n"
-            f"💵 *Grand Total Bill:* ₹{fin['grand_total']}\n\n"
-            f"✅ *Aapne Jamah Kiya (Paid):* ₹{fin['total_paid']}\n"
-            f"-----------------------------------\n"
-            f"💳 *Abhi Bacha Hua (Balance Due):* ₹{fin['balance_due']}\n"
-            f"*(Aap balance amount check-out counter par settle kar sakte hain)*"
+            f"🧾 *Room {guest_info['room']} - Bill Statement*\n"
+            f"Guest Name: {fin['guest_name']} ji\n\n"
+            f"🏨 *Room Rent:* ₹{fin['total_room_rent']}\n"
+            f"🍳 *Kitchen Orders:* ₹{fin['total_kitchen']}\n"
+            f"💵 *Grand Total:* ₹{fin['grand_total']}\n\n"
+            f"✅ *Paid:* ₹{fin['total_paid']}\n"
+            f"💳 *Balance Due:* ₹{fin['balance_due']}"
         )
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
     # 4. GREETINGS
-    greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
-    if text_lower in greetings or len(text_lower) <= 2:
+    greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo", "good", "bol", "bolo"]
+    if text_lower in greetings or len(text_lower) <= 3:
         if guest_info:
             reply_msg = (
-                f"Namaste {guest_info['name']} ji! 🙏\n\n"
-                f"Aapka swagat hai Room {guest_info['room']} ({guest_info['category']}) me.\n"
+                f"Namaste {guest_info['name']} ji! 🙏\n"
+                f"Aapka swagat hai Room {guest_info['room']}.\n"
                 f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
-                f"Batayein, mai aapke liye khana mangwaun ya housekeeping ki zaroorat hai?"
+                f"Batayein, mai aapke liye khana mangwaun ya housekeeping bhejun?"
             )
         else:
             reply_msg = (
@@ -511,103 +481,32 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reply_msg)
         return
 
-    # 5. COMPLAINT INTERCEPTOR
-    complaint_words = ["thandi", "kharab", "thanda", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat"]
-    is_complaint = any(cw in text_lower for cw in complaint_words)
-
-    # 6. COHERE INTENT RESOLVER
+    # 5. FALLBACK / AI RESOLVER
     prompt_input = (
         f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" 
         if guest_info 
         else f"[PROSPECTIVE CUSTOMER INQUIRY]\n{user_text}"
     )
     bot_reply = ask_cohere(prompt_input, sender_phone)
-
     if not bot_reply:
-        if not guest_info:
-            bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein ya booking details batayein!"
-        elif any(w in text_lower for w in ["chai", "tea", "roti", "khana", "paratha", "order"]):
-            bot_reply = f"[KITCHEN_ALERT: {user_text}] Ji, aapka order note ho gaya hai aur jald deliver ho jayega."
-        elif is_complaint:
-            bot_reply = f"[STAFF_ALERT: {user_text}] Ji, aapki samasya note kar li gayi hai. Staff turant attend karega."
-        else:
-            bot_reply = "Ji batayein, mai aapki kya sahayata kar sakta hoon?"
+        bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein ya dates batayein!"
 
-    # 7. KITCHEN ORDER VS COMPLAINT DISPATCH
-    if "[KITCHEN_ALERT:" in bot_reply:
-        match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)(?:\s*\|\s*RATE:\s*(\d+))?\]", bot_reply)
-        order_details = match.group(1).strip() if match and match.group(1) else "Food Order"
-        parsed_rate = match.group(2).strip() if match and match.group(2) else "0"
-
-        if is_complaint:
-            bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
-            room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Unverified Room"
-            staff_msg = (
-                f"🛎️ *COMPLAINT / REPLACEMENT ALERT*\n\n"
-                f"📌 *Location:* {room_tag}\n"
-                f"📋 *Issue:* Guest reported - '{user_text}'\n"
-                f"⚠️ *Note:* Resolve / Replace item immediately (No extra billing!)\n"
-                f"📞 *Contact:* +{sender_phone}"
-            )
-            send_whatsapp_message(STAFF_PHONE, staff_msg)
-        elif guest_info:
-            final_rate = int(parsed_rate) if int(parsed_rate) > 0 else resolve_item_price(order_details)
-            bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
-
-            room_tag = f"Room {guest_info['room']} ({guest_info['name']})"
-            rate_display = f"₹{final_rate}" if final_rate > 0 else "Standard Rates"
-            kitchen_msg = (
-                f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
-                f"📌 *Location:* {room_tag}\n"
-                f"📋 *Order:* {order_details}\n"
-                f"💰 *Bill Amount:* {rate_display}\n"
-                f"📞 *Contact:* +{sender_phone}\n\n"
-                f"⚡ Order deliver karein!"
-            )
-            send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
-
-            threading.Thread(
-                target=append_kitchen_order_to_sheet,
-                args=(guest_info['room'], guest_info['name'], order_details, final_rate),
-                daemon=True
-            ).start()
-        else:
-            bot_reply = "Namaste! Room service orders sirf checked-in guests ke liye hain. Booking inquiry ya photos ke liye batayein!"
-
-    if "[STAFF_ALERT:" in bot_reply:
-        match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
-        service_details = match.group(1) if match else "Staff Assistance Requested"
-        bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
-        room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Customer Query"
-        staff_msg = (
-            f"🛎️ *STAFF ALERT*\n\n"
-            f"📌 *Location:* {room_tag}\n"
-            f"📋 *Details:* {service_details}\n"
-            f"📞 *Contact:* +{sender_phone}\n\n"
-            f"⚡ Turant attend karein!"
-        )
-        send_whatsapp_message(STAFF_PHONE, staff_msg)
-
-    bot_reply = re.sub(r"\[.*?\]", "", bot_reply).strip()
-    if bot_reply:
-        send_whatsapp_message(sender_phone, bot_reply)
-
-def handle_incoming_async(message, sender_phone, msg_type):
-    try:
-        if msg_type == "text":
-            user_text = message.get("text", {}).get("body", "")
-            process_and_reply(user_text, sender_phone)
-    except Exception as e:
-        print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
+    send_whatsapp_message(sender_phone, bot_reply)
 
 # ==========================================
-# 5. LIFECYCLE & PAYMENT MONITOR
+# 5. LIFECYCLE MONITOR (CHECKIN & CHECKOUT MSG ON, RESTART SPAM OFF)
 # ==========================================
 def monitor_guest_status_lifecycle():
+    global is_first_sync
     while True:
         try:
             records = shared_store.get("rooms", [])
-            room_phone_map = {}
+            active_rooms = {}        # Room -> phone (Sirf CHECKED_IN)
+            checked_out_rooms = set() # Check-out hue rooms
+
+            # 1. Pehle current sheet ka state build karo
+            current_checked_in = {}
+            current_checked_out = {}
 
             for row in records:
                 phone_val = row.get("Phone") or row.get("Phone (E)") or ""
@@ -620,30 +519,59 @@ def monitor_guest_status_lifecycle():
                 name = str(name_val).strip()
                 room = str(room_val).strip()
 
-                if not phone:
+                if not phone or not room:
                     continue
 
-                room_phone_map[room] = phone
+                if status in ["CHECKED_OUT", "CHECKOUT"]:
+                    checked_out_rooms.add(room)
+                    current_checked_out[phone] = {"name": name, "room": room}
 
-                if status == "CHECKED_IN" and (phone not in welcomed_guests):
+                elif status == "CHECKED_IN":
+                    active_rooms[room] = phone
+                    current_checked_in[phone] = {"name": name, "room": room}
+
+            # First sync boot grace: Purane data ko baseline banao taaki server start hote hi 5 msg na feke
+            if is_first_sync:
+                welcomed_guests.update(current_checked_in.keys())
+                checked_out_guests.update(current_checked_out.keys())
+                
+                # Saare purane paid orders ko memoize karo
+                k_records = shared_store.get("kitchen_orders", [])
+                for idx, k_row in enumerate(k_records, start=2):
+                    k_room = str(k_row.get("Room") or k_row.get("Room (B)") or "").strip()
+                    k_amt = str(k_row.get("Amount") or k_row.get("Amount (E)") or "0")
+                    k_status = str(k_row.get("Payment_Status") or k_row.get("Payment_Status (F)") or "").strip().upper()
+                    if k_status == "PAID":
+                        notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
+                
+                is_first_sync = False
+                time.sleep(8)
+                continue
+
+            # CHECK-IN MESSAGE (Jab koi naya guest CHECKED_IN ho)
+            for phone, gdata in current_checked_in.items():
+                if phone not in welcomed_guests:
                     welcome_msg = (
-                        f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
-                        f"Aapka check-in Room {room} me complete ho gaya hai.\n"
-                        f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
-                        f"Room service ya kisi bhi sahayata ke liye bas yahan message karein. Namaste! 🙏"
+                        f"Welcome to Hotel Ganga View, {gdata['name']} ji! 🏨✨\n\n"
+                        f"Aapka check-in Room {gdata['room']} me successfully complete ho gaya hai.\n"
+                        f"📶 *Wi-Fi Password:* Ganga@2026\n"
+                        f"Room service ya order ke liye bas yahan message karein. Namaste! 🙏"
                     )
                     send_whatsapp_message(phone, welcome_msg)
                     welcomed_guests.add(phone)
 
-                elif status in ["CHECKED_OUT", "CHECKOUT"] and (phone not in checked_out_guests):
+            # CHECK-OUT MESSAGE (Jab koi guest CHECKED_OUT ho)
+            for phone, gdata in current_checked_out.items():
+                if phone not in checked_out_guests:
                     checkout_farewell = (
-                        f"Namaste {name} ji! 🙏\n\n"
-                        f"Room {room} ka check-out complete ho gaya hai aur aapka bill account settle kar diya gaya hai.\n\n"
+                        f"Namaste {gdata['name']} ji! 🙏\n\n"
+                        f"Room {gdata['room']} ka check-out complete ho gaya hai aur account settle ho gaya hai.\n\n"
                         f"Hotel Ganga View, Haridwar me rukne ke liye bahut dhanyawad! Shubh Yatra! 🚩🌸"
                     )
                     send_whatsapp_message(phone, checkout_farewell)
                     checked_out_guests.add(phone)
 
+            # KITCHEN PAYMENT NOTIFICATIONS (SIRF IN-HOUSE KE LIYE - CHECKOUT KO BLOCK)
             k_records = shared_store.get("kitchen_orders", [])
             for idx, k_row in enumerate(k_records, start=2):
                 k_room = str(k_row.get("Room") or k_row.get("Room (B)") or "").strip()
@@ -652,14 +580,17 @@ def monitor_guest_status_lifecycle():
                 k_item = str(k_row.get("Order Details") or k_row.get("Order Details (D)") or "Order")
 
                 unique_order_key = f"{k_room}_{idx}_{k_amt}"
+
+                # Checkout hue rooms ko kitchen order message bilkul nahi bhejna
+                if k_room in checked_out_rooms or k_room not in active_rooms:
+                    continue
+
                 if k_status == "PAID" and (unique_order_key not in notified_paid_orders):
-                    guest_ph = room_phone_map.get(k_room)
+                    guest_ph = active_rooms.get(k_room)
                     if guest_ph:
                         receipt_msg = (
                             f"✅ *Payment Received Confirmation*\n\n"
-                            f"Namaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) "
-                            f"ki payment successfully receive ho gayi hai.\n"
-                            f"Dhanyawad! 🙏"
+                            f"Room {k_room} ke liye ₹{k_amt} ({k_item}) payment receive ho gayi hai. Dhanyawad! 🙏"
                         )
                         send_whatsapp_message(guest_ph, receipt_msg)
                     notified_paid_orders.add(unique_order_key)
@@ -667,7 +598,7 @@ def monitor_guest_status_lifecycle():
         except Exception:
             pass
 
-        time.sleep(15)
+        time.sleep(12)
 
 # ==========================================
 # 6. WEBHOOK ROUTES
@@ -706,13 +637,17 @@ def handle_webhook():
             processed_msg_ids.add(message_id)
             if len(processed_msg_ids) > 500:
                 processed_msg_ids.pop()
+            
+            # TURANT READ TICK (GREEN DOUBLE TICK) MARK KAREIN
             mark_message_as_read(message_id)
 
-        threading.Thread(
-            target=handle_incoming_async,
-            args=(message, sender_phone, msg_type),
-            daemon=True
-        ).start()
+        if msg_type == "text":
+            user_text = message.get("text", {}).get("body", "")
+            threading.Thread(
+                target=process_and_reply,
+                args=(user_text, sender_phone),
+                daemon=True
+            ).start()
 
     except Exception as e:
         print(f"[WEBHOOK ERROR]: {e}", flush=True)
@@ -726,7 +661,7 @@ def start_background_threads():
     threading.Thread(target=keep_awake_ping, daemon=True).start()
     threading.Thread(target=sync_sheets_in_background, daemon=True).start()
     threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
-    print("[SYSTEM]: Background workers initialized.", flush=True)
+    print("[SYSTEM]: Background workers ready.", flush=True)
 
 start_background_threads()
 

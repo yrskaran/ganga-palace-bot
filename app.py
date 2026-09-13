@@ -672,6 +672,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
     try:
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
+            print(f"[ASYNC WORKER] Incoming text: '{user_text}' from {sender_phone}", flush=True)
             process_and_reply(user_text, sender_phone)
 
         elif msg_type in ["audio", "voice"]:
@@ -737,6 +738,7 @@ def send_checkin_feedback(phone, name, room):
 
 def monitor_guest_status_lifecycle():
     """Monitors both CHECKED_IN (Welcome) and CHECKED_OUT (Farewell & Final Settlement)"""
+    print("[LIFECYCLE MONITOR]: Background thread running...", flush=True)
     while True:
         try:
             records = fetch_sheet_records()
@@ -762,7 +764,8 @@ def monitor_guest_status_lifecycle():
                         f"Wi-Fi Password: *Ganga@2026*\n"
                         f"Room service ya kisi bhi sahayata ke liye bas yahan message karein. Namaste! 🙏"
                     )
-                    send_whatsapp_message(phone, welcome_msg)
+                    res = send_whatsapp_message(phone, welcome_msg)
+                    print(f"[WELCOME DISPATCH]: Sent to {phone} | Result: {res}", flush=True)
                     welcomed_guests.add(phone)
 
                     threading.Thread(
@@ -880,6 +883,8 @@ def verify_webhook():
 @app.route("/webhook", methods=["POST"], strict_slashes=False)
 def handle_webhook():
     data = request.get_json()
+    print(f"[META RAW PAYLOAD]: {json.dumps(data)}", flush=True)
+
     try:
         entry = data.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
@@ -887,12 +892,15 @@ def handle_webhook():
         messages = value.get("messages", [])
         
         if not messages:
+            print("[WEBHOOK NOTICE]: No messages key found (Status/Delivery event ignored).", flush=True)
             return jsonify({"status": "ignored"}), 200
             
         message = messages[0]
         sender_phone = message.get("from")
         msg_type = message.get("type")
         message_id = message.get("id")
+
+        print(f"[INCOMING MSG DETECTED] From: {sender_phone} | Type: {msg_type}", flush=True)
 
         if message_id in processed_msg_ids:
             return jsonify({"status": "already_processed"}), 200
@@ -915,7 +923,7 @@ def handle_webhook():
     return jsonify({"status": "success"}), 200
 
 # ==========================================
-# 7. START BACKGROUND WORKERS (FOR GUNICORN & LOCAL)
+# 7. START BACKGROUND WORKERS (GUNICORN COMPATIBLE)
 # ==========================================
 def start_background_threads():
     threading.Thread(target=keep_awake_ping, daemon=True).start()
@@ -923,7 +931,7 @@ def start_background_threads():
     threading.Thread(target=daily_concierge_scheduler, daemon=True).start()
     print("[SYSTEM]: All background threads started successfully under Gunicorn.", flush=True)
 
-# Threads ko Gunicorn import hote hi execute karwayega
+# Gunicorn start hote hi saare background loops trigger ho jayenge
 start_background_threads()
 
 if __name__ == "__main__":

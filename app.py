@@ -352,7 +352,7 @@ def verify_document_groq(image_id):
         prompt = (
             "You are a Hotel Document Verification Assistant. "
             "Determine if this image is a valid Indian Government ID Proof "
-            "(Aadhaar Card, PAN Card, Voter ID, Driving License, or Passport). "
+            "(Govt ID Card, Driving License, or Passport). "
             "Never output identification numbers. "
             "If valid Govt ID, reply strictly: VALID | ID_TYPE: <type> | NAME: <guest name or Not Visible> "
             "If invalid, blurry, or not Govt ID, reply strictly: INVALID | REASON: <blurry or not_govt_id>"
@@ -494,7 +494,7 @@ def process_and_reply(user_text, sender_phone):
     clean_phone_key = re.sub(r"\D", "", str(sender_phone))[-10:]
     text_lower = user_text.lower().strip()
     
-    # 1. GREETING & AUTO-WELCOME (Jab user pehla Hi/Hello kare)
+    # 1. GREETING & AUTO-WELCOME (Jab guest pehla Hi/Hello kare)
     greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
     is_greeting = text_lower in greetings or len(text_lower) <= 2
     
@@ -632,7 +632,6 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
         
-        # Async sheet write with exact verified Rate
         threading.Thread(
             target=append_kitchen_order_to_sheet,
             args=(
@@ -705,7 +704,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
                 if any(k in reason for k in ["blur", "unreadable", "clear", "quality", "dark", "upside"]):
                     reply_msg = "Aapki bheji gayi photo clear nahi hai ya text padha nahi ja raha. Kripya saaf photo dobara bhejein."
                 else:
-                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Driver's License, PAN Card, Voter ID ya Passport share karein."
+                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Driving License, Voter ID ya Passport share karein."
                 send_whatsapp_message(sender_phone, reply_msg)
             else:
                 send_whatsapp_message(sender_phone, "Photo process karne me samasya aayi. Kripya document ki saaf photo dobara send karein.")
@@ -772,7 +771,7 @@ def monitor_guest_status_lifecycle():
                         daemon=True
                     ).start()
 
-                # 2. Automatic Check-out Farewell & Final Settlement Message
+                # 2. Automatic Check-out Farewell Message
                 elif status in ["CHECKED_OUT", "CHECKOUT"] and (phone not in checked_out_guests):
                     checkout_farewell = (
                         f"Namaste {name} ji! 🙏\n\n"
@@ -787,7 +786,7 @@ def monitor_guest_status_lifecycle():
         except Exception as e:
             print(f"[LIFECYCLE MONITOR ERROR]: {e}", flush=True)
             
-        time.sleep(45)
+        time.sleep(20)
 
 def broadcast_to_inhouse_guests(message_template_fn):
     records = fetch_sheet_records()
@@ -916,10 +915,16 @@ def handle_webhook():
     return jsonify({"status": "success"}), 200
 
 # ==========================================
-# 7. ENTRY POINT
+# 7. START BACKGROUND WORKERS (FOR GUNICORN & LOCAL)
 # ==========================================
-if __name__ == "__main__":
+def start_background_threads():
     threading.Thread(target=keep_awake_ping, daemon=True).start()
     threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
     threading.Thread(target=daily_concierge_scheduler, daemon=True).start()
+    print("[SYSTEM]: All background threads started successfully under Gunicorn.", flush=True)
+
+# Threads ko Gunicorn import hote hi execute karwayega
+start_background_threads()
+
+if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

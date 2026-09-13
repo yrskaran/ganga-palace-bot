@@ -52,6 +52,56 @@ alerts_sent_today = {
 }
 
 # ==========================================
+# HOTEL BASE RATES (FALLBACK & AUTO PRICING)
+# ==========================================
+MENU_PRICES = {
+    "chai": 30,
+    "tea": 30,
+    "coffee": 50,
+    "aloo paratha": 90,
+    "dahi": 70,
+    "green salad": 50,
+    "roti": 15,
+    "butter roti": 20,
+    "dal tadka": 160,
+    "paneer": 220
+}
+
+def resolve_item_price(order_text):
+    """Text me se quantity aur item alag nikal kar price calculate karta hai."""
+    clean = str(order_text).lower().strip()
+    clean = clean.replace("parathe", "paratha")
+    
+    parts = clean.split(",")
+    line_total = 0
+    
+    for part in parts:
+        part = part.strip()
+        match = re.match(r"^(\d+)?\s*(.+)$", part)
+        qty = 1
+        item_name = part
+        if match:
+            qty = int(match.group(1)) if match.group(1) else 1
+            item_name = match.group(2).strip()
+            
+        rate = MENU_PRICES.get(item_name, 0)
+        line_total += rate * qty
+        
+    return line_total
+
+def format_whatsapp_number(raw_phone):
+    """Ensure phone number has 91 India country code for Meta Cloud API."""
+    digits = re.sub(r"\D", "", str(raw_phone))
+    if len(digits) == 10:
+        return f"91{digits}"
+    elif len(digits) == 12 and digits.startswith("91"):
+        return digits
+    elif len(digits) > 10:
+        clean_ten = digits[-10:]
+        return f"91{clean_ten}"
+    return None
+
+# ==========================================
 # 2. GOOGLE SHEET CLIENT & WRITE ENGINES
 # ==========================================
 def get_gspread_client():
@@ -109,13 +159,17 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         return
 
     try:
+        clean_amount = int(re.sub(r"\D", "", str(amount))) if re.sub(r"\D", "", str(amount)) else 0
+        if clean_amount <= 0:
+            clean_amount = resolve_item_price(order_details)
+
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
         
         # Columns: Date_Time, Room, Guest Name, Order Details, Amount, Payment_Status
-        row_data = [now_str, str(room), str(guest_name), str(order_details), str(amount), "PENDING"]
+        row_data = [now_str, str(room), str(guest_name), str(order_details), str(clean_amount), "PENDING"]
         sheet.append_row(row_data)
-        print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room} (Amount: Rs. {amount})", flush=True)
+        print(f"[SHEET WRITE SUCCESS]: Kitchen order logged for Room {room} (Amount: Rs. {clean_amount})", flush=True)
     except Exception as e:
         print(f"[SHEET WRITE EXCEPTION]: {e}", flush=True)
 
@@ -135,11 +189,16 @@ def get_guest_kitchen_bill_total(room_number):
             r_status = str(r.get("Payment_Status") or r.get("Payment_Status (F)") or "").strip().upper()
             
             if r_room == str(room_number).strip() and r_status != "PAID":
+                item_name = r.get("Order Details") or r.get("Order Details (D)") or "Item"
                 raw_amt = str(r.get("Amount") or r.get("Amount (E)") or "0")
                 amt_digits = re.sub(r"\D", "", raw_amt)
                 amt = int(amt_digits) if amt_digits else 0
+                
+                # Sheet me agar rate missing ya 0 tha toh menu se auto calculate karein
+                if amt <= 0:
+                    amt = resolve_item_price(item_name)
+                    
                 total_amount += amt
-                item_name = r.get("Order Details") or r.get("Order Details (D)") or "Item"
                 itemized_list.append(f"• {item_name} - ₹{amt}")
         return total_amount, itemized_list
     except Exception as e:
@@ -209,7 +268,11 @@ def mark_message_as_read(message_id):
         print(f"[READ TICK ERROR]: {e}", flush=True)
 
 def send_whatsapp_message(to_number, text):
-    clean_number = re.sub(r"\D", "", str(to_number))
+    clean_number = format_whatsapp_number(to_number)
+    if not clean_number:
+        print(f"[DISPATCH ABORTED]: Invalid number format for {to_number}", flush=True)
+        return None
+
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -225,7 +288,9 @@ def send_whatsapp_message(to_number, text):
         res = requests.post(url, json=payload, headers=headers, timeout=12)
         res_json = res.json()
         if res.status_code != 200:
-            print(f"[WHATSAPP DISPATCH ERROR] Target: {clean_number} | Body: {res_json}", flush=True)
+            print(f"[WHATSAPP DISPATCH ERROR {res.status_code}] Target: {clean_number} | Body: {res_json}", flush=True)
+        else:
+            print(f"[MSG DELIVERED OK] Target: {clean_number}", flush=True)
         return res_json
     except Exception as e:
         print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
@@ -425,9 +490,26 @@ def ask_cohere(user_message, sender_phone):
 
 def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
-    text_lower = user_text.lower()
+    clean_phone_key = re.sub(r"\D", "", str(sender_phone))[-10:]
+    text_lower = user_text.lower().strip()
     
-    # 1. Block unauthorized outside orders
+    # 1. GREETING & AUTO-WELCOME (Jab user pehla Hi/Hello kare)
+    greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
+    is_greeting = text_lower in greetings or len(text_lower) <= 2
+    
+    if guest_info and is_greeting and (clean_phone_key not in welcomed_guests):
+        welcomed_guests.add(clean_phone_key)
+        welcome_reply = (
+            f"Welcome to Hotel Ganga View, {guest_info['name']} ji! 🏨✨\n\n"
+            f"Aapka swagat hai Room {guest_info['room']} ({guest_info['category']}) me.\n"
+            f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
+            f"Aap yahan se room service ka khana mangwa sakte hain, housekeeping request kar sakte hain, ya apna current bill dekh sakte hain. "
+            f"Batayein, mai aapki kya seva kar sakta hoon? 🙏"
+        )
+        send_whatsapp_message(sender_phone, welcome_reply)
+        return
+
+    # 2. Block unauthorized outside orders
     service_keywords = ["order", "chai", "tea", "roti", "khana", "towel", "room service", "cleaning", "paani", "water"]
     is_service_query = any(w in text_lower for w in service_keywords)
     
@@ -440,21 +522,21 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reject_reply)
         return
 
-    # 2. Smart Dynamic Bill Inquiry Handler (Kitchen vs Room vs Total Multi-Night)
+    # 3. ACCURATE BILL INQUIRY HANDLER (Khana vs Room vs Grand Total)
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due)"
     if guest_info and re.search(bill_pattern, text_lower):
         total_kitchen, items = get_guest_kitchen_bill_total(guest_info['room'])
         room_rent_base = guest_info.get('price', '0')
         rent_per_night = int(re.sub(r'\D', '', str(room_rent_base))) if re.sub(r'\D', '', str(room_rent_base)) else 0
         
-        # Calculate Stay Nights dynamically
         nights = calculate_stay_nights(guest_info.get('check_in_date'))
         total_room_rent = rent_per_night * nights
 
-        # Scenario A: User specifically asked for "Sirf Kitchen / Khana / Food"
-        is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta"])
+        # Check intent specifics
+        is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
         is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
 
+        # Case A: Sirf Khane / Kitchen ka Bill
         if is_only_kitchen and not is_only_room:
             if items:
                 items_str = "\n".join(items)
@@ -466,23 +548,24 @@ def process_and_reply(user_text, sender_phone):
                     f"*(Yeh bill room tariff se alag hai)*"
                 )
             else:
-                bill_reply = f"Namaste {guest_info['name']} ji! Room {guest_info['room']} me koi kitchen bill pending nahi hai."
+                bill_reply = f"Namaste {guest_info['name']} ji! Room {guest_info['room']} me abhi koi kitchen bill pending nahi hai."
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Scenario B: User specifically asked for "Sirf Room Bill / Tariff"
+        # Case B: Sirf Room Rent / Tariff
         if is_only_room and not is_only_kitchen:
             bill_reply = (
                 f"🏨 *Room {guest_info['room']} - Room Rent Details*\n"
                 f"Guest Name: {guest_info['name']} ji\n"
                 f"Room Category: {guest_info['category']}\n"
-                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n\n"
-                f"💰 *Total Room Tariff:* ₹{total_room_rent} (₹{rent_per_night}/night)"
+                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n"
+                f"Per Night Rate: ₹{rent_per_night}\n\n"
+                f"💰 *Total Room Tariff:* ₹{total_room_rent}"
             )
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Scenario C: Overall Total Bill (Kitchen + Room Stay Nights)
+        # Case C: Complete Overall Bill (Kitchen + Room Stay)
         grand_total = total_kitchen + total_room_rent
         if items:
             items_str = "\n".join(items)
@@ -499,15 +582,18 @@ def process_and_reply(user_text, sender_phone):
             )
         else:
             bill_reply = (
-                f"Namaste {guest_info['name']} ji! 🙏\n\n"
-                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n"
+                f"🧾 *Room {guest_info['room']} - Complete Bill Summary*\n"
+                f"Guest Name: {guest_info['name']} ji\n"
+                f"Stay Duration: {nights} Night{'s' if nights > 1 else ''}\n\n"
                 f"🏨 *Total Room Rent:* ₹{total_room_rent}\n"
-                f"🍳 *Kitchen Bill:* ₹0"
+                f"🍳 *Kitchen Orders:* ₹0\n"
+                f"-----------------------------------\n"
+                f"💳 *Grand Total Payable:* ₹{total_room_rent}"
             )
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
-    # 3. Normal AI Processing with Context
+    # 4. Normal AI Processing with Context
     room_summary = get_room_inventory_summary()
     
     if guest_info:
@@ -524,16 +610,18 @@ def process_and_reply(user_text, sender_phone):
     bot_reply = ask_cohere(prompt_input, sender_phone)
     print(f"[COHERE REPLY for {sender_phone}]: {bot_reply}", flush=True)
 
-    # 4. Handle Kitchen Alert Tag & Auto-Sheet Write with Rates
+    # 5. Handle Kitchen Alert Tag & Auto-Sheet Write with Verified Rates
     if "[KITCHEN_ALERT:" in bot_reply:
         match = re.search(r"\[KITCHEN_ALERT:\s*(.*?)(?:\s*\|\s*RATE:\s*(\d+))?\]", bot_reply)
         order_details = match.group(1).strip() if match and match.group(1) else "Food Order"
-        order_rate = match.group(2).strip() if match and match.group(2) else "0"
+        parsed_rate = match.group(2).strip() if match and match.group(2) else "0"
         
+        final_rate = int(parsed_rate) if int(parsed_rate) > 0 else resolve_item_price(order_details)
+
         bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
         
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Unverified Room"
-        rate_display = f"₹{order_rate}" if order_rate != "0" else "Standard Rates"
+        rate_display = f"₹{final_rate}" if final_rate > 0 else "Standard Rates"
         kitchen_msg = (
             f"🍳 *NEW ROOM SERVICE ORDER*\n\n"
             f"📌 *Location:* {room_tag}\n"
@@ -544,22 +632,22 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(KITCHEN_PHONE, kitchen_msg)
         
-        # Async sheet write with Rate into Kitchen_Orders tab
+        # Async sheet write with exact verified Rate
         threading.Thread(
             target=append_kitchen_order_to_sheet,
             args=(
                 guest_info['room'] if guest_info else "N/A",
                 guest_info['name'] if guest_info else "N/A",
                 order_details,
-                order_rate
+                final_rate
             ),
             daemon=True
         ).start()
 
         if not bot_reply:
-            bot_reply = f"Ji, aapka order note ho gaya hai aur jald {room_tag} me deliver kar diya jayega."
+            bot_reply = f"Ji {guest_info['name'] if guest_info else ''} ji, aapka order note ho gaya hai aur jald room me deliver kar diya jayega."
 
-    # 5. Handle Staff Alert Tag
+    # 6. Handle Staff Alert Tag
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
@@ -575,7 +663,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(STAFF_PHONE, staff_msg)
         if not bot_reply:
-            bot_reply = "Ji, staff ko request bhej di gayi hai."
+            bot_reply = "Ji, staff ko alert bhej diya gaya hai. Koi jald hi aapke kamre me pahunchega."
 
     bot_reply = re.sub(r"\[.*?\]", "", bot_reply).strip()
     if bot_reply:
@@ -617,7 +705,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
                 if any(k in reason for k in ["blur", "unreadable", "clear", "quality", "dark", "upside"]):
                     reply_msg = "Aapki bheji gayi photo clear nahi hai ya text padha nahi ja raha. Kripya saaf photo dobara bhejein."
                 else:
-                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Aadhaar, PAN Card, Driving License ya Passport share karein."
+                    reply_msg = "Yeh valid Government ID proof nahi lag raha hai. Kripya Driver's License, PAN Card, Voter ID ya Passport share karein."
                 send_whatsapp_message(sender_phone, reply_msg)
             else:
                 send_whatsapp_message(sender_phone, "Photo process karne me samasya aayi. Kripya document ki saaf photo dobara send karein.")

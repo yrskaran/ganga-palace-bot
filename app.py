@@ -611,11 +611,11 @@ def index():
 def health_check():
     return jsonify({"status": "active"}), 200
 
-@app.route("/webhook", methods=["GET"], strict_slashes=False)
-def verify_webhook():
-    if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN:
-        return request.args.get("hub.challenge"), 200
-    return "Forbidden", 403
+@app.route('/webhook', methods=['POST'])
+def webhook_post():
+    data = request.get_json()
+    print("[DEBUG PAYLOAD]", json.dumps(data), flush=True)
+    # Baaki code yahan se continue hoga...
 
 @app.route("/webhook", methods=["POST"], strict_slashes=False)
 def handle_webhook():

@@ -15,7 +15,7 @@ from flask import Flask, request, jsonify
 IST = timezone(timedelta(hours=5, minutes=30))
 
 # ==========================================
-# 1. CONFIGURATION
+# 1. INITIALIZE APP & CONFIGURATION
 # ==========================================
 app = Flask(__name__)
 
@@ -35,7 +35,7 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
-# GITHUB RAW IMAGE LINKS (Make sure they are raw.githubusercontent.com or direct public links)
+# DIRECT PUBLIC / GITHUB RAW IMAGE LINKS
 HOTEL_IMAGES = {
     "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
     "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
@@ -45,6 +45,7 @@ HOTEL_IMAGES = {
 chat_histories = {}
 processed_msg_ids = set()
 
+# Lock-Free Shared Store in RAM
 shared_store = {
     "rooms": [],
     "kitchen_orders": [],
@@ -97,7 +98,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. BACKGROUND DATA SYNC (NON-BLOCKING)
+# 2. BACKGROUND DATA SYNC
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -115,6 +116,7 @@ def get_gspread_client():
         return None
 
 def sync_sheets_in_background():
+    print("[SYNC WORKER]: Background sync thread active.", flush=True)
     while True:
         try:
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
@@ -124,7 +126,7 @@ def sync_sheets_in_background():
                     records = list(csv.DictReader(io.StringIO(res_r.content.decode("utf-8"))))
                     if records:
                         shared_store["rooms"] = records
-            except:
+            except Exception:
                 pass
 
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
@@ -134,7 +136,7 @@ def sync_sheets_in_background():
                     k_records = list(csv.DictReader(io.StringIO(res_k.content.decode("utf-8"))))
                     if k_records:
                         shared_store["kitchen_orders"] = k_records
-            except:
+            except Exception:
                 pass
 
             shared_store["last_synced"] = time.time()
@@ -269,7 +271,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH (TEXT & IMAGES)
+# 3. DISPATCH ENGINE (TEXT & ASYNC IMAGES)
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -277,7 +279,7 @@ def keep_awake_ping():
         try:
             target_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}/health"
             requests.get(target_url, timeout=5)
-        except:
+        except Exception:
             pass
         time.sleep(8 * 60)
 
@@ -289,14 +291,13 @@ def mark_message_as_read(message_id):
         payload = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
         try:
             requests.post(url, json=payload, headers=headers, timeout=5)
-        except:
+        except Exception:
             pass
     threading.Thread(target=_mark, daemon=True).start()
 
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
     if not clean_number:
-        print(f"[DISPATCH ABORTED]: Invalid number {to_number}", flush=True)
         return None
 
     pid = PHONE_NUMBER_ID or "1357005434155447"
@@ -313,45 +314,45 @@ def send_whatsapp_message(to_number, text):
     }
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
-        res_json = res.json()
-        print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
-        return res_json
+        print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
+        return res.json()
     except Exception as e:
         print(f"[SEND MSG EXCEPTION]: {e}", flush=True)
         return None
 
 def send_whatsapp_image(to_number, image_url, caption=""):
-    clean_number = format_whatsapp_number(to_number)
-    if not clean_number:
-        return None
+    """Non-blocking asynchronous image sender with text URL fallback"""
+    def _async_send():
+        clean_number = format_whatsapp_number(to_number)
+        if not clean_number:
+            return
 
-    pid = PHONE_NUMBER_ID or "1357005434155447"
-    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
-    headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": clean_number,
-        "type": "image",
-        "image": {
-            "link": image_url,
-            "caption": caption
+        pid = PHONE_NUMBER_ID or "1357005434155447"
+        url = f"https://graph.facebook.com/v20.0/{pid}/messages"
+        headers = {
+            "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+            "Content-Type": "application/json"
         }
-    }
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        res_json = res.json()
-        print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
-        if res.status_code != 200:
-            # Fallback to text description if image fails
-            send_whatsapp_message(clean_number, f"{caption}\n(Photo preview link: {image_url})")
-        return res_json
-    except Exception as e:
-        print(f"[IMAGE SEND ERROR]: {e}", flush=True)
-        send_whatsapp_message(clean_number, f"{caption}\n(Photo preview link: {image_url})")
-        return None
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": clean_number,
+            "type": "image",
+            "image": {
+                "link": image_url.strip(),
+                "caption": caption
+            }
+        }
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=12)
+            print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
+            if res.status_code != 200:
+                # Fallback if Meta media download handshake fails
+                send_whatsapp_message(clean_number, f"{caption}\n\n📸 Photo Link: {image_url}")
+        except Exception as e:
+            print(f"[IMAGE SEND ERROR]: {e}", flush=True)
+            send_whatsapp_message(clean_number, f"{caption}\n\n📸 Photo Link: {image_url}")
+
+    threading.Thread(target=_async_send, daemon=True).start()
 
 def ask_cohere(user_message, sender_phone):
     if not COHERE_API_KEY:
@@ -362,9 +363,8 @@ def ask_cohere(user_message, sender_phone):
         "message": user_message,
         "preamble": (
             "You are the WhatsApp AI Receptionist for Hotel Ganga View, Haridwar. "
-            "Help potential guests with room types, rates (Standard: ₹1,800, Deluxe: ₹2,500), "
-            "location (2 mins walk from Har Ki Pauri) and encourage booking. "
-            "Reply politely in 1-2 lines Hinglish."
+            "Help guests with room types, rates (Standard: ₹1,800, Deluxe: ₹2,500), "
+            "location (Near Har Ki Pauri) and answer questions politely in 1-2 lines Hinglish."
         ),
         "temperature": 0.1
     }
@@ -388,7 +388,7 @@ def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. PHOTO HANDLER (NON-BLOCKING DIRECT CALLS)
+    # 1. PHOTO HANDLER (NON-BLOCKING BACKGROUND DISPATCH)
     photo_keywords = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna hai", "kaisa dikhta", "dikhao"]
     if any(pk in text_lower for pk in photo_keywords):
         print(f"[PHOTO ENGINE TRIGGERED] for {sender_phone}", flush=True)
@@ -396,37 +396,32 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["deluxe"], 
-                caption="🛏️ *Deluxe Room (Hotel Ganga View)*\nAttached Clean Bath, King Size Bed, AC & Wi-Fi ✨\nRate: ₹2,500/night"
+                caption="🛏️ *Deluxe AC Room (Hotel Ganga View)*\nAttached Clean Bath, King Size Bed, AC & Wi-Fi ✨\nRate: ₹2,500/night"
             )
-            return
         elif "standard" in text_lower or "budget" in text_lower or "sasta" in text_lower:
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["standard"], 
-                caption="🛏️ *Standard Room (Hotel Ganga View)*\nCozy Bed, Geyser, TV & Free Wi-Fi ✨\nRate: ₹1,800/night"
+                caption="🛏️ *Standard Room (Hotel Ganga View)*\nClean Bed, Geyser, TV & Free Wi-Fi ✨\nRate: ₹1,800/night"
             )
-            return
         elif "hotel" in text_lower or "front" in text_lower or "building" in text_lower:
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute ki doori par! ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute ki doori par! Shandar view. ✨"
             )
-            return
         else:
-            # Send Front Photo first
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke paas! ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke behad kareeb! ✨"
             )
-            # Send Deluxe Room Photo immediately without sleep
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["deluxe"], 
-                caption="🛏️ *Deluxe & Standard Rooms Available*\nTariff: ₹1,800 - ₹2,500/night.\nBooking ke liye batayein kab aana chahte hain! 🙏"
+                caption="🛏️ *Deluxe & Standard Rooms Available*\nTariff: ₹1,800 - ₹2,500/night.\nBooking ke liye batayein kab padhar rahe hain! 🙏"
             )
-            return
+        return
 
     # 2. IN-HOUSE BILL HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
@@ -493,7 +488,7 @@ def process_and_reply(user_text, sender_phone):
         else:
             reply_msg = (
                 "Namaste! 🙏 Welcome to *Hotel Ganga View, Haridwar* (Near Har Ki Pauri).\n\n"
-                "Aap yahan se room availability, pricing dekh sakte hain ya photos mangwa sakte hain. "
+                "Aap yahan se room rates dekh sakte hain ya photos mangwa sakte hain. "
                 "Batayein mai aapki kya sahayata kar sakta hoon?"
             )
         send_whatsapp_message(sender_phone, reply_msg)
@@ -560,13 +555,13 @@ def process_and_reply(user_text, sender_phone):
                 daemon=True
             ).start()
         else:
-            bot_reply = "Namaste! Room service orders sirf hotel me stay kar rahe guests ke liye hain. Booking inquiry ke liye batayein!"
+            bot_reply = "Namaste! Room service orders sirf checked-in guests ke liye hain. Booking inquiry ya photos ke liye batayein!"
 
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
         service_details = match.group(1) if match else "Staff Assistance Requested"
         bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
-        room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "New Customer Inquiry"
+        room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if guest_info else "Customer Query"
         staff_msg = (
             f"🛎️ *STAFF ALERT*\n\n"
             f"📌 *Location:* {room_tag}\n"
@@ -652,7 +647,7 @@ def monitor_guest_status_lifecycle():
                         send_whatsapp_message(guest_ph, receipt_msg)
                     notified_paid_orders.add(unique_order_key)
 
-        except Exception as e:
+        except Exception:
             pass
 
         time.sleep(15)

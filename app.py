@@ -35,7 +35,9 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
-# DEMO & LIVE HOTEL PHOTOS
+# ==========================================
+# HOTEL IMAGES (PASTE YOUR GITHUB RAW URLS)
+# ==========================================
 HOTEL_IMAGES = {
     "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
     "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
@@ -45,6 +47,7 @@ HOTEL_IMAGES = {
 chat_histories = {}
 processed_msg_ids = set()
 
+# Lock-Free Master In-Memory Store
 shared_store = {
     "rooms": [],
     "kitchen_orders": [],
@@ -132,7 +135,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. FAIL-SAFE GOOGLE SHEET READ & WRITE
+# 2. BACKGROUND DATA SYNC ENGINE
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -149,37 +152,36 @@ def get_gspread_client():
         print(f"[GSPREAD AUTH ERROR]: {e}", flush=True)
         return None
 
-def refresh_shared_rooms():
-    """Direct fast CSV sync to guarantee memory store is never empty"""
-    try:
-        csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
-        res = requests.get(csv_url, timeout=3)
-        if res.status_code == 200:
-            records = list(csv.DictReader(io.StringIO(res.content.decode("utf-8"))))
-            if records:
-                shared_store["rooms"] = records
-                return records
-    except Exception as e:
-        print(f"[DIRECT CSV ROOMS ERROR]: {e}", flush=True)
-    return shared_store.get("rooms", [])
-
 def sync_sheets_in_background():
+    """Background worker that continuously syncs sheet records into local memory"""
+    print("[SYNC WORKER]: Background sync loop started...", flush=True)
     while True:
         try:
-            refresh_shared_rooms()
+            # 1. Quick CSV read for Rooms (Fast & lightweight)
+            csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
+            try:
+                res = requests.get(csv_url, timeout=5)
+                if res.status_code == 200:
+                    records = list(csv.DictReader(io.StringIO(res.content.decode("utf-8"))))
+                    if records:
+                        shared_store["rooms"] = records
+            except Exception as e:
+                pass
+
+            # 2. GSpread read for Kitchen orders
             client = get_gspread_client()
             if client:
-                sh = client.open_by_key(SHEET_ID)
                 try:
+                    sh = client.open_by_key(SHEET_ID)
                     k_records = sh.worksheet("Kitchen_Orders").get_all_records()
                     if k_records:
                         shared_store["kitchen_orders"] = k_records
                 except Exception as ex:
-                    print(f"[SYNC KITCHEN ERROR]: {ex}", flush=True)
+                    pass
 
-                shared_store["last_synced"] = time.time()
+            shared_store["last_synced"] = time.time()
         except Exception as e:
-            print(f"[SYNC WORKER ERROR]: {e}", flush=True)
+            print(f"[SYNC ERROR]: {e}", flush=True)
 
         time.sleep(15)
 
@@ -220,8 +222,6 @@ def calculate_stay_nights(check_in_str):
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     records = shared_store.get("rooms", [])
-    if not records:
-        records = refresh_shared_rooms()
 
     for row in records:
         sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
@@ -341,14 +341,16 @@ def keep_awake_ping():
         time.sleep(8 * 60)
 
 def mark_message_as_read(message_id):
-    pid = PHONE_NUMBER_ID or "1357005434155447"
-    url = f"https://graph.facebook.com/v20.0/{pid}/messages"
-    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-    payload = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
-    try:
-        requests.post(url, json=payload, headers=headers, timeout=5)
-    except:
-        pass
+    def _mark():
+        pid = PHONE_NUMBER_ID or "1357005434155447"
+        url = f"https://graph.facebook.com/v20.0/{pid}/messages"
+        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+        payload = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
+        try:
+            requests.post(url, json=payload, headers=headers, timeout=5)
+        except:
+            pass
+    threading.Thread(target=_mark, daemon=True).start()
 
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
@@ -417,7 +419,7 @@ def ask_cohere(user_message, sender_phone):
         "temperature": 0.1
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        res = requests.post(url, json=payload, headers=headers, timeout=4)
         if res.status_code == 200:
             reply_text = res.json().get("text", "").strip()
             if reply_text:
@@ -426,15 +428,14 @@ def ask_cohere(user_message, sender_phone):
                 chat_histories[sender_phone] = history[-6:]
                 return reply_text
     except Exception as e:
-        print(f"[COHERE ERROR]: {e}", flush=True)
-    return "Namaste! Batayein Hotel Ganga View me mai aapki kya seva kar sakta hoon? 🙏"
+        print(f"[COHERE FAIL]: {e}", flush=True)
+    return None
 
 # ==========================================
 # 4. MAIN MESSAGE PROCESSING PIPELINE
 # ==========================================
 def process_and_reply(user_text, sender_phone):
     print(f"[PROCESS START] '{user_text}' from {sender_phone}", flush=True)
-    clean_phone_key = re.sub(r"\D", "", str(sender_phone))[-10:]
     text_lower = user_text.lower().strip()
 
     guest_info = get_guest_stay_status(sender_phone)
@@ -458,21 +459,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_image(sender_phone, HOTEL_IMAGES["deluxe"], caption="🛏️ Room View (Deluxe & Standard Available)")
             return
 
-    # 2. GREETINGS & AUTO-WELCOME
-    greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
-    if guest_info and (text_lower in greetings or len(text_lower) <= 2) and (clean_phone_key not in welcomed_guests):
-        welcomed_guests.add(clean_phone_key)
-        welcome_reply = (
-            f"Welcome to Hotel Ganga View, {guest_info['name']} ji! 🏨✨\n\n"
-            f"Aapka swagat hai Room {guest_info['room']} ({guest_info['category']}) me.\n"
-            f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
-            f"Aap yahan se room service ka khana mangwa sakte hain, ya apna current bill dekh sakte hain. "
-            f"Batayein, mai aapki kya seva kar sakta hoon? 🙏"
-        )
-        send_whatsapp_message(sender_phone, welcome_reply)
-        return
-
-    # 3. INSTANT COMPLETE BILL HANDLER (Total, Paid, Balance)
+    # 2. INSTANT COMPLETE BILL HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
         print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
@@ -525,14 +512,41 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
+    # 3. GREETINGS (Hi / Hello / Namaste)
+    greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
+    if text_lower in greetings or len(text_lower) <= 2:
+        if guest_info:
+            reply_msg = (
+                f"Namaste {guest_info['name']} ji! 🙏\n\n"
+                f"Aapka swagat hai Room {guest_info['room']} ({guest_info['category']}) me.\n"
+                f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
+                f"Batayein, mai aapke liye khana mangwaun ya housekeeping ki zaroorat hai?"
+            )
+        else:
+            reply_msg = (
+                "Namaste! 🙏 Welcome to Hotel Ganga View, Haridwar.\n\n"
+                "Room booking, photos dekhne ya kisi bhi inquiry ke liye batayein mai aapki kya sahayata kar sakta hoon?"
+            )
+        send_whatsapp_message(sender_phone, reply_msg)
+        return
+
     # 4. COMPLAINT INTERCEPTOR
-    complaint_words = ["thandi", "kharab", "thanda", "bekar", "nahi chal", "not working", "badbu", "late"]
+    complaint_words = ["thandi", "kharab", "thanda", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat"]
     is_complaint = any(cw in text_lower for cw in complaint_words)
 
-    # 5. Cohere AI Process (Non-blocking fallback)
-    print("[PROCESS] Cohere query...", flush=True)
+    # 5. Cohere AI Process (with instant fallback)
+    print("[PROCESS] Triggering AI/Intent reply...", flush=True)
     prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\n{user_text}" if guest_info else f"[CUSTOMER INQUIRY]: {user_text}"
     bot_reply = ask_cohere(prompt_input, sender_phone)
+
+    # If Cohere failed or timed out, use intelligent local fallback
+    if not bot_reply:
+        if any(w in text_lower for w in ["chai", "tea", "roti", "khana", "paratha", "order"]):
+            bot_reply = f"[KITCHEN_ALERT: {user_text}] Ji, aapka order note ho gaya hai aur jald deliver ho jayega."
+        elif is_complaint:
+            bot_reply = f"[STAFF_ALERT: {user_text}] Ji, aapki samasya note kar li gayi hai. Staff turant attend karega."
+        else:
+            bot_reply = "Ji batayein, mai aapki kya sahayata kar sakta hoon? Khana order karna hai ya bill check karna hai?"
 
     # 6. Kitchen Order vs Complaint Guardrail
     if "[KITCHEN_ALERT:" in bot_reply:
@@ -574,7 +588,7 @@ def process_and_reply(user_text, sender_phone):
             ).start()
 
         if not bot_reply:
-            bot_reply = f"Ji {guest_info['name'] if guest_info else ''} ji, aapka message note kar liya gaya hai."
+            bot_reply = f"Ji {guest_info['name'] if guest_info else ''} ji, aapka message note ho gaya hai."
 
     if "[STAFF_ALERT:" in bot_reply:
         match = re.search(r"\[STAFF_ALERT:\s*(.*?)\]", bot_reply)
@@ -630,7 +644,7 @@ def monitor_guest_status_lifecycle():
 
                 room_phone_map[room] = phone
 
-                # Welcome
+                # Automatic Welcome upon Check-in
                 if status == "CHECKED_IN" and (phone not in welcomed_guests):
                     welcome_msg = (
                         f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
@@ -641,7 +655,7 @@ def monitor_guest_status_lifecycle():
                     send_whatsapp_message(phone, welcome_msg)
                     welcomed_guests.add(phone)
 
-                # Checkout Farewell
+                # Automatic Farewell upon Check-out
                 elif status in ["CHECKED_OUT", "CHECKOUT"] and (phone not in checked_out_guests):
                     checkout_farewell = (
                         f"Namaste {name} ji! 🙏\n\n"
@@ -651,7 +665,7 @@ def monitor_guest_status_lifecycle():
                     send_whatsapp_message(phone, checkout_farewell)
                     checked_out_guests.add(phone)
 
-            # Payment Receipts
+            # Real-time Payment Receipts (Kitchen Orders)
             k_records = shared_store.get("kitchen_orders", [])
             for idx, k_row in enumerate(k_records, start=2):
                 k_room = str(k_row.get("Room") or k_row.get("Room (B)") or "").strip()
@@ -714,6 +728,7 @@ def handle_webhook():
             processed_msg_ids.add(message_id)
             if len(processed_msg_ids) > 500:
                 processed_msg_ids.pop()
+            # Non-blocking async read tick
             mark_message_as_read(message_id)
 
         threading.Thread(

@@ -35,15 +35,17 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
+# DIRECT PUBLIC / GITHUB RAW IMAGE LINKS
 HOTEL_IMAGES = {
-    "front": "images/main hotel.jpg",
-    "deluxe": "images/pexels-artbovich-7722164.jpg",
-    "standard": "images/pexels-kadiravsarr-14750394.jpg"
+    "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
+    "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
+    "standard": "https://images.unsplash.com/photo-1590490360182-c33d57733427?auto=format&fit=crop&w=1200&q=80"
 }
 
 chat_histories = {}
 processed_msg_ids = set()
 
+# Master Shared In-Memory Store
 shared_store = {
     "rooms": [],
     "kitchen_orders": [],
@@ -96,7 +98,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. BULLETPROOF FAST SHEET SYNC
+# 2. BACKGROUND DATA SYNC (NON-BLOCKING)
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -113,43 +115,38 @@ def get_gspread_client():
         print(f"[GSPREAD AUTH ERROR]: {e}", flush=True)
         return None
 
-def fetch_rooms_direct():
-    """Direct instant fetch with public CSV fallback"""
-    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
-    try:
-        res = requests.get(csv_url, timeout=3)
-        if res.status_code == 200:
-            records = list(csv.DictReader(io.StringIO(res.content.decode("utf-8"))))
-            if records:
-                shared_store["rooms"] = records
-                return records
-    except Exception as e:
-        print(f"[FETCH ROOMS ERROR]: {e}", flush=True)
-    return shared_store.get("rooms", [])
-
-def fetch_kitchen_direct():
-    csv_url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
-    try:
-        res = requests.get(csv_url, timeout=3)
-        if res.status_code == 200:
-            records = list(csv.DictReader(io.StringIO(res.content.decode("utf-8"))))
-            if records:
-                shared_store["kitchen_orders"] = records
-                return records
-    except Exception as e:
-        print(f"[FETCH KITCHEN ERROR]: {e}", flush=True)
-    return shared_store.get("kitchen_orders", [])
-
 def sync_sheets_in_background():
-    print("[SYNC WORKER]: Background thread running...", flush=True)
+    """Background worker that continuously keeps local store fresh without blocking incoming webhooks"""
+    print("[SYNC WORKER]: Background sync loop active...", flush=True)
     while True:
         try:
-            fetch_rooms_direct()
-            fetch_kitchen_direct()
+            # 1. Fetch Rooms via CSV
+            csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
+            try:
+                res_r = requests.get(csv_url_rooms, timeout=5)
+                if res_r.status_code == 200:
+                    records = list(csv.DictReader(io.StringIO(res_r.content.decode("utf-8"))))
+                    if records:
+                        shared_store["rooms"] = records
+            except Exception as e:
+                pass
+
+            # 2. Fetch Kitchen via CSV
+            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
+            try:
+                res_k = requests.get(csv_url_kitch, timeout=5)
+                if res_k.status_code == 200:
+                    k_records = list(csv.DictReader(io.StringIO(res_k.content.decode("utf-8"))))
+                    if k_records:
+                        shared_store["kitchen_orders"] = k_records
+            except Exception as e:
+                pass
+
             shared_store["last_synced"] = time.time()
         except Exception as e:
-            print(f"[SYNC WORKER FAIL]: {e}", flush=True)
-        time.sleep(10)
+            print(f"[SYNC WORKER EXCEPTION]: {e}", flush=True)
+
+        time.sleep(12)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     client = get_gspread_client()
@@ -165,7 +162,6 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         row_data = [now_str, str(room), str(guest_name), str(order_details), str(clean_amount), "PENDING"]
         sheet.append_row(row_data)
         print(f"[SHEET WRITE OK]: Room {room} (Amount: Rs. {clean_amount})", flush=True)
-        fetch_kitchen_direct()
     except Exception as e:
         print(f"[SHEET WRITE EXCEPTION]: {e}", flush=True)
 
@@ -189,8 +185,6 @@ def calculate_stay_nights(check_in_str):
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     records = shared_store.get("rooms", [])
-    if not records:
-        records = fetch_rooms_direct()
 
     for row in records:
         sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
@@ -216,9 +210,6 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     kitchen_items_pending = []
 
     k_records = shared_store.get("kitchen_orders", [])
-    if not k_records:
-        k_records = fetch_kitchen_direct()
-
     for r in k_records:
         r_room = str(r.get("Room") or r.get("Room (B)") or "").strip()
         r_status = str(r.get("Payment_Status") or r.get("Payment_Status (F)") or "").strip().upper()
@@ -283,7 +274,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH & COMMUNICATION
+# 3. DISPATCH (TEXT & IMAGES)
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -357,10 +348,14 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         res_json = res.json()
-        print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number}", flush=True)
+        print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
+        if res.status_code != 200:
+            # Fallback text if Meta rejects image link
+            send_whatsapp_message(to_number, f"{caption}\n(Image preview available at reception)")
         return res_json
     except Exception as e:
         print(f"[IMAGE SEND ERROR]: {e}", flush=True)
+        send_whatsapp_message(to_number, f"{caption}\n(Image preview available at reception)")
         return None
 
 def ask_cohere(user_message, sender_phone):
@@ -391,19 +386,20 @@ def process_and_reply(user_text, sender_phone):
     text_lower = user_text.lower().strip()
 
     guest_info = get_guest_stay_status(sender_phone)
-    print(f"[PROCESS] Guest Info: {guest_info}", flush=True)
+    print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. PHOTO HANDLER
+    # 1. PHOTO HANDLER (DIRECT DISPATCH)
     photo_keywords = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna hai", "kaisa dikhta"]
     if any(pk in text_lower for pk in photo_keywords):
+        print(f"[PHOTO ENGINE TRIGGERED] for {sender_phone}", flush=True)
         if "deluxe" in text_lower or "premium" in text_lower:
-            send_whatsapp_image(sender_phone, HOTEL_IMAGES["deluxe"], caption="🛏️ Deluxe Room View\nAttached Bath, King Bed & Wi-Fi ✨")
+            send_whatsapp_image(sender_phone, HOTEL_IMAGES["deluxe"], caption="🛏️ Deluxe Room View\nAttached Bath, King Bed & High-Speed Wi-Fi ✨")
             return
         elif "standard" in text_lower or "budget" in text_lower or "sasta" in text_lower:
-            send_whatsapp_image(sender_phone, HOTEL_IMAGES["standard"], caption="🛏️ Standard Room\nClean & comfortable stay ✨")
+            send_whatsapp_image(sender_phone, HOTEL_IMAGES["standard"], caption="🛏️ Standard Room\nClean & comfortable stay with all essential amenities ✨")
             return
         elif "hotel" in text_lower or "front" in text_lower or "building" in text_lower:
-            send_whatsapp_image(sender_phone, HOTEL_IMAGES["front"], caption="🏨 Hotel Ganga View, Haridwar (Front View)")
+            send_whatsapp_image(sender_phone, HOTEL_IMAGES["front"], caption="🏨 Hotel Ganga View, Haridwar (Front View)\nHar Ki Pauri ke behad kareeb! ✨")
             return
         else:
             send_whatsapp_image(sender_phone, HOTEL_IMAGES["front"], caption="🏨 Hotel Ganga View (Front View)")
@@ -463,7 +459,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
-    # 3. GREETINGS (GUARANTEED DISPATCH)
+    # 3. GREETINGS (INSTANT DISPATCH)
     greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
     if text_lower in greetings or len(text_lower) <= 2:
         if guest_info:
@@ -687,7 +683,7 @@ def start_background_threads():
     threading.Thread(target=keep_awake_ping, daemon=True).start()
     threading.Thread(target=sync_sheets_in_background, daemon=True).start()
     threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
-    print("[SYSTEM]: Threads started successfully.", flush=True)
+    print("[SYSTEM]: Background workers initialized.", flush=True)
 
 start_background_threads()
 

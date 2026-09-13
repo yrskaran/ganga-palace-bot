@@ -20,7 +20,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 app = Flask(__name__)
 
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1357005434155447").strip()
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -280,7 +280,9 @@ def keep_awake_ping():
 
 def mark_message_as_read(message_id):
     def _mark():
-        pid = PHONE_NUMBER_ID or "1357005434155447"
+        pid = (PHONE_NUMBER_ID or "").strip()
+        if not pid or not WHATSAPP_TOKEN:
+            return
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
         headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
         payload = {"messaging_product": "whatsapp", "status": "read", "message_id": message_id}
@@ -294,8 +296,18 @@ def send_whatsapp_message(to_number, text):
     def _do():
         clean_number = format_whatsapp_number(to_number)
         if not clean_number:
+            print(f"[DISPATCH ERROR]: Invalid phone number format: {to_number}", flush=True)
             return
-        pid = PHONE_NUMBER_ID or "1357005434155447"
+
+        pid = (PHONE_NUMBER_ID or "").strip()
+        if not pid:
+            print("[DISPATCH ERROR]: PHONE_NUMBER_ID environment variable is missing!", flush=True)
+            return
+
+        if not WHATSAPP_TOKEN:
+            print("[DISPATCH ERROR]: WHATSAPP_TOKEN environment variable is missing!", flush=True)
+            return
+
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
         headers = {
             "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -309,9 +321,9 @@ def send_whatsapp_message(to_number, text):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=10)
-            print(f"[META DISPATCH] Code: {res.status_code} | Target: {clean_number}", flush=True)
+            print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
         except Exception as e:
-            print(f"[DISPATCH ERROR]: {e}", flush=True)
+            print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
     threading.Thread(target=_do, daemon=True).start()
 
 def send_whatsapp_image(to_number, image_url, caption=""):
@@ -319,7 +331,12 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         clean_number = format_whatsapp_number(to_number)
         if not clean_number:
             return
-        pid = PHONE_NUMBER_ID or "1357005434155447"
+
+        pid = (PHONE_NUMBER_ID or "").strip()
+        if not pid or not WHATSAPP_TOKEN:
+            print("[IMAGE ERROR]: PHONE_NUMBER_ID or WHATSAPP_TOKEN is missing!", flush=True)
+            return
+
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
         headers = {
             "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -336,7 +353,7 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=12)
-            print(f"[META IMAGE] Code: {res.status_code} | Target: {clean_number}", flush=True)
+            print(f"[META IMAGE] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
             if res.status_code != 200:
                 send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
         except Exception:
@@ -396,14 +413,12 @@ def process_and_reply(user_text, sender_phone):
     if any(pw in text_lower for pw in photo_words):
         print(f"[PHOTO DISPATCH] Executing for {sender_phone}", flush=True)
         
-        # Direct image dispatch attempt
         send_whatsapp_image(
             sender_phone,
             "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg",
             caption="🏨 *Hotel Ganga View, Haridwar* (Near Har Ki Pauri)"
         )
 
-        # Guaranteed text-link fallback card so the user instantly sees the link/photo
         fallback_showcase = (
             "🏨 *Hotel Ganga View, Haridwar* 🌸\n"
             "📍 *Location:* Near Har Ki Pauri (2 mins walking)\n\n"
@@ -416,6 +431,7 @@ def process_and_reply(user_text, sender_phone):
         )
         send_whatsapp_message(sender_phone, fallback_showcase)
         return
+
     # 3. IN-HOUSE BILL HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
@@ -605,7 +621,7 @@ def monitor_guest_status_lifecycle():
                     welcome_msg = (
                         f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
                         f"Aapka check-in Room {room} me complete ho gaya hai.\n"
-                        f"Wi-Fi Password: *Ganga@2026*\n"
+                        f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
                         f"Room service ya kisi bhi sahayata ke liye bas yahan message karein. Namaste! 🙏"
                     )
                     send_whatsapp_message(phone, welcome_msg)

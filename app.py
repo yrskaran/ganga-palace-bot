@@ -35,7 +35,7 @@ SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
-# GITHUB RAW IMAGE LINKS
+# GITHUB RAW IMAGE LINKS (Make sure they are raw.githubusercontent.com or direct public links)
 HOTEL_IMAGES = {
     "front": "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=1200&q=80",
     "deluxe": "https://images.unsplash.com/photo-1618773928121-c32242e63f39?auto=format&fit=crop&w=1200&q=80",
@@ -115,7 +115,6 @@ def get_gspread_client():
         return None
 
 def sync_sheets_in_background():
-    print("[SYNC WORKER]: Background sync loop active...", flush=True)
     while True:
         try:
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
@@ -125,7 +124,7 @@ def sync_sheets_in_background():
                     records = list(csv.DictReader(io.StringIO(res_r.content.decode("utf-8"))))
                     if records:
                         shared_store["rooms"] = records
-            except Exception as e:
+            except:
                 pass
 
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
@@ -135,7 +134,7 @@ def sync_sheets_in_background():
                     k_records = list(csv.DictReader(io.StringIO(res_k.content.decode("utf-8"))))
                     if k_records:
                         shared_store["kitchen_orders"] = k_records
-            except Exception as e:
+            except:
                 pass
 
             shared_store["last_synced"] = time.time()
@@ -345,9 +344,13 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         res_json = res.json()
         print(f"[IMAGE DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res_json}", flush=True)
+        if res.status_code != 200:
+            # Fallback to text description if image fails
+            send_whatsapp_message(clean_number, f"{caption}\n(Photo preview link: {image_url})")
         return res_json
     except Exception as e:
         print(f"[IMAGE SEND ERROR]: {e}", flush=True)
+        send_whatsapp_message(clean_number, f"{caption}\n(Photo preview link: {image_url})")
         return None
 
 def ask_cohere(user_message, sender_phone):
@@ -359,9 +362,9 @@ def ask_cohere(user_message, sender_phone):
         "message": user_message,
         "preamble": (
             "You are the WhatsApp AI Receptionist for Hotel Ganga View, Haridwar. "
-            "Help potential guests with room types, rates (Standard: ₹1500-2000, Deluxe: ₹2500-3000), "
-            "amenities (AC, Wi-Fi, Ganga Ghat distance 2 mins walk) and encourage them to book. "
-            "Reply politely in 1-2 lines in Hinglish."
+            "Help potential guests with room types, rates (Standard: ₹1,800, Deluxe: ₹2,500), "
+            "location (2 mins walk from Har Ki Pauri) and encourage booking. "
+            "Reply politely in 1-2 lines Hinglish."
         ),
         "temperature": 0.1
     }
@@ -385,7 +388,7 @@ def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. PHOTO HANDLER (FOR ALL GUESTS - ESPECIALLY PROSPECTIVE ONES)
+    # 1. PHOTO HANDLER (NON-BLOCKING DIRECT CALLS)
     photo_keywords = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna hai", "kaisa dikhta", "dikhao"]
     if any(pk in text_lower for pk in photo_keywords):
         print(f"[PHOTO ENGINE TRIGGERED] for {sender_phone}", flush=True)
@@ -393,30 +396,31 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["deluxe"], 
-                caption="🛏️ *Deluxe Room (Hotel Ganga View)*\nAttached Clean Bath, King Size Bed, AC & High-Speed Wi-Fi ✨\nRate: ₹2,500/night"
+                caption="🛏️ *Deluxe Room (Hotel Ganga View)*\nAttached Clean Bath, King Size Bed, AC & Wi-Fi ✨\nRate: ₹2,500/night"
             )
             return
         elif "standard" in text_lower or "budget" in text_lower or "sasta" in text_lower:
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["standard"], 
-                caption="🛏️ *Standard Room (Hotel Ganga View)*\nCozy & Clean Bed, Geyser, TV & Free Wi-Fi ✨\nRate: ₹1,800/night"
+                caption="🛏️ *Standard Room (Hotel Ganga View)*\nCozy Bed, Geyser, TV & Free Wi-Fi ✨\nRate: ₹1,800/night"
             )
             return
-        elif "hotel" in text_lower or "front" in text_lower or "building" in text_lower or "bahar" in text_lower:
+        elif "hotel" in text_lower or "front" in text_lower or "building" in text_lower:
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute ki doori par! Shandar location & river view. ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar*\n📍 Har Ki Pauri se sirf 2 minute ki doori par! ✨"
             )
             return
         else:
+            # Send Front Photo first
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["front"], 
-                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke behad paas! ✨"
+                caption="🏨 *Hotel Ganga View, Haridwar (Front View)*\nHar Ki Pauri ke paas! ✨"
             )
-            time.sleep(1)
+            # Send Deluxe Room Photo immediately without sleep
             send_whatsapp_image(
                 sender_phone, 
                 HOTEL_IMAGES["deluxe"], 
@@ -476,7 +480,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, bill_reply)
         return
 
-    # 3. GREETINGS (Tailored for In-house vs Prospective Guests)
+    # 3. GREETINGS
     greetings = ["hi", "hello", "namaste", "hey", "start", "hlo", "helo"]
     if text_lower in greetings or len(text_lower) <= 2:
         if guest_info:
@@ -495,7 +499,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, reply_msg)
         return
 
-    # 4. COMPLAINT INTERCEPTOR (Only relevant for in-house)
+    # 4. COMPLAINT INTERCEPTOR
     complaint_words = ["thandi", "kharab", "thanda", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat"]
     is_complaint = any(cw in text_lower for cw in complaint_words)
 

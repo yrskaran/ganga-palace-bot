@@ -208,19 +208,23 @@ def get_guest_stay_status(sender_phone):
     records = shared_store.get("rooms", [])
 
     for row in records:
-        sheet_phone_val = row.get("Phone") or row.get("Phone (E)") or ""
-        status_val = row.get("Status") or row.get("Status (F)") or ""
-        sheet_phone = re.sub(r"\D", "", str(sheet_phone_val))[-10:]
-        status = str(status_val).strip().upper()
+        # Saare possible column variations normalize karein
+        norm_row = {str(k).strip().lower(): str(v).strip() for k, v in row.items()}
+        
+        phone_val = norm_row.get("phone") or norm_row.get("phone (e)") or norm_row.get("phone(e)") or ""
+        status_val = norm_row.get("status") or norm_row.get("status (f)") or norm_row.get("status(f)") or ""
+        
+        sheet_phone = re.sub(r"\D", "", str(phone_val))[-10:]
+        status = status_val.upper()
 
-        if sheet_phone and sheet_phone == clean_sender and status == "CHECKED_IN":
+        if sheet_phone and sheet_phone == clean_sender and "IN" in status:
             return {
                 "is_inhouse": True,
-                "room": str(row.get("Room") or row.get("Room (A)") or "").strip(),
-                "name": str(row.get("Guest Name") or row.get("Guest Name (D)") or "").strip(),
-                "category": str(row.get("Category") or row.get("Category (B)") or "Standard").strip(),
-                "price": str(row.get("Price") or row.get("Price (C)") or "2000").strip(),
-                "check_in_date": str(row.get("Check_In_Date") or row.get("Check_In_Date (G)") or "").strip()
+                "room": norm_row.get("room") or norm_row.get("room (a)") or "101",
+                "name": norm_row.get("guest name") or norm_row.get("guest name (d)") or "Guest",
+                "category": norm_row.get("category") or norm_row.get("category (b)") or "Deluxe",
+                "price": norm_row.get("price") or norm_row.get("price (c)") or "1800",
+                "check_in_date": norm_row.get("check_in_date") or norm_row.get("check_in_date (g)") or ""
             }
     return None
 

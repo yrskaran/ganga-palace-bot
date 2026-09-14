@@ -112,7 +112,8 @@ def get_gspread_client():
         ]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
-    except Exception:
+    except Exception as e:
+        print(f"[GSPREAD CLIENT ERROR]: {e}", flush=True)
         return None
 
 def sync_sheets_in_background():
@@ -140,6 +141,7 @@ def sync_sheets_in_background():
                         raw_data = ws_rooms.get_all_values()
                         if len(raw_data) > 1:
                             shared_store["rooms"] = raw_data[1:]
+                            synced_rooms = True
                     except Exception:
                         pass
 
@@ -169,14 +171,15 @@ def sync_sheets_in_background():
                         pass
 
             shared_store["last_synced"] = time.time()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[BACKGROUND SYNC ERROR]: {e}", flush=True)
 
         time.sleep(10)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     client = get_gspread_client()
     if not client:
+        print("[APPEND ERROR] GSpread client unavailable", flush=True)
         return
     try:
         clean_amount = int(re.sub(r"\D", "", str(amount))) if re.sub(r"\D", "", str(amount)) else 0
@@ -185,11 +188,11 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
 
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
-        row_data = [now_str, str(room), str(guest_name), str(order_details), str(clean_amount), "PENDING"]
+        row_data = [now_str, str(room), str(guest_name), str(order_details), int(clean_amount), "PENDING"]
         sheet.append_row(row_data)
-        print(f"[SHEET WRITE OK] Added order for Room {room}", flush=True)
+        print(f"[SHEET WRITE OK] Added order: {row_data}", flush=True)
     except Exception as e:
-        print(f"[SHEET WRITE ERROR]: {e}", flush=True)
+        print(f"[SHEET WRITE FAIL]: {e}", flush=True)
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str:
@@ -227,7 +230,7 @@ def get_guest_stay_status(sender_phone):
             category = vals_str[1] if len(vals_str) > 1 and vals_str[1] else "Deluxe"
             price_digits = re.sub(r"\D", "", vals_str[2]) if len(vals_str) > 2 else "1800"
             price = price_digits if price_digits and int(price_digits) < 50000 else "1800"
-            name = vals_str[3] if len(vals_str) > 3 and vals_str[3] else "Guest"
+            name = vals_str[3] if len(vals_str) > 3 and vals_str[3] else "Karan Gilhotra"
             check_in = vals_str[6] if len(vals_str) > 6 and vals_str[6] else "12-09-2026"
 
             return {
@@ -243,15 +246,13 @@ def get_guest_stay_status(sender_phone):
 def get_guest_comprehensive_financials(room_number, sender_phone=""):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:] if sender_phone else ""
     target_room = str(room_number).strip()
-    
+
     total_kitchen = 0
     paid_kitchen = 0
     kitchen_items_pending = []
     kitchen_items_paid = []
 
     k_records = shared_store.get("kitchen_orders", [])
-    print(f"[BILL DEBUG] Scanning {len(k_records)} orders for Room {target_room}", flush=True)
-
     for r in k_records:
         if isinstance(r, dict):
             vals = [str(v).strip() for v in r.values()]
@@ -261,8 +262,6 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         if len(vals) < 5:
             continue
 
-        # Exact Sheet Schema:
-        # Col 0: Date_Time | Col 1: Room | Col 2: Guest Name | Col 3: Order Details | Col 4: Amount | Col 5: Payment_Status
         row_room = str(vals[1]).strip()
         if row_room != target_room:
             continue
@@ -271,7 +270,6 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         raw_amt_str = str(vals[4]).strip() if len(vals) > 4 else "0"
         status_str = str(vals[5]).strip().upper() if len(vals) > 5 else "PENDING"
 
-        # Calculate / parse amount
         raw_digits = re.sub(r"\D", "", raw_amt_str)
         amt = int(raw_digits) if raw_digits else 0
         if amt <= 0:
@@ -366,8 +364,12 @@ def send_whatsapp_message(to_number, text):
             return
 
         pid = (PHONE_NUMBER_ID or "").strip()
-        if not pid or not WHATSAPP_TOKEN:
-            print("[DISPATCH ERROR]: Missing WhatsApp credentials!", flush=True)
+        if not pid:
+            print("[DISPATCH ERROR]: Missing PHONE_NUMBER_ID", flush=True)
+            return
+
+        if not WHATSAPP_TOKEN:
+            print("[DISPATCH ERROR]: Missing WHATSAPP_TOKEN", flush=True)
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -492,7 +494,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, fallback_showcase)
         return
 
-    # 3. BILL HANDLER (DEFAULT = KITCHEN BILL, EXPLICIT = ROOM / TOTAL)
+    # 3. BILL HANDLER (DEFAULT = KITCHEN BILL, EXPLICIT = ROOM / COMPLETE)
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
         print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
@@ -517,7 +519,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case B: Complete Combined Statement
+        # Case B: Complete Stay Combined Statement
         if asks_complete_specifically:
             bill_reply = (
                 f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
@@ -535,7 +537,7 @@ def process_and_reply(user_text, sender_phone):
             return
 
         # Case C: DEFAULT = Kitchen / Food Orders Bill
-        pending_list = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi pending item nahi hai"
+        pending_list = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi pending order nahi hai"
         paid_list = "\n".join(fin["kitchen_paid_items"]) if fin["kitchen_paid_items"] else ""
         paid_section = f"\n\n*Already Paid Orders:*\n{paid_list}" if paid_list else ""
 
@@ -548,7 +550,7 @@ def process_and_reply(user_text, sender_phone):
             f"✅ *Aapne Jamah Kar Diya (PAID):* ₹{fin['paid_kitchen']}\n"
             f"-----------------------------------\n"
             f"⚠️ *Bacha Hua (Kitchen Balance Due):* ₹{fin['pending_kitchen']}\n\n"
-            f"*(Chai/Khane ka payment aap room service boy ko cash/UPI de sakte hain ya check-out par settle kar sakte hain)*"
+            f"*(Chai/Khane ka payment aap staff ko de sakte hain ya check-out par settle kar sakte hain)*"
         )
         send_whatsapp_message(sender_phone, bill_reply)
         return
@@ -577,9 +579,11 @@ def process_and_reply(user_text, sender_phone):
     is_complaint = any(cw in text_lower for cw in complaint_words)
 
     # 6. IN-HOUSE FOOD ORDER INTERCEPTOR
-    is_food_msg = any(w in text_lower for w in ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi"])
+    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer"]
+    is_food_msg = any(w in text_lower for w in food_words)
     if guest_info and is_food_msg and not is_complaint:
         total_price = resolve_item_price(user_text)
+
         threading.Thread(
             target=append_kitchen_order_to_sheet,
             args=(guest_info['room'], guest_info['name'], user_text, total_price),
@@ -606,7 +610,7 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, guest_ack)
         return
 
-    # 7. COHERE INTENT RESOLVER
+    # 7. COHERE INTENT RESOLVER & STAFF ESCALATION
     prompt_input = (
         f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" 
         if guest_info 
@@ -705,6 +709,10 @@ def monitor_guest_status_lifecycle():
                     k_item = k_values[3]
                     k_amt = re.sub(r"\D", "", k_values[4]) or "0"
                     k_status = k_values[5].upper()
+
+                    # Ignore ₹0 entries from previous bad syncs
+                    if int(k_amt) <= 0:
+                        continue
 
                     unique_order_key = f"{k_room}_{idx}_{k_amt}"
                     if "PAID" in k_status and (unique_order_key not in notified_paid_orders):

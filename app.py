@@ -118,7 +118,7 @@ def get_gspread_client():
 def sync_sheets_in_background():
     while True:
         try:
-            # 1. Rooms Sync
+            # 1. Rooms Tab
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
             synced_rooms = False
             try:
@@ -140,11 +140,10 @@ def sync_sheets_in_background():
                         raw_data = ws_rooms.get_all_records()
                         if raw_data:
                             shared_store["rooms"] = raw_data
-                            synced_rooms = True
                     except Exception:
                         pass
 
-            # 2. Kitchen Orders Sync
+            # 2. Kitchen Orders Tab
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
             synced_kitch = False
             try:
@@ -224,7 +223,6 @@ def get_guest_stay_status(sender_phone):
         status_matched = any("IN" in v.upper() for v in vals_str)
 
         if phone_matched and status_matched:
-            # Explicit column position lookup
             room = vals_str[0] if len(vals_str) > 0 and vals_str[0] else "101"
             category = vals_str[1] if len(vals_str) > 1 and vals_str[1] else "Deluxe"
             price_digits = re.sub(r"\D", "", vals_str[2]) if len(vals_str) > 2 else "1800"
@@ -247,25 +245,54 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     total_kitchen = 0
     paid_kitchen = 0
     kitchen_items_pending = []
+    kitchen_items_paid = []
 
     k_records = shared_store.get("kitchen_orders", [])
     for r in k_records:
+        r_room = ""
+        r_status = ""
+        r_details = ""
+        r_amt = "0"
+
         if isinstance(r, dict):
-            vals = [str(v).strip() for v in r.values()]
+            # Try key-based access first
+            for k, v in r.items():
+                kc = re.sub(r"[^a-zA-Z]", "", str(k)).lower()
+                if "room" in kc:
+                    r_room = str(v).strip()
+                elif "detail" in kc or "order" in kc:
+                    r_details = str(v).strip()
+                elif "amount" in kc or "price" in kc:
+                    r_amt = str(v).strip()
+                elif "status" in kc or "payment" in kc:
+                    r_status = str(v).strip().upper()
+            
+            # Fallback to values order if keys are unhelpful
+            if not r_room:
+                vals = [str(v).strip() for v in r.values()]
+                if len(vals) >= 6:
+                    r_room = vals[1]
+                    r_details = vals[3]
+                    r_amt = vals[4]
+                    r_status = vals[5].upper()
         else:
             vals = [str(v).strip() for v in r]
+            if len(vals) >= 6:
+                r_room = vals[1]
+                r_details = vals[3]
+                r_amt = vals[4]
+                r_status = vals[5].upper()
 
-        if len(vals) >= 5 and vals[1] == str(room_number).strip():
-            item_name = vals[3] if vals[3] else "Food Item"
-            raw_amt = re.sub(r"\D", "", vals[4])
-            amt = int(raw_amt) if raw_amt else resolve_item_price(item_name)
-            status = vals[5].upper() if len(vals) > 5 else "PENDING"
+        if r_room == str(room_number).strip():
+            raw_digits = re.sub(r"\D", "", str(r_amt))
+            amt = int(raw_digits) if raw_digits else resolve_item_price(r_details)
 
             total_kitchen += amt
-            if "PAID" in status:
+            if "PAID" in r_status:
                 paid_kitchen += amt
+                kitchen_items_paid.append(f"• {r_details} - ₹{amt} (PAID)")
             else:
-                kitchen_items_pending.append(f"• {item_name} - ₹{amt}")
+                kitchen_items_pending.append(f"• {r_details} - ₹{amt}")
 
     records_rooms = shared_store.get("rooms", [])
     room_rate_per_night = 1800
@@ -279,21 +306,21 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         else:
             vals = [str(v).strip() for v in r]
 
-        if len(vals) >= 6:
+        if len(vals) >= 5:
             r_room = vals[0]
             r_phone = re.sub(r"\D", "", vals[4])[-10:] if len(vals) > 4 else ""
 
             if r_room == str(room_number).strip() or (clean_sender and r_phone == clean_sender):
-                p_digits = re.sub(r"\D", "", vals[2])
+                p_digits = re.sub(r"\D", "", vals[2]) if len(vals) > 2 else "1800"
                 if p_digits and int(p_digits) < 50000:
                     room_rate_per_night = int(p_digits)
-                guest_name = vals[3] if vals[3] else "Guest"
+                guest_name = vals[3] if len(vals) > 3 and vals[3] else "Guest"
                 if len(vals) > 6:
                     nights = calculate_stay_nights(vals[6])
                 break
 
     total_room_rent = room_rate_per_night * nights
-    pending_kitchen = total_kitchen - paid_kitchen
+    pending_kitchen = max(0, total_kitchen - paid_kitchen)
     grand_total = total_kitchen + total_room_rent
     total_paid = paid_kitchen + room_advance_paid
     balance_due = max(0, grand_total - total_paid)
@@ -308,6 +335,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         "paid_kitchen": paid_kitchen,
         "pending_kitchen": pending_kitchen,
         "kitchen_pending_items": kitchen_items_pending,
+        "kitchen_paid_items": kitchen_items_paid,
         "grand_total": grand_total,
         "total_paid": total_paid,
         "balance_due": balance_due
@@ -474,29 +502,18 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, fallback_showcase)
         return
 
-    # 3. IN-HOUSE BILL HANDLER
+    # 3. BILL HANDLER (DEFAULT = KITCHEN BILL, EXPLICIT = ROOM / TOTAL)
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
     if guest_info and re.search(bill_pattern, text_lower):
         print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
         fin = get_guest_comprehensive_financials(guest_info['room'], sender_phone)
-        is_only_kitchen = any(k in text_lower for k in ["kichen", "kitchen", "khana", "khane", "food", "nashta", "chai"])
-        is_only_room = any(k in text_lower for k in ["room", "kamra", "kamre", "stay", "rent", "tariff"])
 
-        if is_only_kitchen and not is_only_room:
-            pending_items = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi order pending nahi"
-            paid_str = f"✅ *Paid Amount:* ₹{fin['paid_kitchen']}\n" if fin['paid_kitchen'] > 0 else ""
-            bill_reply = (
-                f"🍳 *Room {guest_info['room']} - Kitchen Orders Summary*\n"
-                f"Guest: {fin['guest_name']} ji\n\n"
-                f"*Pending Orders:*\n{pending_items}\n\n"
-                f"💰 *Total Kitchen Orders:* ₹{fin['total_kitchen']}\n"
-                f"{paid_str}"
-                f"⚠️ *Kitchen Balance Due:* ₹{fin['pending_kitchen']}"
-            )
-            send_whatsapp_message(sender_phone, bill_reply)
-            return
+        # Check if user specifically asks for Room Rent or Complete Stay Bill
+        asks_room_specifically = any(k in text_lower for k in ["kamre ka", "room ka", "room rent", "stay ka", "rent kitna", "tariff"])
+        asks_complete_specifically = any(k in text_lower for k in ["pura bill", "complete bill", "grand total", "pura hisab", "sab milakar", "checkout bill"])
 
-        if is_only_room and not is_only_kitchen:
+        # Case A: Only Room Rent requested
+        if asks_room_specifically and not asks_complete_specifically:
             adv_str = f"✅ *Advance Paid:* ₹{fin['room_advance_paid']}\n" if fin['room_advance_paid'] > 0 else ""
             room_due = max(0, fin['total_room_rent'] - fin['room_advance_paid'])
             bill_reply = (
@@ -511,17 +528,37 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
+        # Case B: Complete Combined Statement requested
+        if asks_complete_specifically:
+            bill_reply = (
+                f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
+                f"Guest Name: {fin['guest_name']} ji ({fin['nights']} Night{'s' if fin['nights'] > 1 else ''})\n\n"
+                f"🏨 *Room Rent ({fin['nights']}N @ ₹{fin['room_rate']}):* ₹{fin['total_room_rent']}\n"
+                f"🍳 *Kitchen Orders Total:* ₹{fin['total_kitchen']}\n"
+                f"-----------------------------------\n"
+                f"💵 *Grand Total Bill:* ₹{fin['grand_total']}\n\n"
+                f"✅ *Aapne Jamah Kiya (Paid):* ₹{fin['total_paid']}\n"
+                f"-----------------------------------\n"
+                f"💳 *Abhi Bacha Hua (Balance Due):* ₹{fin['balance_due']}\n"
+                f"*(Aap balance amount check-out counter par settle kar sakte hain)*"
+            )
+            send_whatsapp_message(sender_phone, bill_reply)
+            return
+
+        # Case C: DEFAULT = Kitchen / Food Bill (With Paid & Pending Deductions)
+        pending_list = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi pending item nahi hai"
+        paid_info = f"✅ *Aapne Jamah Kar Diya (PAID):* ₹{fin['paid_kitchen']}\n" if fin['paid_kitchen'] > 0 else "✅ *Paid Amount:* ₹0\n"
+
         bill_reply = (
-            f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
-            f"Guest Name: {fin['guest_name']} ji ({fin['nights']} Night{'s' if fin['nights'] > 1 else ''})\n\n"
-            f"🏨 *Room Rent ({fin['nights']}N @ ₹{fin['room_rate']}):* ₹{fin['total_room_rent']}\n"
-            f"🍳 *Kitchen Orders Total:* ₹{fin['total_kitchen']}\n"
+            f"🍳 *Room {guest_info['room']} - Kitchen Orders Bill*\n"
+            f"Guest: {fin['guest_name']} ji\n\n"
+            f"📋 *Pending Items:*\n{pending_list}\n\n"
             f"-----------------------------------\n"
-            f"💵 *Grand Total Bill:* ₹{fin['grand_total']}\n\n"
-            f"✅ *Aapne Jamah Kiya (Paid):* ₹{fin['total_paid']}\n"
+            f"💰 *Total Kitchen Orders:* ₹{fin['total_kitchen']}\n"
+            f"{paid_info}"
             f"-----------------------------------\n"
-            f"💳 *Abhi Bacha Hua (Balance Due):* ₹{fin['balance_due']}\n"
-            f"*(Aap balance amount check-out counter par settle kar sakte hain)*"
+            f"⚠️ *Bacha Hua (Kitchen Balance Due):* ₹{fin['pending_kitchen']}\n\n"
+            f"*(Chai/Khane ka payment aap staff ko cash/UPI de sakte hain ya check-out par settle kar sakte hain)*"
         )
         send_whatsapp_message(sender_phone, bill_reply)
         return
@@ -668,29 +705,34 @@ def monitor_guest_status_lifecycle():
 
             k_records = shared_store.get("kitchen_orders", [])
             for idx, k_row in enumerate(k_records, start=2):
+                r_room = ""
+                r_item = "Order"
+                r_amt = "0"
+                r_status = ""
+
                 if isinstance(k_row, dict):
-                    k_values = [str(v).strip() for v in k_row.values()]
+                    vals = [str(v).strip() for v in k_row.values()]
                 else:
-                    k_values = [str(v).strip() for v in k_row]
+                    vals = [str(v).strip() for v in k_row]
 
-                if len(k_values) >= 6:
-                    k_room = k_values[1]
-                    k_item = k_values[3]
-                    k_amt = re.sub(r"\D", "", k_values[4]) or "0"
-                    k_status = k_values[5].upper()
+                if len(vals) >= 6:
+                    r_room = vals[1]
+                    r_item = vals[3]
+                    r_amt = re.sub(r"\D", "", vals[4]) or "0"
+                    r_status = vals[5].upper()
 
-                    unique_order_key = f"{k_room}_{idx}_{k_amt}"
-                    if "PAID" in k_status and (unique_order_key not in notified_paid_orders):
-                        guest_ph = room_phone_map.get(k_room)
-                        if guest_ph:
-                            receipt_msg = (
-                                f"✅ *Payment Received Confirmation*\n\n"
-                                f"Namaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) "
-                                f"ki payment successfully receive ho gayi hai.\n"
-                                f"Dhanyawad! 🙏"
-                            )
-                            send_whatsapp_message(guest_ph, receipt_msg)
-                            notified_paid_orders.add(unique_order_key)
+                unique_order_key = f"{r_room}_{idx}_{r_amt}"
+                if "PAID" in r_status and (unique_order_key not in notified_paid_orders):
+                    guest_ph = room_phone_map.get(r_room)
+                    if guest_ph:
+                        receipt_msg = (
+                            f"✅ *Payment Received Confirmation*\n\n"
+                            f"Namaste ji! Room {r_room} ke liye ₹{r_amt} ({r_item}) "
+                            f"ki payment successfully receive ho gayi hai.\n"
+                            f"Dhanyawad! 🙏"
+                        )
+                        send_whatsapp_message(guest_ph, receipt_msg)
+                        notified_paid_orders.add(unique_order_key)
 
         except Exception as e:
             print(f"[LIFECYCLE MONITOR ERROR]: {e}", flush=True)

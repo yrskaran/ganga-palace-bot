@@ -14,7 +14,7 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Ganga_Palace_Guests")
 
-# Google Sheets Client Setup (Built-in gspread support, no oauth2client needed)
+# Google Sheets Connection
 sheet_client = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
@@ -45,7 +45,7 @@ def send_whatsapp_message(to_phone, text):
     
     try:
         r = requests.post(url, headers=headers, json=payload, timeout=10)
-        print(f"[META DISPATCH] Status: {r.status_code} | Target: {to_phone}", flush=True)
+        print(f"[META DISPATCH] Status: {r.status_code} | Target: {to_phone} | Response: {r.text}", flush=True)
         return r.status_code == 200
     except Exception as e:
         print(f"[META DISPATCH ERROR] {e}", flush=True)
@@ -74,51 +74,54 @@ def get_guest_status(phone_number):
 
 def process_message_pipeline(user_phone, user_text, msg_id):
     """Core Receptionist & Guest Service Pipeline"""
-    clean_text = user_text.lower().strip()
-    print(f"[PROCESS START] '{clean_text}' from {user_phone}", flush=True)
+    try:
+        clean_text = user_text.lower().strip()
+        print(f"[PROCESS START] '{clean_text}' from {user_phone}", flush=True)
 
-    guest = get_guest_status(user_phone)
+        guest = get_guest_status(user_phone)
 
-    if guest:
-        # In-House Guest Handling
-        room = guest.get("Room", "Your Room")
-        name = guest.get("Name", "Guest")
+        if guest:
+            # In-House Guest Handling
+            room = guest.get("Room", "Your Room")
+            name = guest.get("Name", "Guest")
 
-        if any(w in clean_text for w in ["chai", "tea", "coffee", "khana", "food", "paratha", "order", "water"]):
-            reply = f"Namaste {name} ji! Room {room} ke liye aapka request receive ho gaya hai. Humari kitchen team 10-15 minute me deliver kar degi. ☕🛎️"
-        elif any(w in clean_text for w in ["wifi", "wi-fi", "password"]):
-            reply = f"Room {room} Wi-Fi details:\nNetwork: GangaView_Guest\nPassword: Ganga@2026"
-        elif any(w in clean_text for w in ["checkout", "check out", "bill"]):
-            reply = f"Namaste {name} ji, front desk aapke Room {room} ka bill taiyar kar raha hai. 5 minute me finalize ho jayega."
+            if any(w in clean_text for w in ["chai", "tea", "coffee", "khana", "food", "paratha", "order", "water"]):
+                reply = f"Namaste {name} ji! Room {room} ke liye aapka request receive ho gaya hai. Humari kitchen team 10-15 minute me deliver kar degi. ☕🛎️"
+            elif any(w in clean_text for w in ["wifi", "wi-fi", "password"]):
+                reply = f"Room {room} Wi-Fi details:\nNetwork: GangaView_Guest\nPassword: Ganga@2026"
+            elif any(w in clean_text for w in ["checkout", "check out", "bill"]):
+                reply = f"Namaste {name} ji, front desk aapke Room {room} ka bill taiyar kar raha hai. 5 minute me finalize ho jayega."
+            else:
+                reply = f"Namaste {name} ji (Room {room})! Ganga View desk par aapka message mil gaya hai. Reception team turant assist kar rahi hai."
         else:
-            reply = f"Namaste {name} ji (Room {room})! Ganga View desk par aapka message mil gaya hai. Reception team turant assist kar rahi hai."
-    else:
-        # Inquiry / Outside Guest Handling
-        if any(w in clean_text for w in ["photo", "photos", "pic", "pics", "image", "room"]):
-            reply = (
-                "Hotel Ganga View, Haridwar Rooms & Rates:\n\n"
-                "1. Standard AC Room: ₹1,800/night\n"
-                "2. Deluxe Ganga View Room: ₹2,500/night\n\n"
-                "Har Ki Pauri se sirf 500m door. Booking ke liye date aur guests count batayein!"
-            )
-        elif any(w in clean_text for w in ["location", "kahan", "address", "map", "rasta"]):
-            reply = (
-                "📍 Hotel Ganga View, Haridwar\n"
-                "Near Har Ki Pauri, Haridwar, Uttarakhand.\n"
-                "Google Maps Link: https://maps.google.com/?q=Har+Ki+Pauri+Haridwar"
-            )
-        elif any(w in clean_text for w in ["hi", "hello", "namaste", "hey"]):
-            reply = (
-                "Namaste! Hotel Ganga View, Haridwar me aapka swagat hai. 🌸\n\n"
-                "Main aapki kya madad kar sakta hoon?\n"
-                "• Rooms & Tariffs\n"
-                "• Hotel Location\n"
-                "• Current Bookings"
-            )
-        else:
-            reply = "Hotel Ganga View me aapka swagat hai! Room booking ya jankari ke liye 'Rooms' ya 'Location' likhein."
+            # Inquiry / Outside Guest Handling
+            if any(w in clean_text for w in ["photo", "photos", "pic", "pics", "image", "room"]):
+                reply = (
+                    "Hotel Ganga View, Haridwar Rooms & Rates:\n\n"
+                    "1. Standard AC Room: ₹1,800/night\n"
+                    "2. Deluxe Ganga View Room: ₹2,500/night\n\n"
+                    "Har Ki Pauri se sirf 500m door. Booking ke liye date aur guests count batayein!"
+                )
+            elif any(w in clean_text for w in ["location", "kahan", "address", "map", "rasta"]):
+                reply = (
+                    "📍 Hotel Ganga View, Haridwar\n"
+                    "Near Har Ki Pauri, Haridwar, Uttarakhand.\n"
+                    "Google Maps Link: https://maps.google.com/?q=Har+Ki+Pauri+Haridwar"
+                )
+            elif any(w in clean_text for w in ["hi", "hello", "namaste", "hey"]):
+                reply = (
+                    "Namaste! Hotel Ganga View, Haridwar me aapka swagat hai. 🌸\n\n"
+                    "Main aapki kya madad kar sakta hoon?\n"
+                    "• Rooms & Tariffs\n"
+                    "• Hotel Location\n"
+                    "• Current Bookings"
+                )
+            else:
+                reply = "Hotel Ganga View me aapka swagat hai! Room booking ya jankari ke liye 'Rooms' ya 'Location' likhein."
 
-    send_whatsapp_message(user_phone, reply)
+        send_whatsapp_message(user_phone, reply)
+    except Exception as pipeline_err:
+        print(f"[PIPELINE ERROR] Unhandled crash: {pipeline_err}", flush=True)
 
 
 @app.route('/', methods=['GET'])
@@ -144,9 +147,8 @@ def webhook():
         return "Forbidden", 403
 
     if request.method == 'POST':
-        data = request.get_json(silent=True)
-        if not data:
-            return "NO_DATA", 200
+        data = request.get_json(silent=True) or {}
+        print(f"[INCOMING PACKET RAW] {json.dumps(data)}", flush=True)
 
         try:
             entries = data.get("entry", [])
@@ -154,20 +156,28 @@ def webhook():
                 changes = entry.get("changes", [])
                 for change in changes:
                     value = change.get("value", {})
-                    messages = value.get("messages", [])
-                    for msg in messages:
-                        sender = msg.get("from")
-                        msg_id = msg.get("id")
-                        msg_type = msg.get("type")
+                    
+                    # Status events (sent, delivered, read)
+                    if "statuses" in value:
+                        status_info = value["statuses"][0]
+                        print(f"[META STATUS TICK] Status: {status_info.get('status')} | Recipient: {status_info.get('recipient_id')}", flush=True)
+                    
+                    # Asli user messages
+                    if "messages" in value:
+                        for msg in value.get("messages", []):
+                            sender = msg.get("from")
+                            msg_id = msg.get("id")
+                            msg_type = msg.get("type")
 
-                        if msg_type == "text":
-                            text_body = msg.get("text", {}).get("body", "")
-                            if sender and text_body:
-                                threading.Thread(
-                                    target=process_message_pipeline,
-                                    args=(sender, text_body, msg_id),
-                                    daemon=True
-                                ).start()
+                            if msg_type == "text":
+                                text_body = msg.get("text", {}).get("body", "")
+                                if sender and text_body:
+                                    t = threading.Thread(
+                                        target=process_message_pipeline,
+                                        args=(sender, text_body, msg_id),
+                                        daemon=True
+                                    )
+                                    t.start()
         except Exception as e:
             print(f"[WEBHOOK EXCEPTION] {e}", flush=True)
 

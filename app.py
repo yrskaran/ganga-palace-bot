@@ -32,6 +32,7 @@ STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
 HOTEL_LAT = "29.9530"
 HOTEL_LON = "78.1700"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
+KITCHEN_GID = "2000938503"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
 
@@ -46,8 +47,8 @@ processed_msg_ids = set()
 
 shared_store = {
     "rooms": [
-        {"Room": "101", "Category": "Deluxe (Budget)", "Price": "1800", "Guest Name": "Karan Gilhotra", "Phone": "7500058655", "Status": "CHECKED_IN", "Check_In_Date": "12-09-2026"},
-        {"Room": "203", "Category": "DELUCE (Budget)", "Price": "1800", "Guest Name": "monika batra", "Phone": "919058514478", "Status": "CHECKED_IN", "Check_In_Date": "13-09-2026"}
+        {"Room (A)": "101", "Category (B)": "Deluxe (Budget)", "Price (C)": "1800", "Guest Name (D)": "Karan Gilhotra", "Phone (E)": "7500058655", "Status (F)": "CHECKED_IN", "Check_In_Date": "12-09-2026"},
+        {"Room (A)": "203", "Category (B)": "DELUCE (Budget)", "Price (C)": "1800", "Guest Name (D)": "monika batra", "Phone (E)": "919058514478", "Status (F)": "CHECKED_IN", "Check_In_Date": "13-09-2026"}
     ],
     "kitchen_orders": [],
     "last_synced": 0
@@ -99,7 +100,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. BACKGROUND DATA SYNC
+# 2. BACKGROUND DATA SYNC (USING GID)
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -112,15 +113,14 @@ def get_gspread_client():
         ]
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         return gspread.authorize(creds)
-    except Exception as e:
-        print(f"[GSPREAD CLIENT ERROR]: {e}", flush=True)
+    except Exception:
         return None
 
 def sync_sheets_in_background():
     while True:
         try:
-            # 1. Rooms Tab
-            csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
+            # 1. Rooms Tab (Tab 0)
+            csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0"
             synced_rooms = False
             try:
                 res_r = requests.get(csv_url_rooms, timeout=5)
@@ -137,16 +137,15 @@ def sync_sheets_in_background():
                 if client:
                     try:
                         sh = client.open_by_key(SHEET_ID)
-                        ws_rooms = sh.worksheet("Rooms")
+                        ws_rooms = sh.get_worksheet(0)
                         raw_data = ws_rooms.get_all_values()
                         if len(raw_data) > 1:
                             shared_store["rooms"] = raw_data[1:]
-                            synced_rooms = True
                     except Exception:
                         pass
 
-            # 2. Kitchen Orders Tab
-            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
+            # 2. Kitchen Orders Tab (Exact GID: 2000938503)
+            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}"
             synced_kitch = False
             try:
                 res_k = requests.get(csv_url_kitch, timeout=5)
@@ -171,15 +170,14 @@ def sync_sheets_in_background():
                         pass
 
             shared_store["last_synced"] = time.time()
-        except Exception as e:
-            print(f"[BACKGROUND SYNC ERROR]: {e}", flush=True)
+        except Exception:
+            pass
 
         time.sleep(10)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     client = get_gspread_client()
     if not client:
-        print("[APPEND ERROR] GSpread client unavailable", flush=True)
         return
     try:
         clean_amount = int(re.sub(r"\D", "", str(amount))) if re.sub(r"\D", "", str(amount)) else 0
@@ -262,6 +260,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         if len(vals) < 5:
             continue
 
+        # Col 0: Date_Time | Col 1: Room | Col 2: Name | Col 3: Details | Col 4: Amount | Col 5: Status
         row_room = str(vals[1]).strip()
         if row_room != target_room:
             continue
@@ -360,16 +359,10 @@ def send_whatsapp_message(to_number, text):
     def _do():
         clean_number = format_whatsapp_number(to_number)
         if not clean_number:
-            print(f"[DISPATCH ERROR]: Invalid phone number format: {to_number}", flush=True)
             return
 
         pid = (PHONE_NUMBER_ID or "").strip()
-        if not pid:
-            print("[DISPATCH ERROR]: Missing PHONE_NUMBER_ID", flush=True)
-            return
-
-        if not WHATSAPP_TOKEN:
-            print("[DISPATCH ERROR]: Missing WHATSAPP_TOKEN", flush=True)
+        if not pid or not WHATSAPP_TOKEN:
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -458,10 +451,9 @@ def process_and_reply(user_text, sender_phone):
     guest_info = get_guest_stay_status(sender_phone)
     print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
-    # 1. LOCATION / MAP HANDLER
+    # 1. LOCATION / MAP
     loc_words = ["location", "map", "address", "kahan hai", "pauri", "reach", "direction", "rasta", "kahan sthit", "kaha par hai"]
     if any(lw in text_lower for lw in loc_words):
-        print(f"[LOCATION DISPATCH] For {sender_phone}", flush=True)
         loc_msg = (
             "📍 *Hotel Ganga View, Haridwar*\n"
             "Har Ki Pauri se sirf 2 minute ki walking distance par sthit hai!\n\n"
@@ -472,10 +464,9 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, loc_msg)
         return
 
-    # 2. PHOTO HANDLER WITH GUARANTEED TEXT FALLBACK
+    # 2. PHOTOS
     photo_words = ["photo", "photos", "pic", "pics", "image", "tasveer", "dekhna", "dikhao", "dede"]
     if any(pw in text_lower for pw in photo_words):
-        print(f"[PHOTO DISPATCH] Executing for {sender_phone}", flush=True)
         send_whatsapp_image(
             sender_phone,
             "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg",
@@ -495,7 +486,7 @@ def process_and_reply(user_text, sender_phone):
         return
 
     # 3. BILL HANDLER (DEFAULT = KITCHEN BILL, EXPLICIT = ROOM / COMPLETE)
-    bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance)"
+    bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance|bta)"
     if guest_info and re.search(bill_pattern, text_lower):
         print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
         fin = get_guest_comprehensive_financials(guest_info['room'], sender_phone)
@@ -519,7 +510,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case B: Complete Stay Combined Statement
+        # Case B: Complete Combined Statement
         if asks_complete_specifically:
             bill_reply = (
                 f"🧾 *Room {guest_info['room']} - Complete Bill Statement*\n"
@@ -536,7 +527,7 @@ def process_and_reply(user_text, sender_phone):
             send_whatsapp_message(sender_phone, bill_reply)
             return
 
-        # Case C: DEFAULT = Kitchen / Food Orders Bill
+        # Case C: DEFAULT = Kitchen Orders Bill
         pending_list = "\n".join(fin["kitchen_pending_items"]) if fin["kitchen_pending_items"] else "• Koi pending order nahi hai"
         paid_list = "\n".join(fin["kitchen_paid_items"]) if fin["kitchen_paid_items"] else ""
         paid_section = f"\n\n*Already Paid Orders:*\n{paid_list}" if paid_list else ""
@@ -710,7 +701,6 @@ def monitor_guest_status_lifecycle():
                     k_amt = re.sub(r"\D", "", k_values[4]) or "0"
                     k_status = k_values[5].upper()
 
-                    # Ignore ₹0 entries from previous bad syncs
                     if int(k_amt) <= 0:
                         continue
 

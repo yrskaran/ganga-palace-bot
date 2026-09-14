@@ -44,7 +44,6 @@ HOTEL_IMAGES = {
 chat_histories = {}
 processed_msg_ids = set()
 
-# Pre-seeded memory store so it never defaults to False during initial sync
 shared_store = {
     "rooms": [
         {"Room": "101", "Category": "Deluxe (Budget)", "Price": "1800", "Guest Name": "Karan Gilhotra", "Phone": "7500058655", "Status": "CHECKED_IN", "Check_In_Date": "12-09-2026"},
@@ -86,8 +85,8 @@ def resolve_item_price(order_text):
                 if item_key in raw_name:
                     matched_rate = item_val
                     break
-        line_total += matched_rate * qty
-    return line_total
+        line_total += (matched_rate * qty) if matched_rate > 0 else 30
+    return max(30, line_total)
 
 def format_whatsapp_number(raw_phone):
     digits = re.sub(r"\D", "", str(raw_phone))
@@ -119,7 +118,7 @@ def get_gspread_client():
 def sync_sheets_in_background():
     while True:
         try:
-            # 1. Rooms Tab CSV Sync
+            # 1. Rooms Sync
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Rooms"
             synced_rooms = False
             try:
@@ -132,7 +131,6 @@ def sync_sheets_in_background():
             except Exception:
                 pass
 
-            # Fallback to GSpread API
             if not synced_rooms:
                 client = get_gspread_client()
                 if client:
@@ -146,7 +144,7 @@ def sync_sheets_in_background():
                     except Exception:
                         pass
 
-            # 2. Kitchen Orders Tab CSV Sync
+            # 2. Kitchen Orders Sync
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
             synced_kitch = False
             try:
@@ -216,62 +214,31 @@ def get_guest_stay_status(sender_phone):
     records = shared_store.get("rooms", [])
 
     for row in records:
-        # Extract row values safely whether row is dict or list
         if isinstance(row, dict):
-            values = [str(v).strip() for v in row.values()]
+            vals = list(row.values())
         else:
-            values = [str(v).strip() for v in row]
+            vals = list(row)
 
-        # 1. Match phone from any column in this row
-        phone_match = any(clean_sender == re.sub(r"\D", "", val)[-10:] for val in values if len(re.sub(r"\D", "", val)) >= 10)
-        
-        # 2. Check if CHECKED_IN status is anywhere in this row
-        status_match = any("CHECKED_IN" in val.upper() or "IN" == val.upper() for val in values)
+        vals_str = [str(v).strip() for v in vals]
+        phone_matched = any(clean_sender == re.sub(r"\D", "", v)[-10:] for v in vals_str if len(re.sub(r"\D", "", v)) >= 10)
+        status_matched = any("IN" in v.upper() for v in vals_str)
 
-        if phone_match and status_match:
-            # Extract Room
-            room_no = "101"
-            for val in values:
-                if val.isdigit() and len(val) <= 4:
-                    room_no = val
-                    break
-
-            # Extract Name
-            guest_name = "Guest"
-            for val in values:
-                if any(known in val.lower() for known in ["karan", "gilhotra", "monika", "batra"]) or (len(val) > 3 and not val.isdigit() and "CHECK" not in val.upper() and "@" not in val):
-                    guest_name = val
-                    break
-
-            # Extract Category
-            category = "Deluxe"
-            for val in values:
-                if any(c in val.lower() for c in ["deluxe", "standard", "suite", "budget"]):
-                    category = val
-                    break
-
-            # Extract Price
-            price = "1800"
-            for val in values:
-                if val.isdigit() and int(val) >= 1000:
-                    price = val
-                    break
-
-            # Extract Check-in date
-            check_in_date = "12-09-2026"
-            for val in values:
-                if any(sep in val for sep in ["-", "/"]) and any(char.isdigit() for char in val):
-                    if len(val) >= 8:
-                        check_in_date = val
-                        break
+        if phone_matched and status_matched:
+            # Explicit column position lookup
+            room = vals_str[0] if len(vals_str) > 0 and vals_str[0] else "101"
+            category = vals_str[1] if len(vals_str) > 1 and vals_str[1] else "Deluxe"
+            price_digits = re.sub(r"\D", "", vals_str[2]) if len(vals_str) > 2 else "1800"
+            price = price_digits if price_digits and int(price_digits) < 50000 else "1800"
+            name = vals_str[3] if len(vals_str) > 3 and vals_str[3] else "Guest"
+            check_in = vals_str[6] if len(vals_str) > 6 and vals_str[6] else "12-09-2026"
 
             return {
                 "is_inhouse": True,
-                "room": room_no,
-                "name": guest_name,
+                "room": room,
+                "name": name,
                 "category": category,
                 "price": price,
-                "check_in_date": check_in_date
+                "check_in_date": check_in
             }
     return None
 
@@ -284,27 +251,18 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     k_records = shared_store.get("kitchen_orders", [])
     for r in k_records:
         if isinstance(r, dict):
-            values = [str(v).strip() for v in r.values()]
+            vals = [str(v).strip() for v in r.values()]
         else:
-            values = [str(v).strip() for v in r]
+            vals = [str(v).strip() for v in r]
 
-        if str(room_number).strip() in values:
-            item_name = "Food Item"
-            amt = 0
-            is_paid = any("PAID" in v.upper() for v in values)
-
-            for val in values:
-                if any(food in val.lower() for food in MENU_PRICES.keys()) or "chai" in val.lower() or "order" in val.lower():
-                    item_name = val
-                digits = re.sub(r"\D", "", val)
-                if digits and 10 <= int(digits) <= 10000:
-                    amt = int(digits)
-
-            if amt <= 0:
-                amt = resolve_item_price(item_name)
+        if len(vals) >= 5 and vals[1] == str(room_number).strip():
+            item_name = vals[3] if vals[3] else "Food Item"
+            raw_amt = re.sub(r"\D", "", vals[4])
+            amt = int(raw_amt) if raw_amt else resolve_item_price(item_name)
+            status = vals[5].upper() if len(vals) > 5 else "PENDING"
 
             total_kitchen += amt
-            if is_paid:
+            if "PAID" in status:
                 paid_kitchen += amt
             else:
                 kitchen_items_pending.append(f"• {item_name} - ₹{amt}")
@@ -317,22 +275,22 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
 
     for r in records_rooms:
         if isinstance(r, dict):
-            values = [str(v).strip() for v in r.values()]
+            vals = [str(v).strip() for v in r.values()]
         else:
-            values = [str(v).strip() for v in r]
+            vals = [str(v).strip() for v in r]
 
-        has_room = str(room_number).strip() in values
-        has_phone = any(clean_sender == re.sub(r"\D", "", v)[-10:] for v in values if clean_sender)
+        if len(vals) >= 6:
+            r_room = vals[0]
+            r_phone = re.sub(r"\D", "", vals[4])[-10:] if len(vals) > 4 else ""
 
-        if has_room or has_phone:
-            for val in values:
-                if any(known in val.lower() for known in ["karan", "gilhotra", "monika", "batra"]):
-                    guest_name = val
-                if val.isdigit() and int(val) >= 1000:
-                    room_rate_per_night = int(val)
-                if any(sep in val for sep in ["-", "/"]) and len(val) >= 8:
-                    nights = calculate_stay_nights(val)
-            break
+            if r_room == str(room_number).strip() or (clean_sender and r_phone == clean_sender):
+                p_digits = re.sub(r"\D", "", vals[2])
+                if p_digits and int(p_digits) < 50000:
+                    room_rate_per_night = int(p_digits)
+                guest_name = vals[3] if vals[3] else "Guest"
+                if len(vals) > 6:
+                    nights = calculate_stay_nights(vals[6])
+                break
 
     total_room_rent = room_rate_per_night * nights
     pending_kitchen = total_kitchen - paid_kitchen
@@ -390,12 +348,8 @@ def send_whatsapp_message(to_number, text):
             return
 
         pid = (PHONE_NUMBER_ID or "").strip()
-        if not pid:
-            print("[DISPATCH ERROR]: PHONE_NUMBER_ID environment variable is missing!", flush=True)
-            return
-
-        if not WHATSAPP_TOKEN:
-            print("[DISPATCH ERROR]: WHATSAPP_TOKEN environment variable is missing!", flush=True)
+        if not pid or not WHATSAPP_TOKEN:
+            print("[DISPATCH ERROR]: Missing WhatsApp credentials!", flush=True)
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -424,7 +378,6 @@ def send_whatsapp_image(to_number, image_url, caption=""):
 
         pid = (PHONE_NUMBER_ID or "").strip()
         if not pid or not WHATSAPP_TOKEN:
-            print("[IMAGE ERROR]: Missing ID or Token", flush=True)
             return
 
         url = f"https://graph.facebook.com/v20.0/{pid}/messages"
@@ -472,7 +425,7 @@ def ask_cohere(user_message, sender_phone):
             if reply_text:
                 return reply_text
     except Exception as e:
-        print(f"[COHERE TIMEOUT/FAIL]: {e}", flush=True)
+        print(f"[COHERE FAIL]: {e}", flush=True)
     return None
 
 # ==========================================
@@ -683,45 +636,35 @@ def monitor_guest_status_lifecycle():
                 else:
                     values = [str(v).strip() for v in row]
 
-                phone = ""
-                status = ""
-                name = "Guest"
-                room = "101"
+                if len(values) >= 6:
+                    room = values[0]
+                    name = values[3]
+                    phone = re.sub(r"\D", "", values[4])[-10:]
+                    status = values[5].upper()
 
-                for val in values:
-                    digits = re.sub(r"\D", "", val)
-                    if len(digits) >= 10:
-                        phone = digits[-10:]
-                    elif val.isdigit() and len(val) <= 4:
-                        room = val
-                    elif any(s in val.upper() for s in ["CHECKED_IN", "CHECKED_OUT", "CHECKOUT"]):
-                        status = val.upper()
-                    elif any(known in val.lower() for known in ["karan", "gilhotra", "monika", "batra"]):
-                        name = val
+                    if not phone:
+                        continue
 
-                if not phone:
-                    continue
+                    room_phone_map[room] = phone
 
-                room_phone_map[room] = phone
+                    if "CHECKED_IN" in status and (phone not in welcomed_guests):
+                        welcome_msg = (
+                            f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
+                            f"Aapka check-in Room {room} me complete ho gaya hai.\n"
+                            f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
+                            f"Room service ya kisi bhi sahayata ke liye bas yahan message karein. Namaste! 🙏"
+                        )
+                        send_whatsapp_message(phone, welcome_msg)
+                        welcomed_guests.add(phone)
 
-                if "CHECKED_IN" in status and (phone not in welcomed_guests):
-                    welcome_msg = (
-                        f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\n\n"
-                        f"Aapka check-in Room {room} me complete ho gaya hai.\n"
-                        f"📶 *Wi-Fi Password:* Ganga@2026\n\n"
-                        f"Room service ya kisi bhi sahayata ke liye bas yahan message karein. Namaste! 🙏"
-                    )
-                    send_whatsapp_message(phone, welcome_msg)
-                    welcomed_guests.add(phone)
-
-                elif ("CHECKED_OUT" in status or "CHECKOUT" in status) and (phone not in checked_out_guests):
-                    checkout_farewell = (
-                        f"Namaste {name} ji! 🙏\n\n"
-                        f"Room {room} ka check-out complete ho gaya hai aur aapka bill account settle kar diya gaya hai.\n\n"
-                        f"Hotel Ganga View, Haridwar me rukne ke liye bahut dhanyawad! Shubh Yatra! 🚩🌸"
-                    )
-                    send_whatsapp_message(phone, checkout_farewell)
-                    checked_out_guests.add(phone)
+                    elif ("CHECKED_OUT" in status or "CHECKOUT" in status) and (phone not in checked_out_guests):
+                        checkout_farewell = (
+                            f"Namaste {name} ji! 🙏\n\n"
+                            f"Room {room} ka check-out complete ho gaya hai aur aapka bill account settle kar diya gaya hai.\n\n"
+                            f"Hotel Ganga View, Haridwar me rukne ke liye bahut dhanyawad! Shubh Yatra! 🚩🌸"
+                        )
+                        send_whatsapp_message(phone, checkout_farewell)
+                        checked_out_guests.add(phone)
 
             k_records = shared_store.get("kitchen_orders", [])
             for idx, k_row in enumerate(k_records, start=2):
@@ -730,33 +673,24 @@ def monitor_guest_status_lifecycle():
                 else:
                     k_values = [str(v).strip() for v in k_row]
 
-                k_room = "101"
-                k_status = ""
-                k_amt = "0"
-                k_item = "Order"
+                if len(k_values) >= 6:
+                    k_room = k_values[1]
+                    k_item = k_values[3]
+                    k_amt = re.sub(r"\D", "", k_values[4]) or "0"
+                    k_status = k_values[5].upper()
 
-                for val in k_values:
-                    if val.isdigit() and len(val) <= 4:
-                        k_room = val
-                    elif "PAID" in val.upper():
-                        k_status = "PAID"
-                    elif any(food in val.lower() for food in MENU_PRICES.keys()) or "chai" in val.lower():
-                        k_item = val
-                    elif re.sub(r"\D", "", val) and 10 <= int(re.sub(r"\D", "", val)) <= 10000:
-                        k_amt = re.sub(r"\D", "", val)
-
-                unique_order_key = f"{k_room}_{idx}_{k_amt}"
-                if k_status == "PAID" and (unique_order_key not in notified_paid_orders):
-                    guest_ph = room_phone_map.get(k_room)
-                    if guest_ph:
-                        receipt_msg = (
-                            f"✅ *Payment Received Confirmation*\n\n"
-                            f"Namaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) "
-                            f"ki payment successfully receive ho gayi hai.\n"
-                            f"Dhanyawad! 🙏"
-                        )
-                        send_whatsapp_message(guest_ph, receipt_msg)
-                        notified_paid_orders.add(unique_order_key)
+                    unique_order_key = f"{k_room}_{idx}_{k_amt}"
+                    if "PAID" in k_status and (unique_order_key not in notified_paid_orders):
+                        guest_ph = room_phone_map.get(k_room)
+                        if guest_ph:
+                            receipt_msg = (
+                                f"✅ *Payment Received Confirmation*\n\n"
+                                f"Namaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) "
+                                f"ki payment successfully receive ho gayi hai.\n"
+                                f"Dhanyawad! 🙏"
+                            )
+                            send_whatsapp_message(guest_ph, receipt_msg)
+                            notified_paid_orders.add(unique_order_key)
 
         except Exception as e:
             print(f"[LIFECYCLE MONITOR ERROR]: {e}", flush=True)

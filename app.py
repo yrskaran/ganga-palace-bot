@@ -9,11 +9,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # ==========================================
-# ENVIRONMENT VARIABLES
+# CONFIGURATION & ENVIRONMENT VARIABLES
 # ==========================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "ganga_bot_secret_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1355451974309498")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "1357005434155447")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Hotel Ganga Palace Orders")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
@@ -29,7 +29,10 @@ def log_to_google_sheet(sender, message, reply):
         print("[SHEET SKIP] No GOOGLE_CREDS_JSON provided", flush=True)
         return
     try:
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive"
+        ]
         creds_dict = json.loads(GOOGLE_CREDS_JSON)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
@@ -67,19 +70,24 @@ def send_whatsapp_message(recipient_id, text):
         print(f"[NETWORK ERROR SENDING MSG]: {str(e)}", flush=True)
 
 # ==========================================
-# AI GENERATION (COHERE)
+# AI GENERATION (COHERE COMMAND-R)
 # ==========================================
 HOTEL_SYSTEM_PROMPT = """
 You are the official front-desk WhatsApp assistant for Hotel Ganga Palace.
 - Welcome guests warmly (Namaste / Welcome).
 - Provide brief, polite, and helpful replies.
-- Hotel services: Deluxe & Super Deluxe Rooms, 24x7 Room Service, Restaurant (North Indian, South Indian, Beverages), Free Wi-Fi, Ganga Aarti guide.
-- If someone wants to order food (e.g., Chai, Snacks, Dinner) or book a room, take their details politely and confirm their request.
-- Keep answers crisp, readable, and ready for WhatsApp chat.
+- Hotel amenities & services:
+  * Deluxe Rooms (₹2,500/night) & Super Deluxe Rooms (₹3,500/night)
+  * 24x7 Room Service & Free High-Speed Wi-Fi
+  * In-house Restaurant: North Indian, South Indian thalis, snacks, tea/coffee
+  * Assistance with Ganga Aarti timing and local Haridwar temple tours
+- If a guest wants to book a room or order food/tea, politely ask for their name, room number/dates, and confirm their order.
+- Keep responses concise, clean, and well-formatted for WhatsApp messages.
 """
 
 def generate_hotel_response(user_text):
     if not co:
+        print("[COHERE ERROR]: COHERE_API_KEY is not set", flush=True)
         return "Namaste! Welcome to Hotel Ganga Palace. How can we assist you today?"
     try:
         response = co.chat(
@@ -127,6 +135,7 @@ def incoming_webhook():
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 
+                # Check for incoming customer messages
                 if "messages" in value:
                     for msg in value.get("messages", []):
                         sender = msg.get("from")
@@ -147,14 +156,14 @@ def incoming_webhook():
                         if sender and user_text:
                             print(f"[PROCESS START] From: {sender} | Msg: {user_text}", flush=True)
                             
-                            # 1. AI Reply Generation
+                            # 1. AI Generation
                             ai_reply = generate_hotel_response(user_text)
                             print(f"[COHERE REPLY for {sender}]: {ai_reply}", flush=True)
                             
-                            # 2. WhatsApp Message Dispatch
+                            # 2. Send back to WhatsApp
                             send_whatsapp_message(sender, ai_reply)
                             
-                            # 3. Google Sheets Logging
+                            # 3. Save to Google Sheets
                             log_to_google_sheet(sender, user_text, ai_reply)
 
     except Exception as e:

@@ -114,9 +114,11 @@ def get_gspread_client():
         return None
 
 def fetch_sheet_data_sync():
-    """Initial blocking fetch so Bot never starts empty"""
+    """Initial blocking fetch so Bot never starts empty and tracks previous PAID items"""
+    # Cache buster time string
+    cb = str(int(time.time()))
     try:
-        res_r = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0", timeout=10)
+        res_r = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0&nocache={cb}", timeout=10)
         if res_r.status_code == 200 and len(res_r.content) > 15:
             records = list(csv.reader(io.StringIO(res_r.content.decode("utf-8"))))
             if len(records) > 1:
@@ -125,7 +127,7 @@ def fetch_sheet_data_sync():
         print(f"[BOOT ROOMS FAIL]: {e}", flush=True)
 
     try:
-        res_k = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}", timeout=10)
+        res_k = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}&nocache={cb}", timeout=10)
         if res_k.status_code == 200 and len(res_k.content) > 15:
             k_records = list(csv.reader(io.StringIO(res_k.content.decode("utf-8"))))
             if len(k_records) > 1:
@@ -133,14 +135,25 @@ def fetch_sheet_data_sync():
     except Exception as e:
         print(f"[BOOT KITCHEN FAIL]: {e}", flush=True)
     
+    # Pre-fill notified_paid_orders to prevent spam on restart
+    for idx, k_row in enumerate(shared_store.get("kitchen_orders", []), start=2):
+        if len(k_row) >= 6:
+            k_room = re.sub(r"\D", "", k_row[1])
+            k_amt = re.sub(r"\D", "", k_row[4]) or "0"
+            k_status = k_row[5].upper()
+            if "PAID" in k_status and int(k_amt) > 0:
+                notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
+
     shared_store["last_synced"] = time.time()
-    print(f"[BOOT] Loaded {len(shared_store['rooms'])} Rooms and {len(shared_store['kitchen_orders'])} Orders.", flush=True)
+    print(f"[BOOT] Loaded {len(shared_store['rooms'])} Rooms and {len(shared_store.get('kitchen_orders', []))} Orders.", flush=True)
 
 def sync_sheets_in_background():
     while True:
         try:
+            cb = str(int(time.time()))
+            
             # 1. Rooms Tab
-            csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0"
+            csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0&nocache={cb}"
             synced_rooms = False
             try:
                 res_r = requests.get(csv_url_rooms, timeout=5)
@@ -165,7 +178,7 @@ def sync_sheets_in_background():
                         pass
 
             # 2. Kitchen Orders Tab
-            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}"
+            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}&nocache={cb}"
             synced_kitch = False
             try:
                 res_k = requests.get(csv_url_kitch, timeout=5)

@@ -1,5 +1,7 @@
 import os
 import json
+import re
+from datetime import datetime
 import requests
 from flask import Flask, request, jsonify
 import cohere
@@ -9,7 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # ==========================================
-# CONFIGURATION & ENVIRONMENT VARIABLES
+# ENVIRONMENT VARIABLES
 # ==========================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "ganga_bot_secret_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
@@ -18,16 +20,14 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY")
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Hotel Ganga Palace Orders")
 GOOGLE_CREDS_JSON = os.getenv("GOOGLE_CREDS_JSON")
 
-# Cohere Client Init
 co = cohere.Client(COHERE_API_KEY) if COHERE_API_KEY else None
 
 # ==========================================
 # GOOGLE SHEETS HELPER
 # ==========================================
-def log_to_google_sheet(sender, message, reply):
+def get_sheet_client():
     if not GOOGLE_CREDS_JSON:
-        print("[SHEET SKIP] No GOOGLE_CREDS_JSON provided", flush=True)
-        return
+        return None
     try:
         scope = [
             "https://spreadsheets.google.com/feeds",
@@ -35,15 +35,70 @@ def log_to_google_sheet(sender, message, reply):
         ]
         creds_dict = json.loads(GOOGLE_CREDS_JSON)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
-        sheet.append_row([sender, message, reply])
-        print(f"[SHEET OK] Logged interaction for {sender}", flush=True)
+        return gspread.authorize(creds)
     except Exception as e:
-        print(f"[SHEET ERROR]: {str(e)}", flush=True)
+        print(f"[SHEET CLIENT ERROR]: {str(e)}", flush=True)
+        return None
+
+def fetch_hotel_context_from_sheet():
+    client = get_sheet_client()
+    if not client:
+        return ""
+    try:
+        sheet = client.open(GOOGLE_SHEET_NAME)
+        worksheets = {ws.title: ws for ws in sheet.worksheets()}
+        context_parts = []
+        
+        # 1. Rules Worksheet
+        if "Rules" in worksheets:
+            rules_data = worksheets["Rules"].get_all_values()
+            rules_txt = "\n".join([" | ".join([c.strip() for c in r if c.strip()]) for r in rules_data if r])
+            context_parts.append(f"HOTEL RULES & TIMINGS:\n{rules_txt}")
+            
+        # 2. Kitchen Menu Worksheet
+        if "Menu" in worksheets:
+            menu_data = worksheets["Menu"].get_all_values()
+            menu_txt = "\n".join([" | ".join([c.strip() for c in r if c.strip()]) for r in menu_data if r])
+            context_parts.append(f"KITCHEN MENU & PRICING:\n{menu_txt}")
+            
+        return "\n\n".join(context_parts)
+    except Exception as e:
+        print(f"[SHEET READ ERROR]: {str(e)}", flush=True)
+        return ""
+
+def log_interaction(sender, message, reply):
+    client = get_sheet_client()
+    if not client:
+        return
+    try:
+        sheet = client.open(GOOGLE_SHEET_NAME)
+        worksheets = {ws.title: ws for ws in sheet.worksheets()}
+        ws = worksheets.get("Logs", sheet.sheet1)
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([timestamp, sender, message, reply])
+        print(f"[LOG OK] Saved interaction for {sender}", flush=True)
+    except Exception as e:
+        print(f"[LOG ERROR]: {str(e)}", flush=True)
+
+def log_kitchen_order(sender, order_details):
+    client = get_sheet_client()
+    if not client:
+        return
+    try:
+        sheet = client.open(GOOGLE_SHEET_NAME)
+        worksheets = {ws.title: ws for ws in sheet.worksheets()}
+        if "Kitchen_Orders" in worksheets:
+            ws = worksheets["Kitchen_Orders"]
+        else:
+            ws = sheet.sheet1
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ws.append_row([timestamp, sender, order_details])
+        print(f"[KITCHEN LOG OK] Saved food order for {sender}", flush=True)
+    except Exception as e:
+        print(f"[KITCHEN LOG ERROR]: {str(e)}", flush=True)
 
 # ==========================================
-# WHATSAPP DISPATCH HELPER
+# WHATSAPP SENDER
 # ==========================================
 def send_whatsapp_message(recipient_id, text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
@@ -58,54 +113,100 @@ def send_whatsapp_message(recipient_id, text):
         "type": "text",
         "text": {"body": text}
     }
-    
     try:
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
-        res_json = response.json()
-        if response.status_code == 200:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
             print(f"[MSG DELIVERED OK] To: {recipient_id}", flush=True)
         else:
-            print(f"[WHATSAPP DISPATCH ERROR {response.status_code}] Target: {recipient_id} | Body: {res_json}", flush=True)
+            print(f"[WHATSAPP ERROR {res.status_code}] {res.text}", flush=True)
     except Exception as e:
-        print(f"[NETWORK ERROR SENDING MSG]: {str(e)}", flush=True)
+        print(f"[NETWORK ERROR]: {str(e)}", flush=True)
 
 # ==========================================
-# AI GENERATION (COHERE COMMAND-R)
+# AI AGENT & AUTOMATED WORKFLOW ENGINE
 # ==========================================
-HOTEL_SYSTEM_PROMPT = """
-You are the official front-desk WhatsApp assistant for Hotel Ganga Palace.
-- Welcome guests warmly (Namaste / Welcome).
-- Provide brief, polite, and helpful replies.
-- Hotel amenities & services:
-  * Deluxe Rooms (₹2,500/night) & Super Deluxe Rooms (₹3,500/night)
-  * 24x7 Room Service & Free High-Speed Wi-Fi
-  * In-house Restaurant: North Indian, South Indian thalis, snacks, tea/coffee
-  * Assistance with Ganga Aarti timing and local Haridwar temple tours
-- If a guest wants to book a room or order food/tea, politely ask for their name, room number/dates, and confirm their order.
-- Keep responses concise, clean, and well-formatted for WhatsApp messages.
+def generate_hotel_response(sender, user_text):
+    text_lower = user_text.lower()
+    
+    # --- TRIGGER 1: MANUAL / SYSTEM CHECK-IN TRIGGER ---
+    if "check in" in text_lower or "check-in" in text_lower or "checked in" in text_lower:
+        return (
+            "🏨 *Namaste & Welcome to Hotel Ganga Palace!*\n\n"
+            "Aapka hamare yahan aana hamare liye anandmay hai. Aapka check-in complete ho chuka hai.\n\n"
+            "🔑 *Hotel Quick Info:*\n"
+            "📶 *Wi-Fi:* GangaPalace_Guest | *Pass:* Ganga@2026\n"
+            "🍽️ *In-Room Dining:* 24/7 uplabdh hai (Tea, Snacks, Thali, etc.)\n"
+            "🛕 *Ganga Aarti Timing:* Sham 6:00 PM se Har Ki Pauri par\n\n"
+            "Kisi bhi room service ya sahayata ke liye bas yahan message karein. Aapka stay shubh ho! 🙏"
+        )
+
+    # --- TRIGGER 2: MANUAL / SYSTEM CHECK-OUT TRIGGER ---
+    if "check out" in text_lower or "check-out" in text_lower or "checked out" in text_lower:
+        return (
+            "🙏 *Thank You for Staying at Hotel Ganga Palace!*\n\n"
+            "Aapka check-out process initiate kar diya gaya hai. Hamare staff aapse reception par room keys collect kar lenge.\n\n"
+            "🧾 *Settlement:* Kripya reception counter par final billing & settlement check kar lein.\n"
+            "⭐ Hame aasha hai ki aapka anubhav sukhad raha hoga. Kripya apna anubhav share karein aur aage bhi sewa ka mauka dein.\n\n"
+            "Shubh Yatra! Aapka safar mangalmay ho. ✨"
+        )
+
+    # --- TRIGGER 3: COHERE AI FOR KITCHEN BILL & INQUIRIES ---
+    sheet_data = fetch_hotel_context_from_sheet()
+    
+    default_rules = """
+    HOTEL: Hotel Ganga Palace
+    ROOMS: Deluxe (₹2,500/night), Super Deluxe (₹3,500/night)
+    KITCHEN MENU & ITEMS:
+    - Masala Tea (₹25), Special Coffee (₹40)
+    - Poha (₹60), Aloo Paratha with Curd (₹80)
+    - Veg Thali Deluxe (Paneer, Dal Makhani, 4 Roti, Rice, Sweet) (₹180)
+    - Regular Thali (Dal, Sabzi, 4 Roti, Rice) (₹130)
+    - Mineral Water Bottle (₹20)
+    """
+
+    system_prompt = f"""
+You are the intelligent operations and room-service manager at Hotel Ganga Palace.
+Below is the live operational hotel context and kitchen pricing:
+{sheet_data if sheet_data else default_rules}
+
+OPERATIONAL INSTRUCTIONS:
+1. GUEST FOOD ORDER & KITCHEN BILL:
+   - If the guest is ordering food, drinks, snacks, or tea:
+   - Identify the items and quantity requested.
+   - Calculate the exact total bill based on the menu pricing.
+   - Present a neat, formatted *KITCHEN BILL / ORDER CONFIRMATION* formatted for WhatsApp:
+     * Room / Guest Details
+     * Itemized List with quantity & individual rate
+     * Total Amount (₹)
+     * Mention: "Aapka order kitchen ko bhej diya gaya hai, agle 20-25 minutes me serve kar diya jayega."
+2. ROOM BOOKING & INQUIRIES:
+   - State room rates, check-in time (12:00 PM), check-out time (11:00 AM), Wi-Fi, and Har Ki Pauri Ganga Aarti details politely.
+3. TONE: Warm, courteous, professional Hindi/English mix (Hinglish/Hindi).
 """
 
-def generate_hotel_response(user_text):
-    if not co:
-        print("[COHERE ERROR]: COHERE_API_KEY is not set", flush=True)
-        return "Namaste! Welcome to Hotel Ganga Palace. How can we assist you today?"
     try:
         response = co.chat(
             model="command-r",
             message=user_text,
-            preamble=HOTEL_SYSTEM_PROMPT
+            preamble=system_prompt
         )
-        return response.text.strip()
+        reply = response.text.strip()
+        
+        # Agar reply me bill calculate hua hai toh kitchen sheet me note karlo
+        if "bill" in reply.lower() or "₹" in reply or "order" in reply.lower():
+            log_kitchen_order(sender, f"MSG: {user_text} | BOT: {reply}")
+            
+        return reply
     except Exception as e:
         print(f"[COHERE ERROR]: {str(e)}", flush=True)
-        return "Namaste! Welcome to Hotel Ganga Palace. We have received your request and our team will get back to you shortly."
+        return "Namaste! Welcome to Hotel Ganga Palace. We have received your message. Our front desk & room service team is attending to your request."
 
 # ==========================================
 # WEBHOOK ENDPOINTS
 # ==========================================
 @app.route("/", methods=["GET"])
 def health():
-    return "Hotel Ganga Palace Bot Server is running 200 OK", 200
+    return "Hotel Ganga Palace Enterprise Webhook Live 200 OK", 200
 
 @app.route("/webhook", methods=["GET"])
 def verify_webhook():
@@ -113,14 +214,10 @@ def verify_webhook():
     token = request.args.get("hub.verify_token")
     challenge = request.args.get("hub.challenge")
 
-    if mode and token:
-        if mode == "subscribe" and token == VERIFY_TOKEN:
-            print("[WEBHOOK VERIFIED] Handshake successful.", flush=True)
-            return challenge, 200
-        else:
-            print("[VERIFICATION FAILED] Token mismatch.", flush=True)
-            return "Forbidden", 403
-    return "Invalid Request", 400
+    if mode == "subscribe" and token == VERIFY_TOKEN:
+        print("[WEBHOOK VERIFIED] Meta verification successful.", flush=True)
+        return challenge, 200
+    return "Forbidden", 403
 
 @app.route("/webhook", methods=["POST"])
 def incoming_webhook():
@@ -135,7 +232,6 @@ def incoming_webhook():
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 
-                # Check for incoming customer messages
                 if "messages" in value:
                     for msg in value.get("messages", []):
                         sender = msg.get("from")
@@ -154,20 +250,20 @@ def incoming_webhook():
                                 user_text = interactive_data.get("list_reply", {}).get("title", "")
 
                         if sender and user_text:
-                            print(f"[PROCESS START] From: {sender} | Msg: {user_text}", flush=True)
+                            print(f"[PROCESS START] Sender: {sender} | Msg: {user_text}", flush=True)
                             
-                            # 1. AI Generation
-                            ai_reply = generate_hotel_response(user_text)
-                            print(f"[COHERE REPLY for {sender}]: {ai_reply}", flush=True)
+                            # 1. Processing (Check-in, Check-out, Kitchen Bill, Sheet Rules)
+                            ai_reply = generate_hotel_response(sender, user_text)
+                            print(f"[REPLY GENERATED]:\n{ai_reply}", flush=True)
                             
-                            # 2. Send back to WhatsApp
+                            # 2. Send Message via WhatsApp
                             send_whatsapp_message(sender, ai_reply)
                             
-                            # 3. Save to Google Sheets
-                            log_to_google_sheet(sender, user_text, ai_reply)
+                            # 3. Log to Interaction Sheet
+                            log_interaction(sender, user_text, ai_reply)
 
     except Exception as e:
-        print(f"[PIPELINE RUNTIME ERROR]: {str(e)}", flush=True)
+        print(f"[CRITICAL RUNTIME ERROR]: {str(e)}", flush=True)
 
     return jsonify({"status": "EVENT_RECEIVED"}), 200
 

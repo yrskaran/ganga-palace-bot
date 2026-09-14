@@ -125,7 +125,7 @@ def sync_sheets_in_background():
             except Exception:
                 pass
 
-            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
+            csv_url_kitch = f"https://docs.google.com/spreadsheets/d/1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY/gviz/tq?tqx=out:csv&sheet=Kitchen_Orders"
             try:
                 res_k = requests.get(csv_url_kitch, timeout=4)
                 if res_k.status_code == 200:

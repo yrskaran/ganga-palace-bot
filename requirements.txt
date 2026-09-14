@@ -1,5 +1,6 @@
 flask
-requests
 gunicorn
-gspread==6.1.4
-google-auth==2.35.0
+requests
+cohere
+gspread
+oauth2client

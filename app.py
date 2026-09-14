@@ -46,10 +46,7 @@ chat_histories = {}
 processed_msg_ids = set()
 
 shared_store = {
-    "rooms": [
-        {"Room (A)": "101", "Category (B)": "Deluxe (Budget)", "Price (C)": "1800", "Guest Name (D)": "Karan Gilhotra", "Phone (E)": "7500058655", "Status (F)": "CHECKED_IN", "Check_In_Date": "12-09-2026"},
-        {"Room (A)": "203", "Category (B)": "DELUCE (Budget)", "Price (C)": "1800", "Guest Name (D)": "monika batra", "Phone (E)": "919058514478", "Status (F)": "CHECKED_IN", "Check_In_Date": "13-09-2026"}
-    ],
+    "rooms": [],
     "kitchen_orders": [],
     "last_synced": 0
 }
@@ -100,7 +97,7 @@ def format_whatsapp_number(raw_phone):
     return None
 
 # ==========================================
-# 2. BACKGROUND DATA SYNC (USING GID)
+# 2. SYNCHRONOUS BOOT DATA FETCH & SYNC
 # ==========================================
 def get_gspread_client():
     if not GOOGLE_SERVICE_ACCOUNT_JSON:
@@ -116,10 +113,33 @@ def get_gspread_client():
     except Exception:
         return None
 
+def fetch_sheet_data_sync():
+    """Initial blocking fetch so Bot never starts empty"""
+    try:
+        res_r = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0", timeout=10)
+        if res_r.status_code == 200 and len(res_r.content) > 15:
+            records = list(csv.reader(io.StringIO(res_r.content.decode("utf-8"))))
+            if len(records) > 1:
+                shared_store["rooms"] = records[1:]
+    except Exception as e:
+        print(f"[BOOT ROOMS FAIL]: {e}", flush=True)
+
+    try:
+        res_k = requests.get(f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}", timeout=10)
+        if res_k.status_code == 200 and len(res_k.content) > 15:
+            k_records = list(csv.reader(io.StringIO(res_k.content.decode("utf-8"))))
+            if len(k_records) > 1:
+                shared_store["kitchen_orders"] = k_records[1:]
+    except Exception as e:
+        print(f"[BOOT KITCHEN FAIL]: {e}", flush=True)
+    
+    shared_store["last_synced"] = time.time()
+    print(f"[BOOT] Loaded {len(shared_store['rooms'])} Rooms and {len(shared_store['kitchen_orders'])} Orders.", flush=True)
+
 def sync_sheets_in_background():
     while True:
         try:
-            # 1. Rooms Tab (Tab 0)
+            # 1. Rooms Tab
             csv_url_rooms = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid=0"
             synced_rooms = False
             try:
@@ -144,7 +164,7 @@ def sync_sheets_in_background():
                     except Exception:
                         pass
 
-            # 2. Kitchen Orders Tab (Exact GID: 2000938503)
+            # 2. Kitchen Orders Tab
             csv_url_kitch = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/gviz/tq?tqx=out:csv&gid={KITCHEN_GID}"
             synced_kitch = False
             try:
@@ -224,11 +244,12 @@ def get_guest_stay_status(sender_phone):
         status_matched = any("IN" in v.upper() for v in vals_str)
 
         if phone_matched and status_matched:
-            room = vals_str[0] if len(vals_str) > 0 and vals_str[0] else "101"
+            room_raw = vals_str[0] if len(vals_str) > 0 and vals_str[0] else "101"
+            room = re.sub(r"\D", "", room_raw) or "101"
             category = vals_str[1] if len(vals_str) > 1 and vals_str[1] else "Deluxe"
             price_digits = re.sub(r"\D", "", vals_str[2]) if len(vals_str) > 2 else "1800"
             price = price_digits if price_digits and int(price_digits) < 50000 else "1800"
-            name = vals_str[3] if len(vals_str) > 3 and vals_str[3] else "Karan Gilhotra"
+            name = vals_str[3] if len(vals_str) > 3 and vals_str[3] else "Guest"
             check_in = vals_str[6] if len(vals_str) > 6 and vals_str[6] else "12-09-2026"
 
             return {
@@ -243,7 +264,7 @@ def get_guest_stay_status(sender_phone):
 
 def get_guest_comprehensive_financials(room_number, sender_phone=""):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:] if sender_phone else ""
-    target_room = str(room_number).strip()
+    target_room_digits = re.sub(r"\D", "", str(room_number))
 
     total_kitchen = 0
     paid_kitchen = 0
@@ -260,9 +281,8 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         if len(vals) < 5:
             continue
 
-        # Col 0: Date_Time | Col 1: Room | Col 2: Name | Col 3: Details | Col 4: Amount | Col 5: Status
-        row_room = str(vals[1]).strip()
-        if row_room != target_room:
+        row_room_digits = re.sub(r"\D", "", str(vals[1]))
+        if row_room_digits != target_room_digits:
             continue
 
         item_name = vals[3].strip() if len(vals) > 3 and vals[3].strip() else "Food Order"
@@ -285,7 +305,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     room_rate_per_night = 1800
     nights = 1
     room_advance_paid = 0
-    guest_name = "Karan Gilhotra"
+    guest_name = "Guest"
 
     for r in records_rooms:
         if isinstance(r, dict):
@@ -294,10 +314,10 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
             vals = [str(v).strip() for v in r]
 
         if len(vals) >= 5:
-            r_room = str(vals[0]).strip()
+            row_room_digits = re.sub(r"\D", "", str(vals[0]))
             r_phone = re.sub(r"\D", "", vals[4])[-10:] if len(vals) > 4 else ""
 
-            if r_room == target_room or (clean_sender and r_phone == clean_sender):
+            if row_room_digits == target_room_digits or (clean_sender and r_phone == clean_sender):
                 p_digits = re.sub(r"\D", "", vals[2]) if len(vals) > 2 else "1800"
                 if p_digits and int(p_digits) < 50000:
                     room_rate_per_night = int(p_digits)
@@ -329,7 +349,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (TEXT & ASYNC IMAGES)
+# 3. DISPATCH ENGINE
 # ==========================================
 def keep_awake_ping():
     time.sleep(15)
@@ -377,10 +397,9 @@ def send_whatsapp_message(to_number, text):
             "text": {"body": text}
         }
         try:
-            res = requests.post(url, json=payload, headers=headers, timeout=10)
-            print(f"[META DISPATCH] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
-        except Exception as e:
-            print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
+            requests.post(url, json=payload, headers=headers, timeout=10)
+        except Exception:
+            pass
     threading.Thread(target=_do, daemon=True).start()
 
 def send_whatsapp_image(to_number, image_url, caption=""):
@@ -409,7 +428,6 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         }
         try:
             res = requests.post(url, json=payload, headers=headers, timeout=12)
-            print(f"[META IMAGE] Status: {res.status_code} | Target: {clean_number} | Body: {res.text}", flush=True)
             if res.status_code != 200:
                 send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
         except Exception:
@@ -437,19 +455,16 @@ def ask_cohere(user_message, sender_phone):
             reply_text = res.json().get("text", "").strip()
             if reply_text:
                 return reply_text
-    except Exception as e:
-        print(f"[COHERE FAIL]: {e}", flush=True)
+    except Exception:
+        pass
     return None
 
 # ==========================================
 # 4. MAIN MESSAGE PROCESSING PIPELINE
 # ==========================================
 def process_and_reply(user_text, sender_phone):
-    print(f"[PROCESS START] '{user_text}' from {sender_phone}", flush=True)
     text_lower = user_text.lower().strip()
-
     guest_info = get_guest_stay_status(sender_phone)
-    print(f"[PROCESS] In-house guest: {bool(guest_info)}", flush=True)
 
     # 1. LOCATION / MAP
     loc_words = ["location", "map", "address", "kahan hai", "pauri", "reach", "direction", "rasta", "kahan sthit", "kaha par hai"]
@@ -485,10 +500,9 @@ def process_and_reply(user_text, sender_phone):
         send_whatsapp_message(sender_phone, fallback_showcase)
         return
 
-    # 3. BILL HANDLER (DEFAULT = KITCHEN BILL, EXPLICIT = ROOM / COMPLETE)
+    # 3. BILL HANDLER
     bill_pattern = r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance|bta)"
     if guest_info and re.search(bill_pattern, text_lower):
-        print(f"[BILL ENGINE RUNNING]: Room {guest_info['room']}", flush=True)
         fin = get_guest_comprehensive_financials(guest_info['room'], sender_phone)
 
         asks_room_specifically = any(k in text_lower for k in ["kamre ka", "room ka", "room rent", "stay ka", "rent kitna", "tariff"])
@@ -632,7 +646,6 @@ def process_and_reply(user_text, sender_phone):
 
     bot_reply = re.sub(r"\[.*?\]", "", bot_reply).strip()
     if bot_reply:
-        print(f"[DISPATCHING REPLY TO {sender_phone}]: {bot_reply}", flush=True)
         send_whatsapp_message(sender_phone, bot_reply)
 
 def handle_incoming_async(message, sender_phone, msg_type):
@@ -640,8 +653,8 @@ def handle_incoming_async(message, sender_phone, msg_type):
         if msg_type == "text":
             user_text = message.get("text", {}).get("body", "")
             process_and_reply(user_text, sender_phone)
-    except Exception as e:
-        print(f"[ASYNC WORKER ERROR]: {e}", flush=True)
+    except Exception:
+        pass
 
 # ==========================================
 # 5. LIFECYCLE & PAYMENT MONITOR
@@ -659,7 +672,7 @@ def monitor_guest_status_lifecycle():
                     values = [str(v).strip() for v in row]
 
                 if len(values) >= 5:
-                    room = values[0]
+                    room = re.sub(r"\D", "", values[0])
                     name = values[3]
                     phone = re.sub(r"\D", "", values[4])[-10:] if len(values) > 4 else ""
                     status = values[5].upper() if len(values) > 5 else ""
@@ -696,7 +709,7 @@ def monitor_guest_status_lifecycle():
                     k_values = [str(v).strip() for v in k_row]
 
                 if len(k_values) >= 6:
-                    k_room = k_values[1]
+                    k_room = re.sub(r"\D", "", k_values[1])
                     k_item = k_values[3]
                     k_amt = re.sub(r"\D", "", k_values[4]) or "0"
                     k_status = k_values[5].upper()
@@ -717,8 +730,8 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(guest_ph, receipt_msg)
                             notified_paid_orders.add(unique_order_key)
 
-        except Exception as e:
-            print(f"[LIFECYCLE MONITOR ERROR]: {e}", flush=True)
+        except Exception:
+            pass
 
         time.sleep(15)
 
@@ -767,9 +780,8 @@ def handle_webhook():
             daemon=True
         ).start()
 
-    except Exception as e:
-        print(f"[WEBHOOK ERROR]: {e}", flush=True)
-
+    except Exception:
+        pass
     return jsonify({"status": "success"}), 200
 
 # ==========================================
@@ -781,6 +793,8 @@ def start_background_threads():
     threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
     print("[SYSTEM]: Background workers initialized.", flush=True)
 
+print("[SYSTEM] Fetching initial data from Google Sheets...", flush=True)
+fetch_sheet_data_sync()
 start_background_threads()
 
 if __name__ == "__main__":

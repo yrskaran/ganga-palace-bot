@@ -4,11 +4,9 @@ import threading
 import requests
 from flask import Flask, request, jsonify
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 
-# Environment Configuration
 PORT = int(os.environ.get("PORT", 10000))
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "ganga_bot_secret_123")
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
@@ -16,14 +14,12 @@ PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "")
 GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
 SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Ganga_Palace_Guests")
 
-# Google Sheets Client Setup
+# Google Sheets Client Setup (Built-in gspread support, no oauth2client needed)
 sheet_client = None
 if GOOGLE_CREDENTIALS_JSON:
     try:
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        sheet_client = gspread.authorize(creds)
+        sheet_client = gspread.service_account_from_dict(creds_dict)
         print("[SHEETS] Connected successfully.", flush=True)
     except Exception as e:
         print(f"[SHEETS ERROR] Connection failed: {e}", flush=True)
@@ -137,7 +133,6 @@ def health():
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
-    # Meta Webhook Verification
     if request.method == 'GET':
         mode = request.args.get('hub.mode')
         token = request.args.get('hub.verify_token')
@@ -148,7 +143,6 @@ def webhook():
         print("[META WEBHOOK] Verification failed.", flush=True)
         return "Forbidden", 403
 
-    # Meta Incoming Data
     if request.method == 'POST':
         data = request.get_json(silent=True)
         if not data:
@@ -177,7 +171,6 @@ def webhook():
         except Exception as e:
             print(f"[WEBHOOK EXCEPTION] {e}", flush=True)
 
-        # Meta demands a 200 OK fast response
         return "EVENT_RECEIVED", 200
 
 

@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # ==========================================
-# ENVIRONMENT VARIABLES SETUP
+# ENVIRONMENT VARIABLES
 # ==========================================
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "ganga_bot_secret_123")
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
@@ -83,7 +83,7 @@ def generate_hotel_response(user_text):
         return "Namaste! Welcome to Hotel Ganga Palace. How can we assist you today?"
     try:
         response = co.chat(
-            model="command-r-plus",
+            model="command-r",
             message=user_text,
             preamble=HOTEL_SYSTEM_PROMPT
         )
@@ -127,7 +127,6 @@ def incoming_webhook():
             for change in entry.get("changes", []):
                 value = change.get("value", {})
                 
-                # Check for incoming WhatsApp messages
                 if "messages" in value:
                     for msg in value.get("messages", []):
                         sender = msg.get("from")

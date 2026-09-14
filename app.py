@@ -617,42 +617,61 @@ def webhook_post():
     print("[DEBUG PAYLOAD]", json.dumps(data), flush=True)
     # Baaki code yahan se continue hoga...
 
-@app.route("/webhook", methods=["POST"], strict_slashes=False)
-def handle_webhook():
-    data = request.get_json()
-    try:
-        messages = data.get("entry", [])[0].get("changes", [])[0].get("value", {}).get("messages", [])
-        if not messages:
-            return jsonify({"status": "ignored"}), 200
+ import json
+import threading
 
-        message = messages[0]
-        sender_phone = message.get("from")
-        msg_type = message.get("type")
-        message_id = message.get("id")
+@app.route('/webhook', methods=['GET', 'POST'])
+def webhook():
+    # 1. Meta Webhook Verification (GET request)
+    if request.method == 'GET':
+        mode = request.args.get('hub.mode')
+        token = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+        
+        # Verify token match
+        if mode == 'subscribe' and token == os.getenv("VERIFY_TOKEN", "ganga_bot_secret_123"):
+            print("[META WEBHOOK] Verified successfully!", flush=True)
+            return challenge, 200
+        print("[META WEBHOOK] Verification failed!", flush=True)
+        return "Forbidden", 403
 
-        if message_id in processed_msg_ids:
-            return jsonify({"status": "already_processed"}), 200
+    # 2. Meta Incoming Events (POST request)
+    if request.method == 'POST':
+        data = request.get_json()
+        print("[DEBUG PAYLOAD]", json.dumps(data), flush=True)
 
-        if message_id:
-            processed_msg_ids.add(message_id)
-            if len(processed_msg_ids) > 500:
-                processed_msg_ids.pop()
-            
-            # TURANT READ TICK (GREEN DOUBLE TICK) MARK KAREIN
-            mark_message_as_read(message_id)
+        try:
+            if data and "entry" in data:
+                for entry in data.get("entry", []):
+                    for change in entry.get("changes", []):
+                        value = change.get("value", {})
+                        
+                        # Sirf tab execute karega jab asli message payload ho
+                        if "messages" in value:
+                            for msg in value.get("messages", []):
+                                user_phone = msg.get("from")
+                                msg_type = msg.get("type")
+                                
+                                # Text message
+                                user_text = ""
+                                if msg_type == "text":
+                                    user_text = msg.get("text", {}).get("body", "").strip()
+                                
+                                # Read receipt green tick (background thread me call karein ya direct)
+                                msg_id = msg.get("id")
+                                
+                                # Background processing taaki Meta ko 200 delay na ho
+                                if user_phone and user_text:
+                                    threading.Thread(
+                                        target=process_message_pipeline, 
+                                        args=(user_phone, user_text, msg_id)
+                                    ).start()
+                                    
+        except Exception as e:
+            print(f"[WEBHOOK CRITICAL ERROR] {e}", flush=True)
 
-        if msg_type == "text":
-            user_text = message.get("text", {}).get("body", "")
-            threading.Thread(
-                target=process_and_reply,
-                args=(user_text, sender_phone),
-                daemon=True
-            ).start()
-
-    except Exception as e:
-        print(f"[WEBHOOK ERROR]: {e}", flush=True)
-
-    return jsonify({"status": "success"}), 200
+        # Yeh line har condition me execute hogi (500 kabhi nahi aayega):
+        return "EVENT_RECEIVED", 200          
 
 # ==========================================
 # 7. WORKER START

@@ -52,7 +52,7 @@ guest_first_seen = {}
 notified_30min = set()
 dinner_prompted = set()
 
-# Added Partial Words ("dal") for Smart Catching
+# Advanced Smart NLP Menu Base
 MENU_PRICES = {
     "chai": 30, "tea": 30, "coffee": 50, "aloo paratha": 90, "paratha": 90,
     "poha": 70, "chole bhature": 120, "bhature": 120, "dahi": 70, "green salad": 50,
@@ -64,7 +64,7 @@ MENU_PRICES = {
 
 def resolve_item_price(order_text):
     text = str(order_text).lower()
-    # 1. Hindi numbers ko digits me convert karna ("ek" -> "1")
+    # Translate Hindi numbers to digits for math parsing
     text = re.sub(r'\bek\b', '1', text)
     text = re.sub(r'\bdo\b', '2', text)
     text = re.sub(r'\bteen\b', '3', text)
@@ -74,7 +74,7 @@ def resolve_item_price(order_text):
     total = 0
     found_any = False
     
-    # Lamba naam pehle check karega (dal makhani before dal)
+    # Sort by length descending to catch 'dal makhani' before 'dal'
     sorted_menu = sorted(MENU_PRICES.keys(), key=len, reverse=True)
     
     for item in sorted_menu:
@@ -87,7 +87,7 @@ def resolve_item_price(order_text):
             
             total += (MENU_PRICES[item] * qty)
             found_any = True
-            text = text.replace(item, "") # Remove matched word to prevent double counting
+            text = text.replace(item, "") # Remove processed string chunk
             
     return total if found_any else 30
 
@@ -120,12 +120,14 @@ def upload_image_to_google_drive(image_bytes, file_name):
         creds = get_credentials()
         if not creds: return "No_Credentials"
         service = build('drive', 'v3', credentials=creds)
+        
         query = "mimeType = 'application/vnd.google-apps.folder' and name = 'Guest_IDs' and trashed = false"
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
         folders = results.get('files', [])
         
         folder_id = None
-        if folders: folder_id = folders[0]['id']
+        if folders: 
+            folder_id = folders[0]['id']
         else:
             folder = service.files().create(body={'name': 'Guest_IDs', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute()
             folder_id = folder.get('id')
@@ -134,9 +136,11 @@ def upload_image_to_google_drive(image_bytes, file_name):
         media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg', resumable=True)
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         service.permissions().create(fileId=file.get('id'), body={'role': 'reader', 'type': 'anyone'}).execute()
+        
+        print(f"[DRIVE UPLOAD SUCCESS]: {file_name}", flush=True)
         return file.get('webViewLink', 'Uploaded')
     except Exception as e:
-        print(f"[DRIVE ERROR]: {e}", flush=True)
+        print(f"[DRIVE UPLOAD ERROR]: {e}", flush=True)
         return "Upload_Failed"
 
 def download_whatsapp_media(media_id):
@@ -145,21 +149,28 @@ def download_whatsapp_media(media_id):
         meta_res = requests.get(f"https://graph.facebook.com/v20.0/{media_id}", headers={"Authorization": f"Bearer {token}"}, timeout=10)
         if meta_res.status_code == 200 and meta_res.json().get("url"):
             img_res = requests.get(meta_res.json().get("url"), headers={"Authorization": f"Bearer {token}"}, timeout=15)
-            if img_res.status_code == 200: return img_res.content
-    except Exception: pass
+            if img_res.status_code == 200: 
+                return img_res.content
+    except Exception as e: 
+        print(f"[MEDIA DOWNLOAD ERROR]: {e}", flush=True)
     return None
 
 def fetch_sheet_data_sync():
+    print("[SYSTEM] Fetching Master Data from Google Sheets...", flush=True)
     client = get_gspread_client()
     if client:
         try:
             sh = client.open_by_key(SHEET_ID)
             r_data = sh.get_worksheet(0).get_all_values()
             if len(r_data) > 1: shared_store["rooms"] = r_data[1:]
+            
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
             if len(k_data) > 1: shared_store["kitchen_orders"] = k_data[1:]
+            
             shared_store["last_synced"] = time.time()
-        except Exception: pass
+            print("[SYSTEM] Sheet Data Sync Complete.", flush=True)
+        except Exception as e: 
+            print(f"[SHEET SYNC ERROR]: {e}", flush=True)
 
 def sync_sheets_in_background():
     while True:
@@ -183,7 +194,9 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         if clean_amt <= 0: clean_amt = resolve_item_price(order_details)
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), clean_amt, "PENDING"])
-    except Exception: pass
+        print(f"[SHEET APPEND OK] Room {room} - {order_details}", flush=True)
+    except Exception as e: 
+        print(f"[SHEET APPEND ERROR]: {e}", flush=True)
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str: return 1
@@ -194,6 +207,7 @@ def calculate_stay_nights(check_in_str):
 
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
+    # Scan from bottom to get latest stay record
     for row in reversed(shared_store.get("rooms", [])):
         vals = [str(v).strip() for v in row]
         if any(clean_sender == re.sub(r"\D", "", v)[-10:] for v in vals if len(re.sub(r"\D", "", v)) >= 10):
@@ -220,6 +234,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
         status_str = str(vals[5]).strip().upper() if len(vals) > 5 else "PENDING"
         amt = int(re.sub(r"\D", "", str(vals[4])) or 0)
         if amt <= 0: amt = resolve_item_price(item_name)
+        
         total_kitchen += amt
         if "PAID" in status_str:
             paid_kitchen += amt
@@ -258,7 +273,12 @@ def send_whatsapp_message(to_number, text):
         if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
         url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
         headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-        requests.post(url, json={"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}, headers=headers, timeout=10)
+        payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=10)
+            print(f"[DISPATCH SUCCESS -> {clean_number}] Text Message Sent.", flush=True)
+        except Exception as e:
+            print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
     threading.Thread(target=_do, daemon=True).start()
 
 def send_whatsapp_image(to_number, image_url, caption=""):
@@ -291,7 +311,8 @@ def ask_cohere(user_message):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=5)
         if res.status_code == 200: return res.json().get("text", "").strip()
-    except Exception: pass
+    except Exception as e:
+        print(f"[COHERE ERROR]: {e}", flush=True)
     return None
 
 # ==========================================
@@ -300,6 +321,8 @@ def ask_cohere(user_message):
 def process_and_reply(message, sender_phone, msg_type):
     user_text = message.get("text", {}).get("body", "") if msg_type == "text" else ""
     text_lower = user_text.lower().strip()
+    
+    print(f"[PROCESS START] Message from {sender_phone}: '{user_text}'", flush=True)
     
     guest_info = get_guest_stay_status(sender_phone)
     is_inhouse = guest_info and guest_info.get("is_inhouse")
@@ -351,7 +374,9 @@ def process_and_reply(message, sender_phone, msg_type):
                         sheet = client.open_by_key(SHEET_ID).get_worksheet(0)
                         date_str = datetime.now(IST).strftime("%d-%m-%Y")
                         sheet.append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", date_str, drive_link])
-                    except Exception: pass
+                        print(f"[CHECK-IN DB APPEND SUCCESS] Room {assigned_room}", flush=True)
+                    except Exception as e:
+                        print(f"[CHECK-IN DB APPEND ERROR]: {e}", flush=True)
                 
                 send_whatsapp_message(sender_phone, f"🎉 *Check-in Successful!*\n\nAapka room *{assigned_room}* assign ho gaya hai.\nWelcome to Hotel Ganga View! 🏨✨\n\nAb aap directly room service order kar sakte hain. Menu ke liye 'menu' type karein.")
                 send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}\n📂 ID Link: {drive_link}")
@@ -417,13 +442,12 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 4. HOUSEKEEPING & STAFF ALERTS (Smarter & Direct)
+    # 4. HOUSEKEEPING & STAFF ALERTS
     staff_alert_words = ["towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat", "ganda", "paani nahi"]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
-    # 5. IN-HOUSE FOOD ORDER (Bypassed if it's purely a staff alert)
+    # 5. IN-HOUSE FOOD ORDER (Bypasses staff alert logic)
     food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani"]
-    
     if any(w in text_lower for w in food_words) and not is_staff_alert:
         if is_inhouse:
             total_price = resolve_item_price(user_text)
@@ -436,9 +460,11 @@ def process_and_reply(message, sender_phone, msg_type):
             return
 
     # 6. GREETINGS
-    if text_lower in ["hi", "hello", "namaste", "hey", "start"] or len(text_lower) <= 2:
-        if is_inhouse: send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
-        else: send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
+    if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
+        if is_inhouse: 
+            send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
+        else: 
+            send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
         return
 
     # 7. STAFF ESCALATION & AI FALLBACK
@@ -466,8 +492,10 @@ def process_and_reply(message, sender_phone, msg_type):
     if bot_reply: send_whatsapp_message(sender_phone, bot_reply)
 
 def handle_incoming_async(message, sender_phone, msg_type):
-    try: process_and_reply(message, sender_phone, msg_type)
-    except Exception as e: print(f"[ASYNC ERROR]: {e}", flush=True)
+    try: 
+        process_and_reply(message, sender_phone, msg_type)
+    except Exception as e: 
+        print(f"[ASYNC PROCESSING ERROR]: {e}", flush=True)
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR
@@ -519,7 +547,8 @@ def monitor_guest_status_lifecycle():
                         if guest_ph:
                             send_whatsapp_message(guest_ph, f"✅ *Payment Received*\nNamaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) ki payment receive ho gayi hai. 🙏")
                             notified_paid_orders.add(unique_order_key)
-        except Exception: pass
+        except Exception as e: 
+            print(f"[LIFECYCLE ERROR]: {e}", flush=True)
         time.sleep(15)
 
 # ==========================================
@@ -533,14 +562,44 @@ def health_check(): return jsonify({"status": "active"}), 200
 
 @app.route("/webhook", methods=["GET", "POST"], strict_slashes=False)
 def handle_webhook():
-    if request.method == "GET": return request.args.get("hub.challenge") if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN else ("Forbidden", 403)
+    if request.method == "GET": 
+        return request.args.get("hub.challenge") if request.args.get("hub.mode") == "subscribe" and request.args.get("hub.verify_token") == VERIFY_TOKEN else ("Forbidden", 403)
+    
     try:
-        msg = request.get_json().get("entry", [])[0].get("changes", [])[0].get("value", {}).get("messages", [])[0]
-        if msg.get("id") in processed_msg_ids: return jsonify({"status": "duplicate"}), 200
-        processed_msg_ids.add(msg.get("id"))
-        mark_message_as_read(msg.get("id"))
-        threading.Thread(target=handle_incoming_async, args=(msg, msg.get("from"), msg.get("type")), daemon=True).start()
-    except Exception: pass
+        data = request.get_json()
+        if not data: return jsonify({"status": "ignored"}), 200
+        
+        # Safe Extraction with robust logging
+        entry = data.get("entry", [])
+        if not entry: return jsonify({"status": "ignored"}), 200
+        
+        changes = entry[0].get("changes", [])
+        if not changes: return jsonify({"status": "ignored"}), 200
+        
+        value = changes[0].get("value", {})
+        messages = value.get("messages", [])
+        
+        if not messages:
+            # Silently ignore non-message status updates (read/delivered ticks)
+            return jsonify({"status": "ignored"}), 200
+            
+        msg = messages[0]
+        msg_id = msg.get("id")
+        sender = msg.get("from")
+        msg_type = msg.get("type")
+        
+        if msg_id in processed_msg_ids: 
+            return jsonify({"status": "duplicate"}), 200
+            
+        processed_msg_ids.add(msg_id)
+        if len(processed_msg_ids) > 1000: processed_msg_ids.pop()
+        
+        mark_message_as_read(msg_id)
+        threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()
+        
+    except Exception as e: 
+        print(f"[WEBHOOK CRITICAL PARSE ERROR]: {e}", flush=True)
+        
     return jsonify({"status": "success"}), 200
 
 def keep_awake_ping():
@@ -555,4 +614,5 @@ threading.Thread(target=sync_sheets_in_background, daemon=True).start()
 threading.Thread(target=monitor_guest_status_lifecycle, daemon=True).start()
 threading.Thread(target=keep_awake_ping, daemon=True).start()
 
-if __name__ == "__main__": app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+if __name__ == "__main__": 
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))

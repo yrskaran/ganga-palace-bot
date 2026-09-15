@@ -307,13 +307,18 @@ def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "command-r", "message": user_message, "preamble": "You are WhatsApp AI Receptionist for Hotel Ganga View. Answer in 1-2 lines Hinglish.", "temperature": 0.2}
+    # AI ab menu prices janta hai aur smartly jawaab dega
+    preamble = (
+        "You are WhatsApp AI Receptionist for Hotel Ganga View. "
+        "Menu: Chai(30), Coffee(50), Aloo Paratha(90), Poha(70), Dal Fry(160), Paneer(220), Roti(15), Thali(250). "
+        "If a guest asks about price or if food is available, answer them nicely and tell them the price. "
+        "Ask them to just type the item name to place the order. Answer in 1-2 lines Hinglish."
+    )
+    payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.2}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=5)
         if res.status_code == 200: 
             return res.json().get("text", "").strip()
-        else:
-            print(f"[COHERE HTTP ERROR] {res.status_code}: {res.text}", flush=True)
     except Exception as e:
         print(f"[COHERE ERROR]: {e}", flush=True)
     return None
@@ -449,9 +454,14 @@ def process_and_reply(message, sender_phone, msg_type):
     staff_alert_words = ["towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat", "ganda", "paani nahi"]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
-    # 5. IN-HOUSE FOOD ORDER
-    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani"]
-    if any(w in text_lower for w in food_words) and not is_staff_alert:
+    # 5. IN-HOUSE FOOD ORDER (Smart Inquiry Filter added)
+    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani", "thali"]
+    inquiry_words = ["available", "hai kya", "milega", "price", "rate", "kitne ka", "?", "kya hai", "kaise"]
+    
+    is_food = any(w in text_lower for w in food_words)
+    is_inquiry = any(iw in text_lower for iw in inquiry_words)
+    
+    if is_food and not is_staff_alert and not is_inquiry:
         if is_inhouse:
             total_price = resolve_item_price(user_text)
             threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], user_text, total_price), daemon=True).start()

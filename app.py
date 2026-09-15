@@ -51,7 +51,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
-APP_VERSION = "GANGA-V8"
+APP_VERSION = "GANGA-V9"
 ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
 
 # -----------------------------
@@ -89,11 +89,7 @@ lunch_prompted = set()
 aarti_prompted = set()
 dinner_prompted = set()
 checked_out_guests = set()
-notified_paid_orders = set()
-# Payment notification state: avoids sending every historical PAID row
-# on startup and only notifies when a row transitions into PAID.
-payment_status_cache = {}
-payment_monitor_initialized = False
+lifecycle_status_cache = {}
 
 ACTIVE_CHAT_MODEL = None
 last_model_fetch = 0
@@ -2088,40 +2084,16 @@ def handle_incoming_async(message, sender_phone, msg_type):
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================
 
-def kitchen_order_fingerprint(row):
-    """Stable ID based on sheet content, not row number."""
-    fields = [str(x).strip() for x in list(row[:5])]
-    return "|".join(fields)
-
-
-def build_paid_payment_message(name, room, orders):
-    total = sum(x["amount"] for x in orders)
-    if len(orders) == 1:
-        detail = orders[0]["item"]
-        return (
-            f"✅ *Payment Received*\n"
-            f"Namaste {name} ji! Room {room} ke *{detail}* ka payment "
-            f"₹{orders[0]['amount']:,} receive ho gaya hai. 🙏"
-        )
-
-    details = "\n".join(
-        f"• {x['item']} — ₹{x['amount']:,}" for x in orders
-    )
-    return (
-        f"✅ *Payments Received*\n"
-        f"Namaste {name} ji! Room {room} ke payments receive ho gaye hain:\n"
-        f"{details}\n"
-        f"💰 *Total Received: ₹{total:,}*"
-    )
-
-
-def process_payment_notifications(*_args, **_kwargs):
-    # Intentionally disabled. Payment status changes are shown only inside
-    # the guest-requested bill; never proactively message the guest.
-    return
-
-
 def monitor_guest_status_lifecycle():
+    """
+    Guest lifecycle automation.
+    Important:
+    - Existing IN/OUT records at startup are silently seeded.
+    - Welcome/check-out messages are sent only on an actual status transition.
+    - Payment status changes NEVER send a proactive guest message.
+    """
+    initialized = False
+
     while True:
         try:
             fetch_sheet_data_sync()
@@ -2137,10 +2109,10 @@ def monitor_guest_status_lifecycle():
 
             room_phone_map = {}
             room_name_map = {}
+            current_status = {}
 
             with state_lock:
                 rows = list(shared_store.get("rooms", []))
-                kitchen_rows = list(shared_store.get("kitchen_orders", []))
 
             for row in rows:
                 if len(row) < 6:
@@ -2149,7 +2121,7 @@ def monitor_guest_status_lifecycle():
                 room = clean_room(row[0])
                 name = str(row[3]).strip() if len(row) > 3 else "Guest"
                 phone = clean_phone(row[4]) if len(row) > 4 else ""
-                status = str(row[5]).upper()
+                status = str(row[5]).upper().strip()
 
                 if not room or not phone:
                     continue
@@ -2157,15 +2129,45 @@ def monitor_guest_status_lifecycle():
                 room_phone_map[room] = phone
                 room_name_map[room] = name or "Guest"
                 key = f"{phone}_{room}"
+                current_status[key] = status
 
-                if "IN" in status and "OUT" not in status:
-                    if key not in welcomed_guests:
-                        send_whatsapp_message(
-                            phone,
-                            f"Welcome to Hotel Ganga View, {name} ji! Room {room} me aapka swagat hai."
-                        )
-                        welcomed_guests.add(key)
-                        guest_first_seen[key] = time.time()
+                is_in = "IN" in status and "OUT" not in status
+                is_out = "OUT" in status
+
+                previous = lifecycle_status_cache.get(key)
+
+                # -----------------------------
+                # STARTUP SEED: never send old welcome/checkout messages.
+                # -----------------------------
+                if not initialized:
+                    lifecycle_status_cache[key] = status
+                    if is_in:
+                        # Timer starts from the moment this running instance
+                        # first sees the guest. No welcome is sent on startup.
+                        guest_first_seen.setdefault(key, time.time())
+                    continue
+
+                # -----------------------------
+                # NEW CHECK-IN TRANSITION
+                # -----------------------------
+                if is_in and (previous is None or "OUT" in previous):
+                    welcome_text = (
+                        f"🌸 *Namaste {name} ji!*\n"
+                        f"🏨 Hotel Ganga View mein aapka *dil se swagat hai*. "
+                        f"Room {room} mein aapki stay ko comfortable aur yaadgaar banane ki poori koshish rahegi.\n\n"
+                        f"🍽️ Food | 🧹 Housekeeping | 🧴 Towel/Soap | 💧 Water | 📍 Local Guide\n"
+                        f"Kisi bhi help ke liye bas yahin message karein. 🙏"
+                    )
+                    send_whatsapp_message(phone, welcome_text)
+
+                    welcomed_guests.add(key)
+                    guest_first_seen[key] = time.time()
+
+                # -----------------------------
+                # 30-MINUTE CHECK
+                # -----------------------------
+                if is_in:
+                    guest_first_seen.setdefault(key, time.time())
 
                     if (
                         key in guest_first_seen
@@ -2174,55 +2176,83 @@ def monitor_guest_status_lifecycle():
                     ):
                         send_whatsapp_message(
                             phone,
-                            f"Namaste {name} ji! Umeed hai sab theek hai. Towel, soap, cleaning ya kisi help ke liye yahin message karein."
+                            f"🌸 *{name} ji, umeed hai aap achhi tarah settle ho gaye honge.*\n"
+                            f"Room mein towel, soap, water, cleaning ya kisi aur assistance ki zarurat ho to bas message karein. "
+                            f"Har Ki Pauri, Ganga Aarti ya Haridwar local guide ke liye bhi hum help kar denge. 🙏"
                         )
                         notified_30min.add(key)
 
+                    # -----------------------------
+                    # BREAKFAST
+                    # -----------------------------
                     if breakfast_window:
                         bk = f"{key}_{today}_breakfast"
                         if bk not in breakfast_prompted:
                             send_whatsapp_message(
                                 phone,
-                                f"Good Morning {name} ji! Breakfast ka samay hai. Menu dekhne ke liye 'menu' type karein."
+                                f"☀️ *Good Morning {name} ji!*\n"
+                                f"Breakfast ka samay hai. Fresh breakfast ke liye *menu* type karein; order room mein serve kar denge. 🍽️"
                             )
                             breakfast_prompted.add(bk)
 
+                    # -----------------------------
+                    # LUNCH
+                    # -----------------------------
                     if lunch_window:
                         lk = f"{key}_{today}_lunch"
                         if lk not in lunch_prompted:
                             send_whatsapp_message(
                                 phone,
-                                f"Good Afternoon {name} ji! Lunch ke liye menu dekhne ko 'menu' type karein."
+                                f"🍛 *Good Afternoon {name} ji!*\n"
+                                f"Lunch ka mann ho to *menu* type karein. Garma-garam food room mein serve kar denge. 🙏"
                             )
                             lunch_prompted.add(lk)
 
+                    # -----------------------------
+                    # GANGA AARTI
+                    # -----------------------------
                     if aarti_window:
                         ak = f"{key}_{today}_aarti"
                         if ak not in aarti_prompted:
                             send_whatsapp_message(
                                 phone,
-                                f"Har Har Gange {name} ji! Har Ki Pauri Sandhya Aarti ke liye 5:15 PM tak pahunchna best hai."
+                                f"🙏 *Har Har Gange, {name} ji!*\n"
+                                f"Aaj Har Ki Pauri Sandhya Ganga Aarti hai. 5:15 PM tak nikalna convenient rahega. "
+                                f"Location chahiye ho to *guide* likhein. 🌺"
                             )
                             aarti_prompted.add(ak)
 
+                    # -----------------------------
+                    # DINNER
+                    # -----------------------------
                     if dinner_window:
                         dk = f"{key}_{today}_dinner"
                         if dk not in dinner_prompted:
                             send_whatsapp_message(
                                 phone,
-                                f"Good Evening {name} ji! Dinner ke liye menu dekhne ko 'menu' type karein."
+                                f"🌙 *Good Evening {name} ji!*\n"
+                                f"Dinner ke liye kuch delicious mangwana ho to *menu* type karein. 🍽️"
                             )
                             dinner_prompted.add(dk)
 
-                elif "OUT" in status:
-                    out_key = f"{key}_out"
-                    if out_key not in checked_out_guests:
-                        send_whatsapp_message(
-                            phone,
-                            f"Namaste {name} ji! Hotel Ganga View me rukne ke liye dhanyawad. Shubh Yatra!"
-                        )
-                        checked_out_guests.add(out_key)
-            # Proactive payment notifications are intentionally disabled.
+                # -----------------------------
+                # CHECK-OUT TRANSITION
+                # -----------------------------
+                elif is_out and (previous is None or ("IN" in previous and "OUT" not in previous)):
+                    send_whatsapp_message(
+                        phone,
+                        f"🙏 *Dhanyawad, {name} ji!*\n"
+                        f"Hotel Ganga View mein aapka stay humein bahut accha laga. Umeed hai aapka Haridwar stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
+                        f"Jab bhi dobara Haridwar aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
+                    )
+                    checked_out_guests.add(f"{key}_out")
+
+            # Commit current lifecycle snapshot.
+            with state_lock:
+                lifecycle_status_cache.clear()
+                lifecycle_status_cache.update(current_status)
+
+            initialized = True
 
         except Exception as exc:
             print("LIFECYCLE ERROR:", exc, flush=True)
@@ -2332,24 +2362,6 @@ def startup():
     except Exception:
         traceback.print_exc()
 
-    # Seed current PAID statuses before lifecycle begins.
-    # This guarantees old PAID rows never trigger guest notifications.
-    try:
-        with state_lock:
-            initial_rows = list(shared_store.get("kitchen_orders", []))
-            payment_status_cache.clear()
-            for row in initial_rows:
-                if len(row) >= 6:
-                    payment_status_cache[kitchen_order_fingerprint(row)] = str(row[5]).strip().upper()
-            global payment_monitor_initialized
-            payment_monitor_initialized = True
-        print(
-            f"[{APP_VERSION}] Payment notification seed complete; "
-            f"{len(payment_status_cache)} existing orders loaded.",
-            flush=True
-        )
-    except Exception as exc:
-        print(f"[{APP_VERSION}] PAYMENT SEED ERROR: {exc}", flush=True)
 
     threading.Thread(
         target=sync_sheets_in_background,

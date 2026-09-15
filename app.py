@@ -27,6 +27,7 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()  # 🔥 GROQ IS BACK
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
@@ -115,9 +116,7 @@ def get_credentials():
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
         scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         return Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    except Exception as e: 
-        print(f"[CREDS ERROR]: {e}", flush=True)
-        return None
+    except Exception: return None
 
 def get_gspread_client():
     creds = get_credentials()
@@ -139,9 +138,7 @@ def upload_image_to_google_drive(image_bytes, file_name):
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         service.permissions().create(fileId=file.get('id'), body={'role': 'reader', 'type': 'anyone'}).execute()
         return file.get('webViewLink', 'Uploaded')
-    except Exception as e: 
-        print(f"[DRIVE UPLOAD ERROR]: {e}", flush=True)
-        return "Upload_Failed"
+    except Exception: return "Upload_Failed"
 
 def download_whatsapp_media(media_id):
     try:
@@ -150,13 +147,14 @@ def download_whatsapp_media(media_id):
         if meta_res.status_code == 200 and meta_res.json().get("url"):
             img_res = requests.get(meta_res.json().get("url"), headers={"Authorization": f"Bearer {token}"}, timeout=15)
             if img_res.status_code == 200: return img_res.content
-    except Exception as e: 
-        print(f"[MEDIA DOWNLOAD ERROR]: {e}", flush=True)
+    except Exception: pass
     return None
 
 def fetch_sheet_data_sync():
-    print("[SYSTEM] Fetching Master Data & Silently Pre-filling Memory...", flush=True)
     client = get_gspread_client()
+    now_ist = datetime.now(IST)
+    today_str = now_ist.strftime("%Y-%m-%d")
+
     if client:
         try:
             sh = client.open_by_key(SHEET_ID)
@@ -172,6 +170,8 @@ def fetch_sheet_data_sync():
                             if "CHECKED_IN" in r_status:
                                 welcomed_guests.add(f"{r_phone}_{r_num}")
                                 notified_30min.add(f"{r_phone}_{r_num}")
+                                if now_ist.hour >= 19:
+                                    dinner_prompted.add(f"{r_phone}_{r_num}_{today_str}")
                             elif "CHECKOUT" in r_status:
                                 checked_out_guests.add(f"{r_phone}_{r_num}_out")
 
@@ -185,10 +185,9 @@ def fetch_sheet_data_sync():
                         k_status = str(k_row[5]).upper()
                         if "PAID" in k_status:
                             notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
+            
             shared_store["last_synced"] = time.time()
-            print("[SYSTEM] Silent Memory Pre-fill Complete.", flush=True)
-        except Exception as e: 
-            print(f"[SHEET SYNC ERROR]: {e}", flush=True)
+        except Exception: pass
 
 def sync_sheets_in_background():
     while True:
@@ -210,8 +209,7 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), int(amount), "PENDING"])
-    except Exception as e: 
-        print(f"[SHEET APPEND ERROR]: {e}", flush=True)
+    except Exception: pass
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str: return 1
@@ -278,24 +276,16 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (ROBUST LOGGING)
+# 3. DISPATCH & AI ENGINES
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
-    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
-        print(f"[DISPATCH ABORT] Token or Phone ID missing for {clean_number}", flush=True)
-        return
+    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: 
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code not in [200, 201]:
-            print(f"[WA API ERROR TEXT] {res.status_code} - {res.text}", flush=True)
-        else:
-            print(f"[DISPATCH SUCCESS -> {clean_number}] Text Sent.", flush=True)
-    except Exception as e: 
-        print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
+    try: requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception: pass
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -305,13 +295,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        if res.status_code not in [200, 201]: 
-            print(f"[WA API ERROR IMAGE] {res.status_code} - {res.text}", flush=True)
-            send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-        else:
-            print(f"[DISPATCH SUCCESS -> {clean_number}] Image Sent.", flush=True)
-    except Exception as e: 
-        print(f"[DISPATCH IMAGE EXCEPTION]: {e}", flush=True)
+        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception: 
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
@@ -321,12 +306,23 @@ def mark_message_as_read(message_id):
     try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
     except Exception: pass
 
-# --- THE BILINGUAL & "COMMON SENSE" AI BRAIN ---
+# 🔥 GROQ AUDIO TRANSCRIPTION AI
+def transcribe_audio_groq(audio_bytes):
+    if not GROQ_API_KEY: return None
+    url = "https://api.groq.com/openai/v1/audio/transcriptions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    files = {"file": ("voice_note.ogg", audio_bytes, "audio/ogg")}
+    data = {"model": "whisper-large-v3", "response_format": "json"}
+    try:
+        res = requests.post(url, headers=headers, files=files, data=data, timeout=15)
+        if res.status_code == 200: return res.json().get("text", "").strip()
+    except Exception as e: print(f"[GROQ ERROR] {e}", flush=True)
+    return None
+
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
-    
     preamble = (
         "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
         "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member. "
@@ -340,24 +336,34 @@ def ask_cohere(user_message):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         if res.status_code == 200: return res.json().get("text", "").strip()
-        else: print(f"[COHERE API ERROR] {res.status_code} - {res.text}", flush=True)
-    except Exception as e: 
-        print(f"[COHERE EXCEPTION]: {e}", flush=True)
+    except Exception: pass
     return None
 
 # ==========================================
 # 4. MESSAGE ROUTER & SELF CHECK-IN
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
-    print(f"\n[START PROCESSING] New Msg from: {sender_phone} | Type: {msg_type}", flush=True)
+    user_text = ""
     
+    # 🔥 VOICE NOTE HANDLER (Groq integration)
     if msg_type == "audio":
-        reply_msg = "Kshama karein, main abhi voice notes nahi sun sakta. Kripya apna message likh kar bhejein. 🙏\n\nI apologize, I am unable to listen to voice notes right now. Please type your message."
-        send_whatsapp_message(sender_phone, reply_msg)
-        return
-        
-    user_text = message.get("text", {}).get("body", "") if msg_type == "text" else ""
-    text_lower = user_text.lower().strip()
+        media_id = message.get("audio", {}).get("id")
+        audio_bytes = download_whatsapp_media(media_id)
+        if audio_bytes and GROQ_API_KEY:
+            user_text = transcribe_audio_groq(audio_bytes)
+            
+        if not user_text:
+            reply_msg = "Kshama karein, aapki aawaz theek se process nahi ho payi. Kripya apna message likh kar bhejein. 🙏\n\nI apologize, I couldn't process the voice note. Please type your message."
+            send_whatsapp_message(sender_phone, reply_msg)
+            return
+        else:
+            print(f"[VOICE NOTE TRANSCRIBED] {sender_phone}: '{user_text}'", flush=True)
+            # Flow continues downwards as if it was text!
+
+    elif msg_type == "text":
+        user_text = message.get("text", {}).get("body", "")
+
+    text_lower = str(user_text).lower().strip()
     
     guest_info = get_guest_stay_status(sender_phone)
     is_inhouse = guest_info and guest_info.get("is_inhouse")
@@ -369,13 +375,13 @@ def process_and_reply(message, sender_phone, msg_type):
         session = checkin_sessions[sender_phone]
         step = session["step"]
         if step == "AWAITING_OTP":
-            if msg_type == "text" and text_lower == session["otp"]:
+            if msg_type in ["text", "audio"] and text_lower == session["otp"]:
                 session["step"] = "AWAITING_NAME"
                 send_whatsapp_message(sender_phone, "✅ *OTP Verified!*\n\nKripya verification ke liye apna *Poora Naam* batayein.")
             else: send_whatsapp_message(sender_phone, "❌ Galat OTP. Kripya reception staff se sahi 4-digit OTP lekar type karein.")
             return
         if step == "AWAITING_NAME":
-            if msg_type == "text" and len(user_text) > 2:
+            if msg_type in ["text", "audio"] and len(user_text) > 2:
                 session["name"] = user_text.strip()
                 session["step"] = "AWAITING_ID"
                 send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
@@ -394,20 +400,17 @@ def process_and_reply(message, sender_phone, msg_type):
                 client = get_gspread_client()
                 if client:
                     try: client.open_by_key(SHEET_ID).get_worksheet(0).append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", datetime.now(IST).strftime("%d-%m-%Y"), drive_link])
-                    except Exception as e: print(f"[SHEET WRITE ERROR]: {e}", flush=True)
+                    except Exception: pass
                 send_whatsapp_message(sender_phone, f"🎉 *Check-in Successful!*\n\nAapka room *{assigned_room}* assign ho gaya hai.\nWelcome to Hotel Ganga View! 🏨✨\n\nAb aap directly room service order kar sakte hain. Menu ke liye 'menu' type karein.")
                 send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}\n📂 ID Link: {drive_link}")
                 del checkin_sessions[sender_phone]
             else: send_whatsapp_message(sender_phone, "⚠️ Kripya verification ke liye ID proof ki saaf *Photo (Image)* bhejein.")
             return
 
-    if msg_type != "text": return
-
-    print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
+    if msg_type not in ["text", "audio"] or not user_text: return
 
     # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
-        print("[MATCH] Triggered Greetings Block", flush=True)
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
         else: 
@@ -440,8 +443,10 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, "📍 *Hotel Ganga View, Haridwar*\n🗺️ *Map:* https://maps.google.com/?q=29.9530,78.1700")
         return
     if any(pw in text_lower for pw in ["photo", "photos", "pic", "image", "tasveer", "room dikhao", "room ki", "andar ki"]):
-        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar* (Exterior View)")
-        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room.jpg", "🛏️ *Deluxe AC Room (Interior)*\n\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar* (Exterior)")
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg", "🛏️ *Standard Non-AC Room* - ₹1,800/night")
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg", "🛏️ *Deluxe AC Room* - ₹2,500/night")
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg", "🛏️ *4-Bed Family Room*")
         return
 
     # 4. BILL HANDLER
@@ -496,7 +501,7 @@ def process_and_reply(message, sender_phone, msg_type):
             if is_inhouse:
                 total_price, corrected_order = resolve_item_price_and_name(user_text)
                 threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], corrected_order, total_price), daemon=True).start()
-                send_whatsapp_message(KITCHEN_PHONE, f"🍳 *NEW ROOM SERVICE ORDER*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Order: {corrected_order} (Original: {user_text})\n💰 Amount: ₹{total_price}\n📞 Contact: +{sender_phone}")
+                send_whatsapp_message(KITCHEN_PHONE, f"🍳 *NEW ROOM SERVICE ORDER*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Order: {corrected_order}\n💰 Amount: ₹{total_price}\n📞 Contact: +{sender_phone}")
                 send_whatsapp_message(sender_phone, f"Ji {guest_info['name']} ji! Aapka order note ho gaya hai:\n🍽️ Item: {corrected_order}\n💰 Bill: ₹{total_price}\nAgli 15-20 minutes me deliver ho jayega. 🙏")
                 return
             else:
@@ -552,9 +557,7 @@ def process_and_reply(message, sender_phone, msg_type):
 def handle_incoming_async(message, sender_phone, msg_type):
     try: 
         process_and_reply(message, sender_phone, msg_type)
-    except Exception as e: 
-        print(f"\n[CRITICAL ERROR in handle_incoming_async]: {e}", flush=True)
-        traceback.print_exc()
+    except Exception as e: pass
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR
@@ -651,8 +654,7 @@ def handle_webhook():
         mark_message_as_read(msg_id)
         threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()
         
-    except Exception as e: 
-        print(f"[WEBHOOK PARSE ERROR]: {e}", flush=True)
+    except Exception: pass
         
     return jsonify({"status": "success"}), 200
 

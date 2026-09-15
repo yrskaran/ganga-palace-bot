@@ -80,6 +80,7 @@ MENU_MAPPING = {
     "jalebi": ("Jalebi", 30), "thali": ("Special Thali", 250)
 }
 
+# INTERNAL HINDI TO HINGLISH TRANSLATOR
 def normalize_transcription(text):
     if not text: return ""
     text = text.lower()
@@ -248,7 +249,6 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), int(amount), "PENDING"])
-        print(f"✅ [ORDER APPENDED] Room {room}: {order_details}", flush=True)
     except Exception as e: 
         print(f"❌ [ORDER APPEND ERROR]: {e}", flush=True)
 
@@ -263,7 +263,6 @@ def cancel_kitchen_order_in_sheet(room, order_details):
             if len(row) >= 6:
                 if str(room) in str(row[1]) and str(order_details) in str(row[3]) and "PENDING" in str(row[5]).upper():
                     sheet.update_cell(i + 1, 6, "CANCELLED")
-                    print(f"✅ [ORDER CANCELLED IN SHEET] Room {room}: {order_details}", flush=True)
                     break
     except Exception as e: 
         print(f"❌ [SHEET CANCEL ERROR]: {e}", flush=True)
@@ -334,20 +333,12 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
-    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
-        print("❌ [DISPATCH ERROR] Missing Token or Phone ID", flush=True)
-        return
+    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: 
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code not in [200, 201]:
-            print(f"❌ [META API ERROR] {res.status_code} - {res.text}", flush=True)
-        else:
-            print(f"✅ [MSG SENT] to {clean_number}: {text[:30]}...", flush=True)
-    except Exception as e: 
-        print(f"❌ [NETWORK ERROR]: {e}", flush=True)
+    try: requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception: pass
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -357,11 +348,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        if res.status_code not in [200, 201]: 
-            print(f"❌ [META IMAGE ERROR] {res.status_code} - {res.text}", flush=True)
-            send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-    except Exception as e: 
-        print(f"❌ [IMAGE NETWORK ERROR]: {e}", flush=True)
+        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception: 
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
@@ -372,9 +360,7 @@ def mark_message_as_read(message_id):
     except Exception: pass
 
 def transcribe_audio_groq(audio_bytes):
-    if not GROQ_API_KEY: 
-        print("❌ [GROQ ERROR] No API Key Found", flush=True)
-        return None
+    if not GROQ_API_KEY: return None
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     files = {"file": ("voice_note.ogg", audio_bytes, "audio/ogg")}
@@ -385,39 +371,47 @@ def transcribe_audio_groq(audio_bytes):
     }
     try:
         res = requests.post(url, headers=headers, files=files, data=data, timeout=15)
-        if res.status_code == 200: 
-            return res.json().get("text", "").strip()
-        else:
-            print(f"❌ [GROQ HTTP ERROR] {res.status_code} - {res.text}", flush=True)
-    except Exception as e: 
-        print(f"❌ [GROQ EXCEPTION]: {e}", flush=True)
+        if res.status_code == 200: return res.json().get("text", "").strip()
+    except Exception: pass
     return None
 
-# 🔥 FIX: UPDATED COHERE MODEL & AUTO-FALLBACK
+# 🔥 NEW: READ FROM EXTERNAL HOTEL_DATA.TXT
+def get_hotel_data():
+    try:
+        if os.path.exists("hotel_data.txt"):
+            with open("hotel_data.txt", "r", encoding="utf-8") as f:
+                return f.read().strip()
+    except Exception as e: print(f"❌ [HOTEL DATA FILE ERROR]: {e}", flush=True)
+    # Default Fallback if file doesn't exist yet
+    return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. Rooms are clean, spacious, and very comfortable."
+
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
-    preamble = (
-        "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
-        "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member. "
-        "CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish. "
-        "HOTEL INFO: Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. Rooms are clean, spacious, and very comfortable. "
-        "CRITICAL RULE 3 (COMMON SENSE): If the user says simple conversational words like 'No', 'Nahi', 'Okay', 'Thanks', 'Dhanyawad', or 'Ji', DO NOT say 'facility unavailable'. Just reply warmly and naturally (e.g., 'Ji theek hai, agar kisi cheez ki zaroorat ho toh batayein. 🙏'). "
-        "CRITICAL RULE 4: If they ask for a facility/food NOT available, decline politely without making up excuses. "
-        "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
-        "Keep replies to 1 or 2 short lines."
-    )
     
-    # Primary try with the latest flagship model
+    # Inject Dynamic Hotel Data from file
+    hotel_context = get_hotel_data()
+    
+    preamble = f"""You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. 
+CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member.
+CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish.
+CRITICAL RULE 3: Use the following hotel information to answer guest queries naturally:
+[HOTEL DETAILS START]
+{hotel_context}
+[HOTEL DETAILS END]
+CRITICAL RULE 4: If they ask for something not mentioned or not available, decline politely without making up excuses.
+If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.'
+Keep replies to 1 or 2 short lines.
+"""
+    
+    # Try with 'command-r-plus' (latest), fallback to generic 'command'
     payload = {"model": "command-r-plus", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         if res.status_code == 200: 
             return res.json().get("text", "").strip()
         else:
-            print(f"❌ [COHERE API ERROR 'command-r-plus'] {res.status_code} - {res.text}", flush=True)
-            # Fallback try without specifying model (auto-defaults to active model)
             payload_fallback = {"message": user_message, "preamble": preamble, "temperature": 0.3}
             res_fallback = requests.post(url, json=payload_fallback, headers=headers, timeout=8)
             if res_fallback.status_code == 200:
@@ -565,7 +559,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
 
-    # 1. GREETINGS 
+    # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -676,12 +670,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
 
-    # 🔥 OFFLINE FAQ FALLBACK (Never Fails)
-    if re.search(r"\b(room|rooms|tariff|price|kiraya|rate|kaisa|kaise|rent|charges)\b", text_lower) and not is_food and not is_staff_alert:
-        send_whatsapp_message(sender_phone, "🏨 *Hotel Ganga View Rooms & Tariff:*\n\n🛏️ *Standard Non-AC Room:* ₹1,800/night\n🛏️ *Deluxe AC Room:* ₹2,500/night\n👨‍👩‍👧‍👦 *4-Bed Family Room* bhi uplabdh hai.\n\n✨ Humare rooms bahut saaf, hawa-dar aur aaramdayak hain. Hotel me safe parking aur 24x7 service uplabdh hai.\n\n📸 Photos dekhne ke liye *'photo'* type karein.\n🛎️ Booking ke liye *'check in'* type karein!")
-        return
-
-    # 7. STAFF ESCALATION & AI BRAIN (COHERE)
+    # 7. STAFF ESCALATION & DYNAMIC AI (COHERE)
     if is_staff_alert:
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
@@ -698,16 +687,8 @@ def process_and_reply(message, sender_phone, msg_type):
     # NO-NONSENSE BILINGUAL FALLBACK WITH "COMMON SENSE"
     if not bot_reply: 
         is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
-        
-        # BASIC CHAT FALLBACK
         if len(text_lower) < 15 and any(w in text_lower for w in ["no", "nahi", "na", "ok", "okay", "thanks", "dhanyawad", "theek", "achha", "kya"]):
             bot_reply = "Ji theek hai. Agar koi sahayata chahiye ho toh kripya batayein. 🙏" if not is_eng_query else "Alright. Please let us know if you need any assistance. 🙏"
-        
-        elif not is_inhouse and not is_checkout:
-            if is_eng_query:
-                bot_reply = "We have Standard (₹1,800) and Deluxe AC Rooms (₹2,500) available. Type 'Room photo' to see the pictures!"
-            else:
-                bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!"
         else:
             if is_eng_query:
                 bot_reply = "I apologize, but this facility or information is currently unavailable. Please contact the reception for any assistance. 🙏"
@@ -718,7 +699,6 @@ def process_and_reply(message, sender_phone, msg_type):
         bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
-        
         is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
         if is_eng_query:
             bot_reply = "I have informed the staff. They will assist you shortly. 🙏"
@@ -746,7 +726,7 @@ def monitor_guest_status_lifecycle():
             
             is_breakfast_time = 8 <= hour <= 10
             is_lunch_time = 13 <= hour <= 15
-            is_aarti_time = 17 <= hour < 18  # 5 PM to 6 PM
+            is_aarti_time = 17 <= hour < 18
             is_dinner_time = 19 <= hour <= 21
 
             room_phone_map = {}
@@ -759,7 +739,6 @@ def monitor_guest_status_lifecycle():
                     room_phone_map[room] = phone
 
                     if "IN" in status and "OUT" not in status:
-                        # 1. 30-MIN WELCOME
                         welcome_key = f"{phone}_{room}"
                         if welcome_key not in welcomed_guests:
                             send_whatsapp_message(phone, f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\nRoom {room} me aapka swagat hai.")
@@ -770,25 +749,21 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(phone, f"Namaste {name} ji! 🌸\nAapko check-in kiye hue aadha ghanta ho gaya hai. Ummid hai sab theek hoga.\nAgar towel, sabun, ya TV remote waghera chahiye ho, toh bejhijhak yahan message karein! 🙏")
                             notified_30min.add(welcome_key)
 
-                        # 2. BREAKFAST PROMPT
                         bkfst_key = f"{phone}_{room}_{today_str}"
                         if is_breakfast_time and bkfst_key not in breakfast_prompted:
                             send_whatsapp_message(phone, f"Good Morning {name} ji! ☀️\nBreakfast ka samay ho gaya hai. Chai, Coffee ya Aloo Paratha order karne ke liye 'menu' type karein! ☕")
                             breakfast_prompted.add(bkfst_key)
                             
-                        # 3. LUNCH PROMPT
                         lunch_key = f"{phone}_{room}_{today_str}"
                         if is_lunch_time and lunch_key not in lunch_prompted:
                             send_whatsapp_message(phone, f"Good Afternoon {name} ji! 🍛\nLunch ka samay ho gaya hai. Garma-garam khane ke liye 'menu' type karein!")
                             lunch_prompted.add(lunch_key)
                             
-                        # 4. GANGA AARTI PROMPT (5 PM - 6 PM)
                         aarti_key = f"{phone}_{room}_{today_str}"
                         if is_aarti_time and aarti_key not in aarti_prompted:
                             send_whatsapp_message(phone, f"Har Har Gange {name} ji! 🙏\nShaam ki Ganga Aarti ka samay hone wala hai (6:00 PM). Ghat par jane ka plan bana lijiye! 🌺")
                             aarti_prompted.add(aarti_key)
 
-                        # 5. DINNER PROMPT
                         dinner_key = f"{phone}_{room}_{today_str}"
                         if is_dinner_time and dinner_key not in dinner_prompted:
                             send_whatsapp_message(phone, f"Good Evening {name} ji! 🌙\nDinner ka samay ho gaya hai. Kya hum Garma-garam Khana room me bhej dein?\nMenu dekhne ke liye 'menu' type karein! 🍽️")
@@ -800,7 +775,6 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(phone, f"Namaste {name} ji! 🙏\nRoom {room} ka check-out complete ho gaya hai.\nHotel Ganga View me rukne ke liye dhanyawad! Shubh Yatra! 🚩🌸")
                             checked_out_guests.add(checkout_key)
 
-            # 6. BILLING NOTIFICATIONS
             for idx, k_row in enumerate(shared_store.get("kitchen_orders", []), start=2):
                 if len(k_row) >= 6:
                     k_room, k_item, k_amt, k_status = re.sub(r"\D", "", k_row[1]), k_row[3], re.sub(r"\D", "", k_row[4]) or "0", k_row[5].upper()

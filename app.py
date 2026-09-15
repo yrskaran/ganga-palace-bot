@@ -47,8 +47,8 @@ processed_msg_ids = set()
 
 # STATE MEMORY
 checkin_sessions = {}
-order_sessions = {}  # For confirmation before sending to kitchen
-active_orders = {}   # For 5-minute cancellation window
+order_sessions = {}  
+active_orders = {}   
 
 # LIFECYCLE MEMORY
 notified_paid_orders = set()
@@ -168,7 +168,9 @@ def upload_image_to_google_drive(image_bytes, file_name):
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
         service.permissions().create(fileId=file.get('id'), body={'role': 'reader', 'type': 'anyone'}).execute()
         return file.get('webViewLink', 'Uploaded')
-    except Exception: return "Upload_Failed"
+    except Exception as e: 
+        print(f"❌ [DRIVE UPLOAD ERROR]: {e}", flush=True)
+        return "Upload_Failed"
 
 def download_whatsapp_media(media_id):
     try:
@@ -177,7 +179,8 @@ def download_whatsapp_media(media_id):
         if meta_res.status_code == 200 and meta_res.json().get("url"):
             img_res = requests.get(meta_res.json().get("url"), headers={"Authorization": f"Bearer {token}"}, timeout=15)
             if img_res.status_code == 200: return img_res.content
-    except Exception: pass
+    except Exception as e: 
+        print(f"❌ [MEDIA DOWNLOAD ERROR]: {e}", flush=True)
     return None
 
 def fetch_sheet_data_sync():
@@ -217,7 +220,9 @@ def fetch_sheet_data_sync():
                             notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
             
             shared_store["last_synced"] = time.time()
-        except Exception: pass
+            print("✅ [SYSTEM] Memory Pre-fill Complete.", flush=True)
+        except Exception as e: 
+            print(f"❌ [SHEET FETCH ERROR]: {e}", flush=True)
 
 def sync_sheets_in_background():
     while True:
@@ -239,24 +244,25 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), int(amount), "PENDING"])
-    except Exception: pass
+        print(f"✅ [ORDER APPENDED] Room {room}: {order_details}", flush=True)
+    except Exception as e: 
+        print(f"❌ [ORDER APPEND ERROR]: {e}", flush=True)
 
-# 🔥 NEW: FUNCTION TO CANCEL ORDER IN SHEET
 def cancel_kitchen_order_in_sheet(room, order_details):
     client = get_gspread_client()
     if not client: return
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         records = sheet.get_all_values()
-        # Find the latest matching pending order from the bottom
         for i in range(len(records)-1, 0, -1):
             row = records[i]
             if len(row) >= 6:
                 if str(room) in str(row[1]) and str(order_details) in str(row[3]) and "PENDING" in str(row[5]).upper():
-                    # Update status column (6th col) to CANCELLED
                     sheet.update_cell(i + 1, 6, "CANCELLED")
+                    print(f"✅ [ORDER CANCELLED IN SHEET] Room {room}: {order_details}", flush=True)
                     break
-    except Exception as e: print(f"[SHEET CANCEL ERROR]: {e}", flush=True)
+    except Exception as e: 
+        print(f"❌ [SHEET CANCEL ERROR]: {e}", flush=True)
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str: return 1
@@ -323,16 +329,24 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH & AI ENGINES
+# 3. DISPATCH & AI ENGINES (WITH FULL LOGS)
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
-    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
+    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
+        print("❌ [DISPATCH ERROR] Missing Token or Phone ID", flush=True)
+        return
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: requests.post(url, json=payload, headers=headers, timeout=10)
-    except Exception: pass
+    try: 
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code not in [200, 201]:
+            print(f"❌ [META API ERROR] {res.status_code} - {res.text}", flush=True)
+        else:
+            print(f"✅ [MSG SENT] to {clean_number}: {text[:30]}...", flush=True)
+    except Exception as e: 
+        print(f"❌ [NETWORK ERROR]: {e}", flush=True)
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -342,8 +356,11 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-    except Exception: 
+        if res.status_code not in [200, 201]: 
+            print(f"❌ [META IMAGE ERROR] {res.status_code} - {res.text}", flush=True)
+            send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception as e: 
+        print(f"❌ [IMAGE NETWORK ERROR]: {e}", flush=True)
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
@@ -354,7 +371,9 @@ def mark_message_as_read(message_id):
     except Exception: pass
 
 def transcribe_audio_groq(audio_bytes):
-    if not GROQ_API_KEY: return None
+    if not GROQ_API_KEY: 
+        print("❌ [GROQ ERROR] No API Key Found", flush=True)
+        return None
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     files = {"file": ("voice_note.ogg", audio_bytes, "audio/ogg")}
@@ -365,8 +384,12 @@ def transcribe_audio_groq(audio_bytes):
     }
     try:
         res = requests.post(url, headers=headers, files=files, data=data, timeout=15)
-        if res.status_code == 200: return res.json().get("text", "").strip()
-    except Exception: pass
+        if res.status_code == 200: 
+            return res.json().get("text", "").strip()
+        else:
+            print(f"❌ [GROQ HTTP ERROR] {res.status_code} - {res.text}", flush=True)
+    except Exception as e: 
+        print(f"❌ [GROQ EXCEPTION]: {e}", flush=True)
     return None
 
 def ask_cohere(user_message):
@@ -385,8 +408,12 @@ def ask_cohere(user_message):
     payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
-        if res.status_code == 200: return res.json().get("text", "").strip()
-    except Exception: pass
+        if res.status_code == 200: 
+            return res.json().get("text", "").strip()
+        else:
+            print(f"❌ [COHERE API ERROR] {res.status_code} - {res.text}", flush=True)
+    except Exception as e: 
+        print(f"❌ [COHERE EXCEPTION]: {e}", flush=True)
     return None
 
 # ==========================================
@@ -394,8 +421,9 @@ def ask_cohere(user_message):
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
+    print(f"\n🚀 [INCOMING MSG] Type: {msg_type} from {sender_phone}", flush=True)
     
-    # VOICE NOTE HANDLER (Groq integration + Auto-Translation)
+    # VOICE NOTE HANDLER
     if msg_type == "audio":
         media_id = message.get("audio", {}).get("id")
         audio_bytes = download_whatsapp_media(media_id)
@@ -405,6 +433,8 @@ def process_and_reply(message, sender_phone, msg_type):
         if not user_text:
             send_whatsapp_message(sender_phone, "Kshama karein, aapki aawaz theek se sunai nahi di. Kripya apna message likh kar bhejein. 🙏")
             return
+        else:
+            print(f"🗣️ [GROQ TRANSLATED]: '{user_text}'", flush=True)
 
     elif msg_type == "text":
         user_text = message.get("text", {}).get("body", "")
@@ -420,7 +450,6 @@ def process_and_reply(message, sender_phone, msg_type):
     if "cancel" in text_lower and any(w in text_lower for w in ["order", "khana", "food", "kardo"]):
         if sender_phone in active_orders:
             order_data = active_orders[sender_phone]
-            # Check if within 5 minutes (300 seconds)
             if time.time() - order_data["time"] <= 300:
                 threading.Thread(target=cancel_kitchen_order_in_sheet, args=(guest_info['room'], order_data['order']), daemon=True).start()
                 send_whatsapp_message(KITCHEN_PHONE, f"🚨 *ORDER CANCELLED*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Cancelled Item: {order_data['order']}")
@@ -439,7 +468,6 @@ def process_and_reply(message, sender_phone, msg_type):
     if sender_phone in order_sessions:
         session = order_sessions[sender_phone]
         if session["step"] == "AWAITING_CONFIRMATION":
-            # If user confirms the order
             if any(w in text_lower for w in ["haan", "yes", "y", "confirm", "ha", "thik", "theek", "ok", "kardo", "bhej"]):
                 corrected_order = session["order"]
                 total_price = session["total"]
@@ -449,12 +477,10 @@ def process_and_reply(message, sender_phone, msg_type):
                 
                 send_whatsapp_message(sender_phone, f"✅ Aapka order confirm ho gaya hai!\n🍽️ Item: {corrected_order}\n💰 Bill: ₹{total_price}\n\nAgli 15-20 minutes me deliver ho jayega. 🙏\n*(Note: Agar aap galti se order kar baithe hain, toh agle 5 minute tak 'Cancel order' likh kar ise cancel kar sakte hain)*")
                 
-                # Save to active orders for cancellation window
                 active_orders[sender_phone] = {"order": corrected_order, "total": total_price, "time": time.time()}
                 del order_sessions[sender_phone]
                 return
             
-            # If user rejects the order
             elif any(w in text_lower for w in ["nahi", "no", "n", "mat", "cancel", "rehne"]):
                 send_whatsapp_message(sender_phone, "❌ Theek hai, order cancel kar diya gaya hai. Kuch aur chahiye toh batayein.")
                 del order_sessions[sender_phone]
@@ -468,13 +494,13 @@ def process_and_reply(message, sender_phone, msg_type):
         session = checkin_sessions[sender_phone]
         step = session["step"]
         if step == "AWAITING_OTP":
-            if text_lower == session["otp"]:
+            if msg_type in ["text", "audio"] and text_lower == session["otp"]:
                 session["step"] = "AWAITING_NAME"
                 send_whatsapp_message(sender_phone, "✅ *OTP Verified!*\n\nKripya verification ke liye apna *Poora Naam* batayein.")
             else: send_whatsapp_message(sender_phone, "❌ Galat OTP. Kripya reception staff se sahi 4-digit OTP lekar type karein.")
             return
         if step == "AWAITING_NAME":
-            if len(user_text) > 2:
+            if msg_type in ["text", "audio"] and len(user_text) > 2:
                 session["name"] = user_text.strip()
                 session["step"] = "AWAITING_ID"
                 send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
@@ -500,9 +526,9 @@ def process_and_reply(message, sender_phone, msg_type):
             else: send_whatsapp_message(sender_phone, "⚠️ Kripya verification ke liye ID proof ki saaf *Photo (Image)* bhejein.")
             return
 
-    if not user_text: return
+    if msg_type not in ["text", "audio"] or not user_text: return
 
-    # 1. GREETINGS (POLITE, NO FOOD PUSH)
+    # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -598,7 +624,6 @@ def process_and_reply(message, sender_phone, msg_type):
         else:
             if is_inhouse:
                 total_price, corrected_order = resolve_item_price_and_name(user_text)
-                # 🔥 NEW CONFIRMATION STEP (Doesn't send to kitchen yet)
                 order_sessions[sender_phone] = {
                     "step": "AWAITING_CONFIRMATION",
                     "order": corrected_order,
@@ -660,7 +685,9 @@ def process_and_reply(message, sender_phone, msg_type):
 def handle_incoming_async(message, sender_phone, msg_type):
     try: 
         process_and_reply(message, sender_phone, msg_type)
-    except Exception as e: pass
+    except Exception as e: 
+        print(f"❌ [PROCESS ERROR]: {e}", flush=True)
+        traceback.print_exc()
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR
@@ -683,7 +710,7 @@ def monitor_guest_status_lifecycle():
                     if "CHECKED_IN" in status:
                         welcome_key = f"{phone}_{room}"
                         if welcome_key not in welcomed_guests:
-                            send_whatsapp_message(phone, f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\nRoom {room} me aapka swagat hai.\n📶 *Wi-Fi Password:* Ganga@2026")
+                            send_whatsapp_message(phone, f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\nRoom {room} me aapka swagat hai.")
                             welcomed_guests.add(welcome_key)
                             guest_first_seen[welcome_key] = time.time()
 
@@ -757,7 +784,8 @@ def handle_webhook():
         mark_message_as_read(msg_id)
         threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()
         
-    except Exception: pass
+    except Exception as e: 
+        print(f"❌ [WEBHOOK PARSE ERROR]: {e}", flush=True)
         
     return jsonify({"status": "success"}), 200
 

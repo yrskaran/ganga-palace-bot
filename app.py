@@ -200,12 +200,13 @@ def fetch_sheet_data_sync():
                         r_phone = re.sub(r"\D", "", str(row[4]))[-10:] if len(row)>4 else ""
                         r_status = str(row[5]).upper()
                         if r_phone:
-                            if "CHECKED_IN" in r_status:
+                            if "IN" in r_status and "OUT" not in r_status:
                                 welcomed_guests.add(f"{r_phone}_{r_num}")
                                 notified_30min.add(f"{r_phone}_{r_num}")
                                 if now_ist.hour >= 19:
                                     dinner_prompted.add(f"{r_phone}_{r_num}_{today_str}")
-                            elif "CHECKOUT" in r_status:
+                            # 🔥 FIX: CHECKOUT DETECTION
+                            elif "OUT" in r_status:
                                 checked_out_guests.add(f"{r_phone}_{r_num}_out")
 
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
@@ -271,20 +272,18 @@ def calculate_stay_nights(check_in_str):
         except ValueError: continue
     return 1
 
+# 🔥 FIX: BULLETPROOF GUEST STATUS DETECTION (Checks Exact Column)
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     for row in reversed(shared_store.get("rooms", [])):
-        vals = [str(v).strip() for v in row]
-        if any(clean_sender == re.sub(r"\D", "", v)[-10:] for v in vals if len(re.sub(r"\D", "", v)) >= 10):
-            status_col = "".join(v.upper() for v in vals if "IN" in v.upper() or "OUT" in v.upper())
-            if "IN" in status_col and "OUT" not in status_col:
-                return {
-                    "is_inhouse": True, "room": re.sub(r"\D", "", vals[0]) or "101",
-                    "name": vals[3] if len(vals) > 3 else "Guest",
-                    "price": re.sub(r"\D", "", vals[2]) or "1800"
-                }
-            elif "OUT" in status_col:
-                return {"is_inhouse": False, "status": "CHECKED_OUT", "name": vals[3] if len(vals) > 3 else "Guest"}
+        if len(row) >= 6:
+            phone_col = re.sub(r"\D", "", str(row[4]))[-10:]
+            if clean_sender == phone_col:
+                status_str = str(row[5]).upper()
+                if "OUT" in status_str:
+                    return {"is_inhouse": False, "status": "CHECKED_OUT", "name": str(row[3]).strip() if len(row)>3 else "Guest", "room": str(row[0])}
+                elif "IN" in status_str:
+                    return {"is_inhouse": True, "room": re.sub(r"\D", "", str(row[0])) or "101", "name": str(row[3]).strip() if len(row)>3 else "Guest", "price": re.sub(r"\D", "", str(row[2])) or "1800"}
     return None
 
 def get_guest_comprehensive_financials(room_number, sender_phone=""):
@@ -329,7 +328,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH & AI ENGINES (WITH FULL LOGS)
+# 3. DISPATCH & AI ENGINES
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
@@ -359,6 +358,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         if res.status_code not in [200, 201]: 
             print(f"❌ [META IMAGE ERROR] {res.status_code} - {res.text}", flush=True)
             send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+        else:
+            print(f"✅ [IMAGE SENT] to {clean_number}", flush=True)
     except Exception as e: 
         print(f"❌ [IMAGE NETWORK ERROR]: {e}", flush=True)
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
@@ -528,6 +529,8 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type not in ["text", "audio"] or not user_text: return
 
+    print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
+
     # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
@@ -632,6 +635,9 @@ def process_and_reply(message, sender_phone, msg_type):
                 reply_msg = f"Aapka order: *{corrected_order}* (Bill: ₹{total_price}).\nKya main ise confirm karke kitchen me bhej doon? (Haan / Nahi)"
                 send_whatsapp_message(sender_phone, reply_msg)
                 return
+            elif is_checkout:
+                send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏 Aapka check-out ho chuka hai. Agar aapko dobara booking karni hai toh 'check in' likhein.")
+                return
             else:
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
@@ -702,12 +708,12 @@ def monitor_guest_status_lifecycle():
 
             for row in shared_store.get("rooms", []):
                 vals = [str(v).strip() for v in row]
-                if len(vals) >= 5:
+                if len(vals) >= 6:
                     room, name, phone, status = re.sub(r"\D", "", vals[0]), vals[3], re.sub(r"\D", "", vals[4])[-10:] if len(vals) > 4 else "", vals[5].upper() if len(vals) > 5 else ""
                     if not phone: continue
                     room_phone_map[room] = phone
 
-                    if "CHECKED_IN" in status:
+                    if "IN" in status and "OUT" not in status:
                         welcome_key = f"{phone}_{room}"
                         if welcome_key not in welcomed_guests:
                             send_whatsapp_message(phone, f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\nRoom {room} me aapka swagat hai.")
@@ -723,7 +729,7 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(phone, f"Good Evening {name} ji! 🌙\nDinner ka samay ho gaya hai. Kya hum Garma-garam Khana room me bhej dein?\nMenu dekhne ke liye 'menu' type karein! 🍽️")
                             dinner_prompted.add(dinner_key)
 
-                    elif "CHECKOUT" in status:
+                    elif "OUT" in status:
                         checkout_key = f"{phone}_{room}_out"
                         if checkout_key not in checked_out_guests:
                             send_whatsapp_message(phone, f"Namaste {name} ji! 🙏\nRoom {room} ka check-out complete ho gaya hai.\nHotel Ganga View me rukne ke liye dhanyawad! Shubh Yatra! 🚩🌸")

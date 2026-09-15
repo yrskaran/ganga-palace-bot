@@ -50,12 +50,15 @@ checkin_sessions = {}
 order_sessions = {}  
 active_orders = {}   
 
-# LIFECYCLE MEMORY
+# LIFECYCLE MEMORY (With New Proactive Alerts)
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
 guest_first_seen = {}
 notified_30min = set()
+breakfast_prompted = set()
+lunch_prompted = set()
+aarti_prompted = set()
 dinner_prompted = set()
 
 # SMART AUTO-CORRECT MENU MAPPING
@@ -203,9 +206,11 @@ def fetch_sheet_data_sync():
                             if "IN" in r_status and "OUT" not in r_status:
                                 welcomed_guests.add(f"{r_phone}_{r_num}")
                                 notified_30min.add(f"{r_phone}_{r_num}")
-                                if now_ist.hour >= 19:
-                                    dinner_prompted.add(f"{r_phone}_{r_num}_{today_str}")
-                            # 🔥 FIX: CHECKOUT DETECTION
+                                # 🔥 FULL DAY ANTI-SPAM (For Breakfast, Lunch, Aarti, Dinner)
+                                if now_ist.hour >= 10: breakfast_prompted.add(f"{r_phone}_{r_num}_{today_str}")
+                                if now_ist.hour >= 15: lunch_prompted.add(f"{r_phone}_{r_num}_{today_str}")
+                                if now_ist.hour >= 18: aarti_prompted.add(f"{r_phone}_{r_num}_{today_str}")
+                                if now_ist.hour >= 21: dinner_prompted.add(f"{r_phone}_{r_num}_{today_str}")
                             elif "OUT" in r_status:
                                 checked_out_guests.add(f"{r_phone}_{r_num}_out")
 
@@ -272,7 +277,6 @@ def calculate_stay_nights(check_in_str):
         except ValueError: continue
     return 1
 
-# 🔥 FIX: BULLETPROOF GUEST STATUS DETECTION (Checks Exact Column)
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
     for row in reversed(shared_store.get("rooms", [])):
@@ -529,9 +533,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type not in ["text", "audio"] or not user_text: return
 
-    print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
-
-    # 1. GREETINGS
+    # 1. GREETINGS (NO FOOD PUSH, NO SPAM WIFI)
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -696,15 +698,21 @@ def handle_incoming_async(message, sender_phone, msg_type):
         traceback.print_exc()
 
 # ==========================================
-# 5. PROACTIVE LIFECYCLE MONITOR
+# 5. FULL PROACTIVE LIFECYCLE MONITOR
 # ==========================================
 def monitor_guest_status_lifecycle():
     while True:
         try:
-            room_phone_map = {}
             now_ist = datetime.now(IST)
             today_str = now_ist.strftime("%Y-%m-%d")
-            is_dinner_time = 19 <= now_ist.hour <= 21
+            hour = now_ist.hour
+            
+            is_breakfast_time = 8 <= hour <= 10
+            is_lunch_time = 13 <= hour <= 15
+            is_aarti_time = 17 <= hour < 18  # 5 PM to 6 PM
+            is_dinner_time = 19 <= hour <= 21
+
+            room_phone_map = {}
 
             for row in shared_store.get("rooms", []):
                 vals = [str(v).strip() for v in row]
@@ -714,6 +722,7 @@ def monitor_guest_status_lifecycle():
                     room_phone_map[room] = phone
 
                     if "IN" in status and "OUT" not in status:
+                        # 1. 30-MIN WELCOME
                         welcome_key = f"{phone}_{room}"
                         if welcome_key not in welcomed_guests:
                             send_whatsapp_message(phone, f"Welcome to Hotel Ganga View, {name} ji! 🏨✨\nRoom {room} me aapka swagat hai.")
@@ -724,6 +733,25 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(phone, f"Namaste {name} ji! 🌸\nAapko check-in kiye hue aadha ghanta ho gaya hai. Ummid hai sab theek hoga.\nAgar towel, sabun, ya TV remote waghera chahiye ho, toh bejhijhak yahan message karein! 🙏")
                             notified_30min.add(welcome_key)
 
+                        # 2. BREAKFAST PROMPT
+                        bkfst_key = f"{phone}_{room}_{today_str}"
+                        if is_breakfast_time and bkfst_key not in breakfast_prompted:
+                            send_whatsapp_message(phone, f"Good Morning {name} ji! ☀️\nBreakfast ka samay ho gaya hai. Chai, Coffee ya Aloo Paratha order karne ke liye 'menu' type karein! ☕")
+                            breakfast_prompted.add(bkfst_key)
+                            
+                        # 3. LUNCH PROMPT
+                        lunch_key = f"{phone}_{room}_{today_str}"
+                        if is_lunch_time and lunch_key not in lunch_prompted:
+                            send_whatsapp_message(phone, f"Good Afternoon {name} ji! 🍛\nLunch ka samay ho gaya hai. Garma-garam khane ke liye 'menu' type karein!")
+                            lunch_prompted.add(lunch_key)
+                            
+                        # 4. GANGA AARTI PROMPT (5 PM - 6 PM)
+                        aarti_key = f"{phone}_{room}_{today_str}"
+                        if is_aarti_time and aarti_key not in aarti_prompted:
+                            send_whatsapp_message(phone, f"Har Har Gange {name} ji! 🙏\nShaam ki Ganga Aarti ka samay hone wala hai (6:00 PM). Ghat par jane ka plan bana lijiye! 🌺")
+                            aarti_prompted.add(aarti_key)
+
+                        # 5. DINNER PROMPT
                         dinner_key = f"{phone}_{room}_{today_str}"
                         if is_dinner_time and dinner_key not in dinner_prompted:
                             send_whatsapp_message(phone, f"Good Evening {name} ji! 🌙\nDinner ka samay ho gaya hai. Kya hum Garma-garam Khana room me bhej dein?\nMenu dekhne ke liye 'menu' type karein! 🍽️")
@@ -735,6 +763,7 @@ def monitor_guest_status_lifecycle():
                             send_whatsapp_message(phone, f"Namaste {name} ji! 🙏\nRoom {room} ka check-out complete ho gaya hai.\nHotel Ganga View me rukne ke liye dhanyawad! Shubh Yatra! 🚩🌸")
                             checked_out_guests.add(checkout_key)
 
+            # 6. BILLING NOTIFICATIONS
             for idx, k_row in enumerate(shared_store.get("kitchen_orders", []), start=2):
                 if len(k_row) >= 6:
                     k_room, k_item, k_amt, k_status = re.sub(r"\D", "", k_row[1]), k_row[3], re.sub(r"\D", "", k_row[4]) or "0", k_row[5].upper()
@@ -745,7 +774,8 @@ def monitor_guest_status_lifecycle():
                         if guest_ph:
                             send_whatsapp_message(guest_ph, f"✅ *Payment Received*\nNamaste ji! Room {k_room} ke liye ₹{k_amt} ({k_item}) ki payment receive ho gayi hai. 🙏")
                             notified_paid_orders.add(unique_order_key)
-        except Exception: pass
+        except Exception as e: 
+            print(f"❌ [LIFECYCLE ERROR]: {e}", flush=True)
         time.sleep(15)
 
 # ==========================================

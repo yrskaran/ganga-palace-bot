@@ -51,8 +51,8 @@ RENDER_EXTERNAL_URL = os.getenv(
 
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
-APP_VERSION = "GANGA-V7"
-ENABLE_PAYMENT_NOTIFICATIONS = os.getenv("ENABLE_PAYMENT_NOTIFICATIONS", "false").strip().lower() == "true"
+APP_VERSION = "GANGA-V8"
+ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
 
 # -----------------------------
 # HOTEL DATA
@@ -79,6 +79,7 @@ order_sessions = {}
 checkin_sessions = {}
 service_sessions = {}
 active_orders = {}
+last_bill_reply = {}
 
 welcomed_guests = set()
 guest_first_seen = {}
@@ -1880,6 +1881,14 @@ def process_and_reply(message, sender_phone, msg_type):
         "bill", "total", "hisaab", "hisab", "kharcha",
         "balance", "due", "paid", "kitna hua"
     ]):
+        # Prevent duplicate replies when the same WhatsApp webhook is retried.
+        bill_key = f"{sender_phone}:{t}"
+        now_ts = time.time()
+        with state_lock:
+            previous_bill = last_bill_reply.get(bill_key, 0)
+            if now_ts - previous_bill < 8:
+                return
+            last_bill_reply[bill_key] = now_ts
         if is_inhouse:
             # Refresh live kitchen data before financial response.
             fetch_sheet_data_sync()
@@ -2106,74 +2115,10 @@ def build_paid_payment_message(name, room, orders):
     )
 
 
-def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
-    """
-    Payment messages are OFF by default.
-    When explicitly enabled, only a status transition observed AFTER startup
-    can generate a notification. Existing PAID rows are silently seeded.
-    """
-    global payment_monitor_initialized
-
-    if not ENABLE_PAYMENT_NOTIFICATIONS:
-        # Keep state synchronized but never message guests.
-        current_status = {}
-        for row in kitchen_rows:
-            if len(row) >= 6:
-                current_status[kitchen_order_fingerprint(row)] = str(row[5]).strip().upper()
-        with state_lock:
-            payment_status_cache.clear()
-            payment_status_cache.update(current_status)
-            payment_monitor_initialized = True
-        return
-
-    current_status = {}
-    newly_paid = {}
-
-    for row in kitchen_rows:
-        if len(row) < 6:
-            continue
-
-        fingerprint = kitchen_order_fingerprint(row)
-        status = str(row[5]).strip().upper()
-        current_status[fingerprint] = status
-
-        amount = safe_int(row[4])
-        if amount <= 0 or "PAID" not in status:
-            continue
-
-        previous = payment_status_cache.get(fingerprint)
-
-        # First snapshot: seed only. NEVER notify historical PAID rows.
-        if not payment_monitor_initialized:
-            continue
-
-        # A notification requires a previously observed non-PAID state.
-        if previous is not None and "PAID" not in previous:
-            room = clean_room(row[1])
-            phone = room_phone_map.get(room)
-            if phone:
-                newly_paid.setdefault(room, []).append({
-                    "item": str(row[3]).strip() or "Kitchen Order",
-                    "amount": amount,
-                    "phone": phone,
-                })
-
-    # Commit state before sending.
-    with state_lock:
-        payment_status_cache.clear()
-        payment_status_cache.update(current_status)
-        payment_monitor_initialized = True
-
-    for room, orders in newly_paid.items():
-        phone = orders[0]["phone"]
-        send_whatsapp_message(
-            phone,
-            build_paid_payment_message(
-                room_name_map.get(room, "Guest"),
-                room,
-                orders
-            )
-        )
+def process_payment_notifications(*_args, **_kwargs):
+    # Intentionally disabled. Payment status changes are shown only inside
+    # the guest-requested bill; never proactively message the guest.
+    return
 
 
 def monitor_guest_status_lifecycle():
@@ -2277,9 +2222,7 @@ def monitor_guest_status_lifecycle():
                             f"Namaste {name} ji! Hotel Ganga View me rukne ke liye dhanyawad. Shubh Yatra!"
                         )
                         checked_out_guests.add(out_key)
-
-            # Payment notification: only when an existing order changes to PAID.
-            process_payment_notifications(kitchen_rows, room_phone_map, room_name_map)
+            # Proactive payment notifications are intentionally disabled.
 
         except Exception as exc:
             print("LIFECYCLE ERROR:", exc, flush=True)
@@ -2293,7 +2236,7 @@ def monitor_guest_status_lifecycle():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Hotel Ganga View WhatsApp Bot is Live!", 200
+    return f"Hotel Ganga View WhatsApp Bot is Live | {APP_VERSION}", 200
 
 
 @app.route("/health", methods=["GET"])

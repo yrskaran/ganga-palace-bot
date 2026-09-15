@@ -51,7 +51,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
-APP_VERSION = "GANGA-V9"
+APP_VERSION = "GANGA-V10"
 ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
 
 # -----------------------------
@@ -426,6 +426,99 @@ def get_hotel_config():
 
 def get_hotel_menu():
     return get_hotel_config().get("menu", {})
+
+
+def _parse_media_sections(raw):
+    photos = {}
+    maps = {}
+    section = ""
+
+    for raw_line in str(raw or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        upper = line.upper()
+
+        if upper.startswith("PHOTOS & MEDIA"):
+            section = "photos"
+            continue
+        if upper.startswith("GOOGLE MAPS"):
+            section = "maps"
+            continue
+        if upper.startswith("LOCAL GUIDE RULES") or upper.startswith("=================================================="):
+            # Separator lines do not necessarily mean a new section.
+            if upper != "==================================================":
+                section = ""
+            continue
+
+        m = re.match(r"^([^:]{2,80})\s*:\s*(https?://\S+)\s*$", line)
+        if not m:
+            continue
+
+        key = re.sub(r"\s+", " ", m.group(1).strip().lower())
+        url = m.group(2).strip().rstrip(",")
+        if section == "photos":
+            photos[key] = url
+        elif section == "maps":
+            maps[key] = url
+
+    return {"photos": photos, "maps": maps}
+
+
+def get_hotel_media():
+    # Live-read media values so a hotel admin can change URLs without code edits.
+    raw = get_hotel_data()
+    return _parse_media_sections(raw)
+
+
+def get_hotel_photo(kind):
+    media = get_hotel_media().get("photos", {})
+    k = re.sub(r"\s+", " ", str(kind or "").strip().lower())
+
+    aliases = {
+        "outside": "exterior",
+        "hotel": "exterior",
+        "front": "exterior",
+        "main": "exterior",
+        "room": "deluxe room",
+        "deluxe": "deluxe room",
+        "super deluxe": "super deluxe room",
+        "family": "family suite",
+        "family room": "family suite",
+    }
+    k = aliases.get(k, k)
+
+    if k in media:
+        return media[k]
+
+    for name, url in media.items():
+        if k in name or name in k:
+            return url
+    return None
+
+
+def get_hotel_map(place="hotel"):
+    maps = get_hotel_media().get("maps", {})
+    k = re.sub(r"\s+", " ", str(place or "").strip().lower())
+
+    aliases = {
+        "location": "hotel",
+        "hotel location": "hotel",
+        "har ki pauri": "har ki pauri",
+        "aarti": "har ki pauri",
+        "mansa devi": "mansa devi temple",
+        "chandi devi": "chandi devi temple",
+    }
+    k = aliases.get(k, k)
+
+    if k in maps:
+        return maps[k]
+
+    for name, url in maps.items():
+        if k in name or name in k:
+            return url
+    return None
 
 
 def get_room_categories():
@@ -1831,28 +1924,33 @@ def process_and_reply(message, sender_phone, msg_type):
     # ========================================================
     if any(x in t for x in [
         "room photo", "room photos", "room dikhao",
-        "photos", "photo", "room pic", "room ki photo"
+        "photos", "photo", "room pic", "room ki photo",
+        "family room", "deluxe room", "super deluxe"
     ]):
-        send_whatsapp_image(
-            sender_phone,
-            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg",
-            "Hotel Ganga View - Exterior"
-        )
-        send_whatsapp_image(
-            sender_phone,
-            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg",
-            "Room photo"
-        )
-        send_whatsapp_image(
-            sender_phone,
-            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg",
-            "Deluxe room"
-        )
-        send_whatsapp_image(
-            sender_phone,
-            "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg",
-            "Family room"
-        )
+        requested_photo = "exterior"
+        if "family" in t:
+            requested_photo = "family suite"
+        elif "super deluxe" in t:
+            requested_photo = "super deluxe room"
+        elif "deluxe" in t:
+            requested_photo = "deluxe room"
+        elif any(x in t for x in ["hotel", "outside", "bahar"]):
+            requested_photo = "exterior"
+
+        photo_url = get_hotel_photo(requested_photo)
+        if photo_url:
+            caption = requested_photo.title()
+            send_whatsapp_image(sender_phone, photo_url, f"🏨 {caption}")
+        else:
+            send_whatsapp_message(
+                sender_phone,
+                bilingual_text(
+                    sender_phone,
+                    "Sorry, that photo is not configured yet. Reception can share it with you.",
+                    "Ji, is room ki photo abhi configured nahi hai. Reception se share karwa deta hoon.",
+                    "जी, इस कमरे की फोटो अभी configured नहीं है। Reception से share करवा देता हूँ।"
+                )
+            )
         return
 
     # ========================================================
@@ -2143,6 +2241,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
         traceback.print_exc()
 
 
+# CORE LIFECYCLE — DO NOT MOVE INTO HOTEL DATA
 # ============================================================
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================

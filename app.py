@@ -11,6 +11,8 @@ from datetime import datetime, timezone, timedelta
 import requests
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
 from flask import Flask, request, jsonify
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -40,7 +42,7 @@ shared_store = {
 
 chat_histories = {}
 processed_msg_ids = set()
-checkin_sessions = {}  # Tracks OTP and ID uploads
+checkin_sessions = {}
 
 # Lifecycle Tracking Variables
 welcomed_guests = set()
@@ -58,13 +60,11 @@ MENU_PRICES = {
     "shahi paneer": 240, "rice": 100, "jeera rice": 120, "water": 20, "mineral water": 20
 }
 
-# Advanced NLP Engine for Conversational Orders
 def resolve_item_price(order_text):
     text = str(order_text).lower()
     text = re.sub(r'[,.\n&]', ' ', text)
     total = 0
     found_any = False
-    
     sorted_menu = sorted(MENU_PRICES.keys(), key=len, reverse=True)
     
     for item in sorted_menu:
@@ -72,81 +72,112 @@ def resolve_item_price(order_text):
             qty = 1
             pattern = r'(\d+)\s*(?:plate|cup|bowl|portion|glass|piece)?\s*' + re.escape(item)
             matches = re.findall(pattern, text)
-            if matches:
-                qty = sum(int(m) for m in matches)
-            
+            if matches: qty = sum(int(m) for m in matches)
             total += (MENU_PRICES[item] * qty)
             found_any = True
             text = text.replace(item, "")
             
-    if not found_any:
-        return 30
-    return total
+    return total if found_any else 30
 
 def format_whatsapp_number(raw_phone):
     digits = re.sub(r"\D", "", str(raw_phone))
-    if len(digits) == 10:
-        return f"91{digits}"
-    elif len(digits) == 12 and digits.startswith("91"):
-        return digits
-    elif len(digits) > 10:
-        return f"91{digits[-10:]}"
+    if len(digits) == 10: return f"91{digits}"
+    elif len(digits) == 12 and digits.startswith("91"): return digits
+    elif len(digits) > 10: return f"91{digits[-10:]}"
     return None
 
 # ==========================================
-# 2. CORE GSPREAD DATA ENGINE
+# 2. GOOGLE DRIVE & GSPREAD ENGINE
 # ==========================================
-def get_gspread_client():
+def get_credentials():
     if not GOOGLE_SERVICE_ACCOUNT_JSON: return None
     try:
         creds_dict = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        return gspread.authorize(Credentials.from_service_account_info(creds_dict, scopes=scopes))
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     except Exception as e:
-        print(f"[GSPREAD AUTH ERROR]: {e}", flush=True)
+        print(f"[CREDS ERROR]: {e}", flush=True)
         return None
 
+def get_gspread_client():
+    creds = get_credentials()
+    return gspread.authorize(creds) if creds else None
+
+def upload_image_to_google_drive(image_bytes, file_name):
+    try:
+        creds = get_credentials()
+        if not creds: return "No_Credentials"
+        service = build('drive', 'v3', credentials=creds)
+        
+        # Search for folder named 'Guest_IDs' created by service account
+        query = "mimeType = 'application/vnd.google-apps.folder' and name = 'Guest_IDs' and trashed = false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        folders = results.get('files', [])
+        
+        folder_id = None
+        if folders:
+            folder_id = folders[0]['id']
+        else:
+            # Create folder if it doesn't exist
+            folder_metadata = {'name': 'Guest_IDs', 'mimeType': 'application/vnd.google-apps.folder'}
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
+            folder_id = folder.get('id')
+            
+        file_metadata = {'name': file_name, 'parents': [folder_id]}
+        media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg', resumable=True)
+        file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        
+        # Make file viewable via link
+        service.permissions().create(fileId=file.get('id'), body={'role': 'reader', 'type': 'anyone'}).execute()
+        return file.get('webViewLink', 'Uploaded')
+    except Exception as e:
+        print(f"[DRIVE UPLOAD ERROR]: {e}", flush=True)
+        return "Upload_Failed"
+
+def download_whatsapp_media(media_id):
+    try:
+        token = (WHATSAPP_TOKEN or "").strip()
+        headers = {"Authorization": f"Bearer {token}"}
+        # 1. Get media URL
+        meta_res = requests.get(f"https://graph.facebook.com/v20.0/{media_id}", headers=headers, timeout=10)
+        if meta_res.status_code == 200:
+            media_url = meta_res.json().get("url")
+            if media_url:
+                # 2. Download actual binary bytes
+                img_res = requests.get(media_url, headers=headers, timeout=15)
+                if img_res.status_code == 200:
+                    return img_res.content
+    except Exception as e:
+        print(f"[MEDIA DOWNLOAD ERROR]: {e}", flush=True)
+    return None
+
 def fetch_sheet_data_sync():
-    print("[SYSTEM] Performing initial data fetch...", flush=True)
     client = get_gspread_client()
     if client:
         try:
             sh = client.open_by_key(SHEET_ID)
             r_data = sh.get_worksheet(0).get_all_values()
             if len(r_data) > 1: shared_store["rooms"] = r_data[1:]
-                
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
             if len(k_data) > 1: shared_store["kitchen_orders"] = k_data[1:]
-                
-            for idx, k_row in enumerate(shared_store.get("kitchen_orders", []), start=2):
-                if len(k_row) >= 6:
-                    k_room = re.sub(r"\D", "", str(k_row[1]))
-                    k_amt = re.sub(r"\D", "", str(k_row[4])) or "0"
-                    if "PAID" in str(k_row[5]).upper() and int(k_amt) > 0:
-                        notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
-                        
             shared_store["last_synced"] = time.time()
-            print(f"[BOOT SUCCESS] Loaded {len(shared_store['rooms'])} Rooms.", flush=True)
         except Exception: pass
 
 def sync_sheets_in_background():
-    client = get_gspread_client()
     while True:
         try:
-            if not client: client = get_gspread_client()
+            client = get_gspread_client()
             if client:
                 sh = client.open_by_key(SHEET_ID)
-                try:
-                    r_data = sh.get_worksheet(0).get_all_values()
-                    if len(r_data) > 1: shared_store["rooms"] = r_data[1:]
+                try: shared_store["rooms"] = sh.get_worksheet(0).get_all_values()[1:]
                 except Exception: pass
-                
-                try:
-                    k_data = sh.worksheet("Kitchen_Orders").get_all_values()
-                    if len(k_data) > 1: shared_store["kitchen_orders"] = k_data[1:]
+                try: shared_store["kitchen_orders"] = sh.worksheet("Kitchen_Orders").get_all_values()[1:]
                 except Exception: pass
                 shared_store["last_synced"] = time.time()
-        except Exception: client = None
+        except Exception: pass
         time.sleep(15)
 
 def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
@@ -156,15 +187,13 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         clean_amt = int(re.sub(r"\D", "", str(amount)) or 0)
         if clean_amt <= 0: clean_amt = resolve_item_price(order_details)
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
-        now_str = datetime.now(IST).strftime("%d-%b %I:%M %p")
-        sheet.append_row([now_str, str(room), str(guest_name), str(order_details), clean_amt, "PENDING"])
+        sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), clean_amt, "PENDING"])
     except Exception: pass
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str: return 1
-    clean_date = str(check_in_str).strip()
     for fmt in ["%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y"]:
-        try: return max(1, (datetime.now(IST).date() - datetime.strptime(clean_date, fmt).date()).days)
+        try: return max(1, (datetime.now(IST).date() - datetime.strptime(str(check_in_str).strip(), fmt).date()).days)
         except ValueError: continue
     return 1
 
@@ -176,8 +205,7 @@ def get_guest_stay_status(sender_phone):
             status_col = "".join(v.upper() for v in vals if "IN" in v.upper() or "OUT" in v.upper())
             if "IN" in status_col and "OUT" not in status_col:
                 return {
-                    "is_inhouse": True,
-                    "room": re.sub(r"\D", "", vals[0]) or "101",
+                    "is_inhouse": True, "room": re.sub(r"\D", "", vals[0]) or "101",
                     "category": vals[1] if len(vals) > 1 else "Deluxe",
                     "price": re.sub(r"\D", "", vals[2]) or "1800",
                     "name": vals[3] if len(vals) > 3 else "Guest",
@@ -285,7 +313,7 @@ def process_and_reply(message, sender_phone, msg_type):
     is_checkout = guest_info and guest_info.get("status") == "CHECKED_OUT"
     guest_name = guest_info["name"] if guest_info else "Guest"
 
-    # --- SELF CHECK-IN STATE MACHINE ---
+    # --- SELF CHECK-IN STATE MACHINE WITH GOOGLE DRIVE UPLOAD ---
     if sender_phone in checkin_sessions:
         session = checkin_sessions[sender_phone]
         step = session["step"]
@@ -302,16 +330,24 @@ def process_and_reply(message, sender_phone, msg_type):
             if msg_type == "text" and len(user_text) > 2:
                 session["name"] = user_text.strip()
                 session["step"] = "AWAITING_ID"
-                send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki photo click karke yahan bhejein. 📸")
+                send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
             else:
                 send_whatsapp_message(sender_phone, "Kripya apna sahi naam text me likhein.")
             return
 
         if step == "AWAITING_ID":
             if msg_type == "image":
-                img_id = message.get("image", {}).get("id", "No_ID")
+                media_id = message.get("image", {}).get("id")
+                send_whatsapp_message(sender_phone, "🔄 Aapki ID upload ki ja rahi hai, kripya 2 second pratiksha karein...")
                 
-                # Assign Room (Finds first checked-out room, else defaults to 105)
+                # Download image from WhatsApp & Upload to Google Drive
+                img_bytes = download_whatsapp_media(media_id)
+                drive_link = "No_Image"
+                if img_bytes:
+                    file_name = f"ID_{session['name'].replace(' ', '_')}_{sender_phone}.jpg"
+                    drive_link = upload_image_to_google_drive(img_bytes, file_name)
+                
+                # Assign Room
                 assigned_room = "105"
                 for row in shared_store.get("rooms", []):
                     if len(row) >= 6 and "OUT" in str(row[5]).upper():
@@ -323,18 +359,17 @@ def process_and_reply(message, sender_phone, msg_type):
                     try:
                         sheet = client.open_by_key(SHEET_ID).get_worksheet(0)
                         date_str = datetime.now(IST).strftime("%d-%m-%Y")
-                        sheet.append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", date_str, f"Meta Media ID: {img_id}"])
+                        sheet.append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", date_str, drive_link])
                     except Exception as e:
                         print(f"[ROOM APPEND ERROR]: {e}", flush=True)
                 
                 send_whatsapp_message(sender_phone, f"🎉 *Check-in Successful!*\n\nAapka room *{assigned_room}* assign ho gaya hai.\nWelcome to Hotel Ganga View! 🏨✨\n\nAb aap directly room service order kar sakte hain. Menu ke liye 'menu' type karein.")
-                send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}")
+                send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}\n📂 ID Link: {drive_link}")
                 del checkin_sessions[sender_phone]
             else:
                 send_whatsapp_message(sender_phone, "⚠️ Kripya verification ke liye ID proof ki saaf *Photo (Image)* bhejein.")
             return
 
-    # Ignore random non-text messages if not in check-in state
     if msg_type != "text": return
 
     # Trigger Self Check-in
@@ -392,9 +427,11 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 4. IN-HOUSE FOOD ORDER (NLP POWERED)
+    # 4. IN-HOUSE FOOD ORDER
     is_complaint = any(cw in text_lower for cw in ["thandi", "kharab", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat"])
-    if any(w in text_lower for w in ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi"]) and not is_complaint:
+    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi"]
+    
+    if any(w in text_lower for w in food_words) and not is_complaint:
         if is_inhouse:
             total_price = resolve_item_price(user_text)
             threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], user_text, total_price), daemon=True).start()

@@ -44,9 +44,13 @@ shared_store = {
 
 chat_histories = {}
 processed_msg_ids = set()
-checkin_sessions = {}
 
-# MEMORY SETS
+# STATE MEMORY
+checkin_sessions = {}
+order_sessions = {}  # For confirmation before sending to kitchen
+active_orders = {}   # For 5-minute cancellation window
+
+# LIFECYCLE MEMORY
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -60,18 +64,19 @@ MENU_MAPPING = {
     "aloo paratha": ("Aloo Paratha", 90), "paratha": ("Aloo Paratha", 90),
     "poha": ("Poha", 70), "chole bhature": ("Chole Bhature", 120), "bhature": ("Chole Bhature", 120),
     "dahi": ("Dahi", 70), "green salad": ("Green Salad", 50), "salad": ("Green Salad", 50),
-    "butter roti": ("Butter Roti", 20), "roti": ("Tawa Roti", 15),
+    "butter roti": ("Butter Roti", 20), "tawa roti": ("Tawa Roti", 15), "roti": ("Tawa Roti", 15),
+    "chapati": ("Tawa Roti", 15), "bread": ("Tawa Roti", 15),
     "dal tadka": ("Dal Fry", 160), "dal fry": ("Dal Fry", 160),
     "dal makhani": ("Dal Makhani", 190), "dal makhni": ("Dal Makhani", 190),
     "dal": ("Dal Fry", 160), 
     "kadai paneer": ("Kadhai Paneer", 240), "shahi paneer": ("Shahi Paneer", 240),
     "paneer": ("Kadhai Paneer", 220),
-    "jeera rice": ("Jeera Rice", 120), "rice": ("Plain Rice", 100),
+    "jeera rice": ("Jeera Rice", 120), "plain rice": ("Plain Rice", 100), "rice": ("Plain Rice", 100),
     "mineral water": ("Mineral Water", 20), "water": ("Mineral Water", 20), "pani": ("Mineral Water", 20),
     "jalebi": ("Jalebi", 30), "thali": ("Special Thali", 250)
 }
 
-# 🔥 INTERNAL HINDI TO HINGLISH TRANSLATOR (For Voice Notes)
+# INTERNAL HINDI TO HINGLISH TRANSLATOR
 def normalize_transcription(text):
     if not text: return ""
     text = text.lower()
@@ -82,8 +87,10 @@ def normalize_transcription(text):
         "थाली": "thali", "जलेबी": "jalebi", "खाना": "khana",
         "तौलिया": "towel", "साबुन": "sabun", "कंबल": "kambal", "सफाई": "safai",
         "कचरा": "kachra", "चूहा": "mouse", "मदद": "help", "बिल": "bill", "चेकआउट": "checkout",
+        "तवा": "tawa", "तवा रोटी": "tawa roti", "बटर रोटी": "butter roti",
         "एक": "1", "दो": "2", "तीन": "3", "चार": "4", "पांच": "5", "पाँच": "5",
-        "१": "1", "२": "2", "३": "3", "४": "4", "५": "5", "६": "6", "७": "7", "८": "8", "९": "9"
+        "छह": "6", "सात": "7", "आठ": "8", "नौ": "9", "दस": "10",
+        "१": "1", "२": "2", "३": "3", "४": "4", "५": "5", "६": "6", "७": "7", "८": "8", "९": "9", "०": "0"
     }
     for k, v in mapping.items():
         text = text.replace(k, v)
@@ -91,7 +98,6 @@ def normalize_transcription(text):
 
 def resolve_item_price_and_name(order_text):
     text = str(order_text).lower()
-    # Handle both English & Hinglish words for numbers
     text = re.sub(r'\bek\b|\bone\b', '1', text)
     text = re.sub(r'\bdo\b|\btwo\b', '2', text)
     text = re.sub(r'\bteen\b|\bthree\b', '3', text)
@@ -107,9 +113,15 @@ def resolve_item_price_and_name(order_text):
     for key in sorted_keys:
         if key in text:
             qty = 1
-            pattern = r'(\d+)\s*(?:plate|cup|bowl|portion|glass|piece)?\s*' + re.escape(key)
-            matches = re.findall(pattern, text)
-            if matches: qty = sum(int(m) for m in matches)
+            pattern_before = r'(\d+)\s*(?:plate|cup|bowl|portion|glass|piece|aur|and)?\s*' + re.escape(key)
+            matches_before = re.findall(pattern_before, text)
+            if matches_before:
+                qty = sum(int(m) for m in matches_before)
+            else:
+                pattern_after = re.escape(key) + r'\s*(?:plate|cup|bowl|portion|glass|piece|aur|and|kar|do|dedo|de)?\s*(\d+)'
+                matches_after = re.findall(pattern_after, text)
+                if matches_after:
+                    qty = sum(int(m) for m in matches_after)
             
             std_name, price = MENU_MAPPING[key]
             total += (price * qty)
@@ -150,9 +162,7 @@ def upload_image_to_google_drive(image_bytes, file_name):
         query = "mimeType = 'application/vnd.google-apps.folder' and name = 'Guest_IDs' and trashed = false"
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
         folders = results.get('files', [])
-        
         folder_id = folders[0]['id'] if folders else service.files().create(body={'name': 'Guest_IDs', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute().get('id')
-            
         file_metadata = {'name': file_name, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg', resumable=True)
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
@@ -230,6 +240,23 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), int(amount), "PENDING"])
     except Exception: pass
+
+# 🔥 NEW: FUNCTION TO CANCEL ORDER IN SHEET
+def cancel_kitchen_order_in_sheet(room, order_details):
+    client = get_gspread_client()
+    if not client: return
+    try:
+        sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
+        records = sheet.get_all_values()
+        # Find the latest matching pending order from the bottom
+        for i in range(len(records)-1, 0, -1):
+            row = records[i]
+            if len(row) >= 6:
+                if str(room) in str(row[1]) and str(order_details) in str(row[3]) and "PENDING" in str(row[5]).upper():
+                    # Update status column (6th col) to CANCELLED
+                    sheet.update_cell(i + 1, 6, "CANCELLED")
+                    break
+    except Exception as e: print(f"[SHEET CANCEL ERROR]: {e}", flush=True)
 
 def calculate_stay_nights(check_in_str):
     if not check_in_str: return 1
@@ -331,7 +358,11 @@ def transcribe_audio_groq(audio_bytes):
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     files = {"file": ("voice_note.ogg", audio_bytes, "audio/ogg")}
-    data = {"model": "whisper-large-v3", "response_format": "json"}
+    data = {
+        "model": "whisper-large-v3", 
+        "response_format": "json",
+        "prompt": "Hindi and Hinglish hotel food order: roti, tawa roti, dal fry, chai, pani, 1, 2, 3, 4, char, ek, do, teen, sabun, towel, bhej do, room service"
+    }
     try:
         res = requests.post(url, headers=headers, files=files, data=data, timeout=15)
         if res.status_code == 200: return res.json().get("text", "").strip()
@@ -359,25 +390,21 @@ def ask_cohere(user_message):
     return None
 
 # ==========================================
-# 4. MESSAGE ROUTER & SELF CHECK-IN
+# 4. MESSAGE ROUTER & LOGIC
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
     
-    # 🔥 VOICE NOTE HANDLER (Groq integration + Auto-Translation)
+    # VOICE NOTE HANDLER (Groq integration + Auto-Translation)
     if msg_type == "audio":
         media_id = message.get("audio", {}).get("id")
         audio_bytes = download_whatsapp_media(media_id)
         if audio_bytes and GROQ_API_KEY:
             raw_text = transcribe_audio_groq(audio_bytes)
-            user_text = normalize_transcription(raw_text) # Coverts Hindi script to English keywords
-            
+            user_text = normalize_transcription(raw_text)
         if not user_text:
-            reply_msg = "Kshama karein, aapki aawaz theek se sunai nahi di. Kripya apna message likh kar bhejein. 🙏"
-            send_whatsapp_message(sender_phone, reply_msg)
+            send_whatsapp_message(sender_phone, "Kshama karein, aapki aawaz theek se sunai nahi di. Kripya apna message likh kar bhejein. 🙏")
             return
-        else:
-            print(f"[VOICE TRANSCRIBED] {sender_phone}: '{user_text}'", flush=True)
 
     elif msg_type == "text":
         user_text = message.get("text", {}).get("body", "")
@@ -389,18 +416,65 @@ def process_and_reply(message, sender_phone, msg_type):
     is_checkout = guest_info and guest_info.get("status") == "CHECKED_OUT"
     guest_name = guest_info["name"] if guest_info else "Guest"
 
+    # --- 5-MINUTE ORDER CANCELLATION CHECK ---
+    if "cancel" in text_lower and any(w in text_lower for w in ["order", "khana", "food", "kardo"]):
+        if sender_phone in active_orders:
+            order_data = active_orders[sender_phone]
+            # Check if within 5 minutes (300 seconds)
+            if time.time() - order_data["time"] <= 300:
+                threading.Thread(target=cancel_kitchen_order_in_sheet, args=(guest_info['room'], order_data['order']), daemon=True).start()
+                send_whatsapp_message(KITCHEN_PHONE, f"🚨 *ORDER CANCELLED*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Cancelled Item: {order_data['order']}")
+                send_whatsapp_message(sender_phone, f"✅ Aapka order ({order_data['order']}) successfully cancel kar diya gaya hai. 🙏")
+                del active_orders[sender_phone]
+                return
+            else:
+                send_whatsapp_message(sender_phone, "⚠️ Maaf kijiye, order kiye hue 5 minute se zyada ho chuke hain isliye bot se cancel nahi ho sakta. Kripya reception par call karein.")
+                del active_orders[sender_phone]
+                return
+        else:
+            send_whatsapp_message(sender_phone, "Aapka koi recent active order nahi hai jise cancel kiya ja sake.")
+            return
+
+    # --- ORDER CONFIRMATION STATE MACHINE ---
+    if sender_phone in order_sessions:
+        session = order_sessions[sender_phone]
+        if session["step"] == "AWAITING_CONFIRMATION":
+            # If user confirms the order
+            if any(w in text_lower for w in ["haan", "yes", "y", "confirm", "ha", "thik", "theek", "ok", "kardo", "bhej"]):
+                corrected_order = session["order"]
+                total_price = session["total"]
+                
+                threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], corrected_order, total_price), daemon=True).start()
+                send_whatsapp_message(KITCHEN_PHONE, f"🍳 *NEW ROOM SERVICE ORDER*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Order: {corrected_order}\n💰 Amount: ₹{total_price}\n📞 Contact: +{sender_phone}")
+                
+                send_whatsapp_message(sender_phone, f"✅ Aapka order confirm ho gaya hai!\n🍽️ Item: {corrected_order}\n💰 Bill: ₹{total_price}\n\nAgli 15-20 minutes me deliver ho jayega. 🙏\n*(Note: Agar aap galti se order kar baithe hain, toh agle 5 minute tak 'Cancel order' likh kar ise cancel kar sakte hain)*")
+                
+                # Save to active orders for cancellation window
+                active_orders[sender_phone] = {"order": corrected_order, "total": total_price, "time": time.time()}
+                del order_sessions[sender_phone]
+                return
+            
+            # If user rejects the order
+            elif any(w in text_lower for w in ["nahi", "no", "n", "mat", "cancel", "rehne"]):
+                send_whatsapp_message(sender_phone, "❌ Theek hai, order cancel kar diya gaya hai. Kuch aur chahiye toh batayein.")
+                del order_sessions[sender_phone]
+                return
+            else:
+                send_whatsapp_message(sender_phone, "Kripya 'Haan' (Yes) ya 'Nahi' (No) likh kar bataein ki kya aap order confirm karna chahte hain?")
+                return
+
     # --- SELF CHECK-IN STATE MACHINE ---
     if sender_phone in checkin_sessions:
         session = checkin_sessions[sender_phone]
         step = session["step"]
         if step == "AWAITING_OTP":
-            if msg_type in ["text", "audio"] and text_lower == session["otp"]:
+            if text_lower == session["otp"]:
                 session["step"] = "AWAITING_NAME"
                 send_whatsapp_message(sender_phone, "✅ *OTP Verified!*\n\nKripya verification ke liye apna *Poora Naam* batayein.")
             else: send_whatsapp_message(sender_phone, "❌ Galat OTP. Kripya reception staff se sahi 4-digit OTP lekar type karein.")
             return
         if step == "AWAITING_NAME":
-            if msg_type in ["text", "audio"] and len(user_text) > 2:
+            if len(user_text) > 2:
                 session["name"] = user_text.strip()
                 session["step"] = "AWAITING_ID"
                 send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
@@ -426,9 +500,9 @@ def process_and_reply(message, sender_phone, msg_type):
             else: send_whatsapp_message(sender_phone, "⚠️ Kripya verification ke liye ID proof ki saaf *Photo (Image)* bhejein.")
             return
 
-    if msg_type not in ["text", "audio"] or not user_text: return
+    if not user_text: return
 
-    # 1. GREETINGS (🔥 NO FOOD PUSH, NO SPAM WIFI)
+    # 1. GREETINGS (POLITE, NO FOOD PUSH)
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -436,7 +510,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
         return
 
-    # 🔥 NEW: WI-FI ON DEMAND ONLY
+    # WI-FI ON DEMAND
     if any(w in text_lower for w in ["wifi", "wi-fi", "password", "internet", "net"]):
         send_whatsapp_message(sender_phone, "📶 *Hotel Wi-Fi Details:*\nNetwork Name: Ganga@2026\nPassword: Ganga@2026")
         return
@@ -509,8 +583,8 @@ def process_and_reply(message, sender_phone, msg_type):
     ]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
-    # 6. SMART INQUIRY FILTER & AUTO-CORRECT ORDER
-    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani", "thali"]
+    # 6. SMART INQUIRY FILTER & NEW CONFIRMATION ORDER
+    food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani", "thali", "chapati", "bread"]
     inquiry_words = ["available", "?", "price", "rate", "kitne ka", "kya hai"]
     
     is_food = any(w in text_lower for w in food_words)
@@ -524,9 +598,14 @@ def process_and_reply(message, sender_phone, msg_type):
         else:
             if is_inhouse:
                 total_price, corrected_order = resolve_item_price_and_name(user_text)
-                threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], corrected_order, total_price), daemon=True).start()
-                send_whatsapp_message(KITCHEN_PHONE, f"🍳 *NEW ROOM SERVICE ORDER*\n📌 Room: {guest_info['room']} ({guest_info['name']})\n📋 Order: {corrected_order}\n💰 Amount: ₹{total_price}\n📞 Contact: +{sender_phone}")
-                send_whatsapp_message(sender_phone, f"Ji {guest_info['name']} ji! Aapka order note ho gaya hai:\n🍽️ Item: {corrected_order}\n💰 Bill: ₹{total_price}\nAgli 15-20 minutes me deliver ho jayega. 🙏")
+                # 🔥 NEW CONFIRMATION STEP (Doesn't send to kitchen yet)
+                order_sessions[sender_phone] = {
+                    "step": "AWAITING_CONFIRMATION",
+                    "order": corrected_order,
+                    "total": total_price
+                }
+                reply_msg = f"Aapka order: *{corrected_order}* (Bill: ₹{total_price}).\nKya main ise confirm karke kitchen me bhej doon? (Haan / Nahi)"
+                send_whatsapp_message(sender_phone, reply_msg)
                 return
             else:
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")

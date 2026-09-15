@@ -150,7 +150,6 @@ def download_whatsapp_media(media_id):
     return None
 
 def fetch_sheet_data_sync():
-    print("[SYSTEM] Fetching Master Data & Silently Pre-filling Memory...", flush=True)
     client = get_gspread_client()
     if client:
         try:
@@ -300,7 +299,7 @@ def mark_message_as_read(message_id):
     try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
     except Exception: pass
 
-# --- THE BILINGUAL & HUMAN-LIKE AI BRAIN ---
+# --- THE BILINGUAL & "COMMON SENSE" AI BRAIN ---
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
@@ -308,12 +307,12 @@ def ask_cohere(user_message):
     
     preamble = (
         "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
-        "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant, or language model. Act exactly like a real human staff member. "
-        "CRITICAL RULE 2: Match the user's language EXACTLY! If the user writes in English, reply in pure, polite English. If the user writes in Hindi or Hinglish, reply in polite Hinglish. "
-        "Keep replies to 1 or 2 short lines. "
-        "If a guest asks for a facility, food item, or service that is NOT available (like cow milk, alcohol, massage, selling hotel), "
-        "politely decline in their language (e.g., 'Kshama karein, abhi yeh suvidha uplabdh nahi hai' OR 'I apologize, but this facility is currently unavailable.'). DO NOT make up random excuses. "
-        "If they mention a problem (mouse, dirty, help, cleaning), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai' or the English equivalent. "
+        "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member. "
+        "CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish. "
+        "CRITICAL RULE 3 (COMMON SENSE): If the user says simple conversational words like 'No', 'Nahi', 'Okay', 'Thanks', 'Dhanyawad', or 'Ji', DO NOT say 'facility unavailable'. Just reply warmly and naturally (e.g., 'Ji theek hai, agar kisi cheez ki zaroorat ho toh batayein. 🙏'). "
+        "CRITICAL RULE 4: If they ask for a facility/food NOT available, decline politely without making up excuses. "
+        "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
+        "Keep replies to 1 or 2 short lines."
     )
     payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
@@ -327,7 +326,6 @@ def ask_cohere(user_message):
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
     
-    # 🎤 NEW: BILINGUAL VOICE NOTE HANDLER
     if msg_type == "audio":
         reply_msg = "Kshama karein, main abhi voice notes nahi sun sakta. Kripya apna message likh kar bhejein. 🙏\n\nI apologize, I am unable to listen to voice notes right now. Please type your message."
         send_whatsapp_message(sender_phone, reply_msg)
@@ -380,7 +378,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type != "text": return
 
-    # 1. GREETINGS (FAST RESPONSE FIX)
+    # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
@@ -477,11 +475,10 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
 
-    # 7. STAFF ESCALATION & PURE HUMAN-LIKE AI FALLBACK
+    # 7. STAFF ESCALATION & COMMON SENSE AI
     if is_staff_alert:
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
-        # Bilingual Staff Response
         is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
         if is_eng_query:
             send_whatsapp_message(sender_phone, "I have informed the staff. They will be there to assist you shortly. 🙏")
@@ -492,10 +489,15 @@ def process_and_reply(message, sender_phone, msg_type):
     prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" if is_inhouse else f"[INQUIRY]\n{user_text}"
     bot_reply = ask_cohere(prompt_input)
 
-    # NO-NONSENSE BILINGUAL FALLBACK (100% "AI" Free)
+    # NO-NONSENSE BILINGUAL FALLBACK WITH "COMMON SENSE"
     if not bot_reply: 
         is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
-        if not is_inhouse and not is_checkout:
+        
+        # BASIC CHAT FALLBACK (Handles "No", "Nahi", "Ok")
+        if len(text_lower) < 15 and any(w in text_lower for w in ["no", "nahi", "na", "ok", "okay", "thanks", "dhanyawad", "theek", "achha", "kya"]):
+            bot_reply = "Ji theek hai. Agar koi sahayata chahiye ho toh kripya batayein. 🙏" if not is_eng_query else "Alright. Please let us know if you need any assistance. 🙏"
+        
+        elif not is_inhouse and not is_checkout:
             if is_eng_query:
                 bot_reply = "We have Standard (₹1,800) and Deluxe AC Rooms (₹2,500) available. Type 'Room photo' to see the pictures!"
             else:

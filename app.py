@@ -7,6 +7,7 @@ import base64
 import time
 import random
 import threading
+import traceback
 from datetime import datetime, timezone, timedelta
 import requests
 import gspread
@@ -43,11 +44,9 @@ shared_store = {
 chat_histories = {}
 processed_msg_ids = set()
 checkin_sessions = {}
-
-# Lifecycle Tracking Variables
+notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
-notified_paid_orders = set()
 guest_first_seen = {}
 notified_30min = set()
 dinner_prompted = set()
@@ -82,14 +81,12 @@ def resolve_item_price_and_name(order_text):
     found_any = False
     
     sorted_keys = sorted(MENU_MAPPING.keys(), key=len, reverse=True)
-    
     for key in sorted_keys:
         if key in text:
             qty = 1
             pattern = r'(\d+)\s*(?:plate|cup|bowl|portion|glass|piece)?\s*' + re.escape(key)
             matches = re.findall(pattern, text)
-            if matches: 
-                qty = sum(int(m) for m in matches)
+            if matches: qty = sum(int(m) for m in matches)
             
             std_name, price = MENU_MAPPING[key]
             total += (price * qty)
@@ -97,11 +94,8 @@ def resolve_item_price_and_name(order_text):
             found_any = True
             text = text.replace(key, "")
             
-    if not found_any:
-        return 30, order_text.strip()
-        
-    corrected_text = ", ".join(ordered_items)
-    return total, corrected_text
+    if not found_any: return 30, order_text.strip()
+    return total, ", ".join(ordered_items)
 
 def format_whatsapp_number(raw_phone):
     digits = re.sub(r"\D", "", str(raw_phone))
@@ -130,16 +124,11 @@ def upload_image_to_google_drive(image_bytes, file_name):
         creds = get_credentials()
         if not creds: return "No_Credentials"
         service = build('drive', 'v3', credentials=creds)
-        
         query = "mimeType = 'application/vnd.google-apps.folder' and name = 'Guest_IDs' and trashed = false"
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
         folders = results.get('files', [])
         
-        if folders: 
-            folder_id = folders[0]['id']
-        else:
-            folder = service.files().create(body={'name': 'Guest_IDs', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute()
-            folder_id = folder.get('id')
+        folder_id = folders[0]['id'] if folders else service.files().create(body={'name': 'Guest_IDs', 'mimeType': 'application/vnd.google-apps.folder'}, fields='id').execute().get('id')
             
         file_metadata = {'name': file_name, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(image_bytes), mimetype='image/jpeg', resumable=True)
@@ -159,6 +148,7 @@ def download_whatsapp_media(media_id):
     return None
 
 def fetch_sheet_data_sync():
+    print("[SYSTEM] Fetching Master Data from Google Sheets...", flush=True)
     client = get_gspread_client()
     if client:
         try:
@@ -168,7 +158,8 @@ def fetch_sheet_data_sync():
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
             if len(k_data) > 1: shared_store["kitchen_orders"] = k_data[1:]
             shared_store["last_synced"] = time.time()
-        except Exception: pass
+            print("[SYSTEM] Sheet Data Sync Complete.", flush=True)
+        except Exception as e: print(f"[SHEET SYNC ERROR]: {e}", flush=True)
 
 def sync_sheets_in_background():
     while True:
@@ -257,7 +248,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE
+# 3. DISPATCH ENGINE (EXPLICIT LOGGING)
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
@@ -265,8 +256,11 @@ def send_whatsapp_message(to_number, text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: requests.post(url, json=payload, headers=headers, timeout=10)
-    except Exception: pass
+    try: 
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        print(f"[TEXT SUCCESS -> {clean_number}] Code: {res.status_code}", flush=True)
+    except Exception as e: 
+        print(f"[TEXT ERROR -> {clean_number}] {e}", flush=True)
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -276,8 +270,11 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-    except Exception: 
+        print(f"[IMAGE SUCCESS -> {clean_number}] Code: {res.status_code}", flush=True)
+        if res.status_code != 200: 
+            send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception as e: 
+        print(f"[IMAGE ERROR -> {clean_number}] {e}", flush=True)
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
@@ -304,6 +301,8 @@ def ask_cohere(user_message):
 def process_and_reply(message, sender_phone, msg_type):
     user_text = message.get("text", {}).get("body", "") if msg_type == "text" else ""
     text_lower = user_text.lower().strip()
+    
+    print(f"\n[PROCESS START] 📞 Number: {sender_phone} | 📝 Message: '{user_text}'", flush=True)
     
     guest_info = get_guest_stay_status(sender_phone)
     is_inhouse = guest_info and guest_info.get("is_inhouse")
@@ -367,18 +366,20 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, menu_text)
         return
 
-    # 2. LOCAL GUIDE, LOCATION & PHOTOS (Dual Photo Dispatch)
+    # 2. LOCAL GUIDE, LOCATION & PHOTOS (Dual Photo Dispatch for everyone)
     if any(gw in text_lower for gw in ["guide", "ghoomne", "aarti", "places", "visit"]):
         send_whatsapp_message(sender_phone, "🗺️ *Haridwar Local Guide*\n\n🙏 *Ganga Aarti Timings:*\n• Subah: 5:30 AM - 6:30 AM\n• Shaam: 6:00 PM - 7:00 PM\n\n🛕 *Places:*\n1. Mansa Devi Temple\n2. Chandi Devi Temple\n3. Kankhal")
         return
     if any(lw in text_lower for lw in ["location", "map", "address"]):
         send_whatsapp_message(sender_phone, "📍 *Hotel Ganga View, Haridwar*\n🗺️ *Map:* https://maps.google.com/?q=29.9530,78.1700")
         return
-    # Updated Trigger: Caught "room ki" as well
+    
+    # DUAL PHOTO FEATURE ADDED
     if any(pw in text_lower for pw in ["photo", "photos", "pic", "image", "tasveer", "room dikhao", "room ki", "andar ki"]):
-        # 1st Image: Hotel Exterior
+        print(f"[PROCESS] Sending Photos to {sender_phone}", flush=True)
+        # Bhejenge Bahar Ki Photo (main.jpg)
         send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar* (Exterior View)")
-        # 2nd Image: Room Interior
+        # Bhejenge Andar Ki Photo (room.jpg)
         send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room.jpg", "🛏️ *Deluxe AC Room (Interior)*\n\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
         return
 
@@ -466,11 +467,15 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
         bot_reply = "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏"
 
-    if bot_reply: send_whatsapp_message(sender_phone, bot_reply)
+    send_whatsapp_message(sender_phone, bot_reply)
 
 def handle_incoming_async(message, sender_phone, msg_type):
-    try: process_and_reply(message, sender_phone, msg_type)
-    except Exception as e: pass
+    try: 
+        process_and_reply(message, sender_phone, msg_type)
+    except Exception as e: 
+        print(f"\n[CRITICAL ERROR in handle_incoming_async]: {e}", flush=True)
+        traceback.print_exc()
+        send_whatsapp_message(sender_phone, "⚠️ Technical error ho gayi. Kripya apna message dobara bhejein.")
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR
@@ -552,16 +557,14 @@ def handle_webhook():
         value = changes[0].get("value", {})
         messages = value.get("messages", [])
         
-        if not messages:
-            return jsonify({"status": "ignored"}), 200
+        if not messages: return jsonify({"status": "ignored"}), 200
             
         msg = messages[0]
         msg_id = msg.get("id")
         sender = msg.get("from")
         msg_type = msg.get("type")
         
-        if msg_id in processed_msg_ids: 
-            return jsonify({"status": "duplicate"}), 200
+        if msg_id in processed_msg_ids: return jsonify({"status": "duplicate"}), 200
             
         processed_msg_ids.add(msg_id)
         if len(processed_msg_ids) > 1000: processed_msg_ids.pop()
@@ -569,7 +572,7 @@ def handle_webhook():
         mark_message_as_read(msg_id)
         threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()
         
-    except Exception as e: pass
+    except Exception as e: print(f"[WEBHOOK PARSE ERROR]: {e}", flush=True)
         
     return jsonify({"status": "success"}), 200
 

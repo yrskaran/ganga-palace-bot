@@ -30,7 +30,7 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# 🔥 HARDCODED NUMBERS TO PREVENT RENDER OVERRIDE
+# 🔥 HARDCODED NUMBERS
 KITCHEN_PHONE = "919058929796"
 STAFF_PHONE = "917668426524"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
@@ -80,7 +80,6 @@ MENU_MAPPING = {
     "jalebi": ("Jalebi", 30), "thali": ("Special Thali", 250)
 }
 
-# INTERNAL HINDI TO HINGLISH TRANSLATOR
 def normalize_transcription(text):
     if not text: return ""
     text = text.lower()
@@ -226,7 +225,6 @@ def fetch_sheet_data_sync():
                             notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
             
             shared_store["last_synced"] = time.time()
-            print("✅ [SYSTEM] Memory Pre-fill Complete.", flush=True)
         except Exception as e: 
             print(f"❌ [SHEET FETCH ERROR]: {e}", flush=True)
 
@@ -362,8 +360,6 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         if res.status_code not in [200, 201]: 
             print(f"❌ [META IMAGE ERROR] {res.status_code} - {res.text}", flush=True)
             send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-        else:
-            print(f"✅ [IMAGE SENT] to {clean_number}", flush=True)
     except Exception as e: 
         print(f"❌ [IMAGE NETWORK ERROR]: {e}", flush=True)
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
@@ -397,7 +393,7 @@ def transcribe_audio_groq(audio_bytes):
         print(f"❌ [GROQ EXCEPTION]: {e}", flush=True)
     return None
 
-# 🔥 FIX: MODEL CHANGED TO 'command' BECAUSE 'command-r' IS DEPRECATED
+# 🔥 FIX: UPDATED COHERE MODEL & AUTO-FALLBACK
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
@@ -412,13 +408,20 @@ def ask_cohere(user_message):
         "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
         "Keep replies to 1 or 2 short lines."
     )
-    payload = {"model": "command", "message": user_message, "preamble": preamble, "temperature": 0.3}
+    
+    # Primary try with the latest flagship model
+    payload = {"model": "command-r-plus", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         if res.status_code == 200: 
             return res.json().get("text", "").strip()
         else:
-            print(f"❌ [COHERE API ERROR] {res.status_code} - {res.text}", flush=True)
+            print(f"❌ [COHERE API ERROR 'command-r-plus'] {res.status_code} - {res.text}", flush=True)
+            # Fallback try without specifying model (auto-defaults to active model)
+            payload_fallback = {"message": user_message, "preamble": preamble, "temperature": 0.3}
+            res_fallback = requests.post(url, json=payload_fallback, headers=headers, timeout=8)
+            if res_fallback.status_code == 200:
+                return res_fallback.json().get("text", "").strip()
     except Exception as e: 
         print(f"❌ [COHERE EXCEPTION]: {e}", flush=True)
     return None
@@ -562,7 +565,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
 
-    # 1. GREETINGS
+    # 1. GREETINGS 
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -672,6 +675,11 @@ def process_and_reply(message, sender_phone, msg_type):
             else:
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
+
+    # 🔥 OFFLINE FAQ FALLBACK (Never Fails)
+    if re.search(r"\b(room|rooms|tariff|price|kiraya|rate|kaisa|kaise|rent|charges)\b", text_lower) and not is_food and not is_staff_alert:
+        send_whatsapp_message(sender_phone, "🏨 *Hotel Ganga View Rooms & Tariff:*\n\n🛏️ *Standard Non-AC Room:* ₹1,800/night\n🛏️ *Deluxe AC Room:* ₹2,500/night\n👨‍👩‍👧‍👦 *4-Bed Family Room* bhi uplabdh hai.\n\n✨ Humare rooms bahut saaf, hawa-dar aur aaramdayak hain. Hotel me safe parking aur 24x7 service uplabdh hai.\n\n📸 Photos dekhne ke liye *'photo'* type karein.\n🛎️ Booking ke liye *'check in'* type karein!")
+        return
 
     # 7. STAFF ESCALATION & AI BRAIN (COHERE)
     if is_staff_alert:

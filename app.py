@@ -27,7 +27,7 @@ WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()  # 🔥 GROQ IS BACK
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
@@ -46,7 +46,7 @@ chat_histories = {}
 processed_msg_ids = set()
 checkin_sessions = {}
 
-# MEMORY SETS (Proactive Lifecycle)
+# MEMORY SETS
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -71,12 +71,32 @@ MENU_MAPPING = {
     "jalebi": ("Jalebi", 30), "thali": ("Special Thali", 250)
 }
 
+# 🔥 INTERNAL HINDI TO HINGLISH TRANSLATOR (For Voice Notes)
+def normalize_transcription(text):
+    if not text: return ""
+    text = text.lower()
+    mapping = {
+        "रोटी": "roti", "दाल": "dal", "चाय": "chai", "पानी": "water",
+        "चावल": "rice", "पनीर": "paneer", "पराठा": "paratha", "दही": "dahi",
+        "पोहा": "poha", "भटूरे": "bhature", "सलाद": "salad", "कॉफ़ी": "coffee", "कॉफी": "coffee",
+        "थाली": "thali", "जलेबी": "jalebi", "खाना": "khana",
+        "तौलिया": "towel", "साबुन": "sabun", "कंबल": "kambal", "सफाई": "safai",
+        "कचरा": "kachra", "चूहा": "mouse", "मदद": "help", "बिल": "bill", "चेकआउट": "checkout",
+        "एक": "1", "दो": "2", "तीन": "3", "चार": "4", "पांच": "5", "पाँच": "5",
+        "१": "1", "२": "2", "३": "3", "४": "4", "५": "5", "६": "6", "७": "7", "८": "8", "९": "9"
+    }
+    for k, v in mapping.items():
+        text = text.replace(k, v)
+    return text
+
 def resolve_item_price_and_name(order_text):
     text = str(order_text).lower()
-    text = re.sub(r'\bek\b', '1', text)
-    text = re.sub(r'\bdo\b', '2', text)
-    text = re.sub(r'\bteen\b', '3', text)
-    text = re.sub(r'\bchar\b|\bchaar\b', '4', text)
+    # Handle both English & Hinglish words for numbers
+    text = re.sub(r'\bek\b|\bone\b', '1', text)
+    text = re.sub(r'\bdo\b|\btwo\b', '2', text)
+    text = re.sub(r'\bteen\b|\bthree\b', '3', text)
+    text = re.sub(r'\bchar\b|\bchaar\b|\bfour\b', '4', text)
+    text = re.sub(r'\bpaanch\b|\bpanch\b|\bfive\b', '5', text)
     text = re.sub(r'[,.\n&]', ' ', text)
     
     total = 0
@@ -306,7 +326,6 @@ def mark_message_as_read(message_id):
     try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
     except Exception: pass
 
-# 🔥 GROQ AUDIO TRANSCRIPTION AI
 def transcribe_audio_groq(audio_bytes):
     if not GROQ_API_KEY: return None
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -316,7 +335,7 @@ def transcribe_audio_groq(audio_bytes):
     try:
         res = requests.post(url, headers=headers, files=files, data=data, timeout=15)
         if res.status_code == 200: return res.json().get("text", "").strip()
-    except Exception as e: print(f"[GROQ ERROR] {e}", flush=True)
+    except Exception: pass
     return None
 
 def ask_cohere(user_message):
@@ -345,20 +364,20 @@ def ask_cohere(user_message):
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
     
-    # 🔥 VOICE NOTE HANDLER (Groq integration)
+    # 🔥 VOICE NOTE HANDLER (Groq integration + Auto-Translation)
     if msg_type == "audio":
         media_id = message.get("audio", {}).get("id")
         audio_bytes = download_whatsapp_media(media_id)
         if audio_bytes and GROQ_API_KEY:
-            user_text = transcribe_audio_groq(audio_bytes)
+            raw_text = transcribe_audio_groq(audio_bytes)
+            user_text = normalize_transcription(raw_text) # Coverts Hindi script to English keywords
             
         if not user_text:
-            reply_msg = "Kshama karein, aapki aawaz theek se process nahi ho payi. Kripya apna message likh kar bhejein. 🙏\n\nI apologize, I couldn't process the voice note. Please type your message."
+            reply_msg = "Kshama karein, aapki aawaz theek se sunai nahi di. Kripya apna message likh kar bhejein. 🙏"
             send_whatsapp_message(sender_phone, reply_msg)
             return
         else:
-            print(f"[VOICE NOTE TRANSCRIBED] {sender_phone}: '{user_text}'", flush=True)
-            # Flow continues downwards as if it was text!
+            print(f"[VOICE TRANSCRIBED] {sender_phone}: '{user_text}'", flush=True)
 
     elif msg_type == "text":
         user_text = message.get("text", {}).get("body", "")
@@ -409,12 +428,17 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type not in ["text", "audio"] or not user_text: return
 
-    # 1. GREETINGS
+    # 1. GREETINGS (🔥 NO FOOD PUSH, NO SPAM WIFI)
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
-            send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
+            send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
         else: 
             send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
+        return
+
+    # 🔥 NEW: WI-FI ON DEMAND ONLY
+    if any(w in text_lower for w in ["wifi", "wi-fi", "password", "internet", "net"]):
+        send_whatsapp_message(sender_phone, "📶 *Hotel Wi-Fi Details:*\nNetwork Name: Ganga@2026\nPassword: Ganga@2026")
         return
 
     # Trigger Self Check-in

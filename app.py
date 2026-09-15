@@ -45,7 +45,7 @@ chat_histories = {}
 processed_msg_ids = set()
 checkin_sessions = {}
 
-# MEMORY SETS
+# MEMORY SETS (Proactive Lifecycle)
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -150,6 +150,7 @@ def download_whatsapp_media(media_id):
     return None
 
 def fetch_sheet_data_sync():
+    print("[SYSTEM] Fetching Master Data & Silently Pre-filling Memory...", flush=True)
     client = get_gspread_client()
     if client:
         try:
@@ -179,7 +180,6 @@ def fetch_sheet_data_sync():
                         k_status = str(k_row[5]).upper()
                         if "PAID" in k_status:
                             notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
-
             shared_store["last_synced"] = time.time()
         except Exception: pass
 
@@ -300,20 +300,20 @@ def mark_message_as_read(message_id):
     try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
     except Exception: pass
 
-# --- THE BILINGUAL & SMART AI BRAIN ---
+# --- THE BILINGUAL & HUMAN-LIKE AI BRAIN ---
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
     
     preamble = (
-        "You are a highly professional, human Receptionist working at Hotel Ganga View, Haridwar. "
-        "NEVER mention that you are an AI, bot, or virtual assistant. Act exactly like a real hotel staff member. "
-        "CRITICAL LANGUAGE RULE: Match the user's language! If the user writes in English, reply in pure, polite English. If the user writes in Hindi or Hinglish, reply in polite Hinglish. "
-        "Reply politely in 1 or 2 short lines. "
-        "If a guest asks for a facility, food item, or service that is NOT available (or strange requests like selling the hotel), "
-        "politely decline in their language (e.g., 'Kshama karein, abhi yeh suvidha uplabdh nahi hai' OR 'Sorry, this facility is currently unavailable'). "
-        "If they mention a problem (mouse, dirty, help, cleaning), say: '[STAFF_ALERT: complaint] Ji, maine staff ko inform kar diya hai' (or English equivalent). "
+        "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
+        "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant, or language model. Act exactly like a real human staff member. "
+        "CRITICAL RULE 2: Match the user's language EXACTLY! If the user writes in English, reply in pure, polite English. If the user writes in Hindi or Hinglish, reply in polite Hinglish. "
+        "Keep replies to 1 or 2 short lines. "
+        "If a guest asks for a facility, food item, or service that is NOT available (like cow milk, alcohol, massage, selling hotel), "
+        "politely decline in their language (e.g., 'Kshama karein, abhi yeh suvidha uplabdh nahi hai' OR 'I apologize, but this facility is currently unavailable.'). DO NOT make up random excuses. "
+        "If they mention a problem (mouse, dirty, help, cleaning), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai' or the English equivalent. "
     )
     payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
@@ -327,9 +327,9 @@ def ask_cohere(user_message):
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
     
-    # 🎤 NEW VOICE NOTE HANDLER
+    # 🎤 NEW: BILINGUAL VOICE NOTE HANDLER
     if msg_type == "audio":
-        reply_msg = "Maaf kijiye, main abhi voice notes nahi sun sakta. Kripya apna message likh kar bhejein. 🙏\n\nSorry, I am unable to listen to voice notes right now. Please type your message."
+        reply_msg = "Kshama karein, main abhi voice notes nahi sun sakta. Kripya apna message likh kar bhejein. 🙏\n\nI apologize, I am unable to listen to voice notes right now. Please type your message."
         send_whatsapp_message(sender_phone, reply_msg)
         return
         
@@ -380,6 +380,14 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type != "text": return
 
+    # 1. GREETINGS (FAST RESPONSE FIX)
+    if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
+        if is_inhouse: 
+            send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
+        else: 
+            send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
+        return
+
     # Trigger Self Check-in
     if any(cw in text_lower for cw in ["check in", "checkin", "book room", "room book", "book karna hai"]):
         if is_inhouse:
@@ -391,14 +399,14 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, "🏨 *Self Check-In Process*\n\nKripya reception staff se milkar apna *4-digit OTP* yahan type karein:")
         return
 
-    # 1. MENU
+    # 2. MENU
     if any(mw in text_lower for mw in ["menu", "kya khane", "food items", "list", "bhookh"]):
         menu_text = "🍔 *Hotel Ganga View - Kitchen Menu*\n\n☕ *Beverages & Breakfast*\n• Chai / Coffee - ₹30 / ₹50\n• Aloo Paratha - ₹90\n• Poha / Dahi - ₹70\n• Chole Bhature - ₹120\n\n🍛 *Lunch & Dinner*\n• Dal Fry / Makhani - ₹160 / ₹190\n• Kadhai / Shahi Paneer - ₹240\n• Jeera / Plain Rice - ₹120 / ₹100\n• Tawa / Butter Roti - ₹15 / ₹20\n• Green Salad - ₹50\n\n👉 *Order karne ke liye item aur quantity likhein!*"
         if not is_inhouse: menu_text += "\n\n*(Note: Room service sirf In-House guests ke liye hai. Booking ke liye 'check in' type karein!)*"
         send_whatsapp_message(sender_phone, menu_text)
         return
 
-    # 2. LOCAL GUIDE, LOCATION & PHOTOS
+    # 3. LOCAL GUIDE, LOCATION & DUAL PHOTOS
     if any(gw in text_lower for gw in ["guide", "ghoomne", "aarti", "places", "visit"]):
         send_whatsapp_message(sender_phone, "🗺️ *Haridwar Local Guide*\n\n🙏 *Ganga Aarti Timings:*\n• Subah: 5:30 AM - 6:30 AM\n• Shaam: 6:00 PM - 7:00 PM\n\n🛕 *Places:*\n1. Mansa Devi Temple\n2. Chandi Devi Temple\n3. Kankhal")
         return
@@ -410,7 +418,7 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room.jpg", "🛏️ *Deluxe AC Room (Interior)*\n\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
         return
 
-    # 3. BILL HANDLER
+    # 4. BILL HANDLER
     if re.search(r"(bill|bil|total|hisaab|hisab|kharcha|baki|due|paid|kitna hua|balance|bta)", text_lower):
         if is_inhouse:
             client = get_gspread_client()
@@ -437,7 +445,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 4. HOUSEKEEPING & STAFF ALERTS
+    # 5. HOUSEKEEPING & STAFF ALERTS
     staff_alert_words = [
         "towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", 
         "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", 
@@ -446,7 +454,7 @@ def process_and_reply(message, sender_phone, msg_type):
     ]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
-    # 5. SMART INQUIRY FILTER & AUTO-CORRECT ORDER
+    # 6. SMART INQUIRY FILTER & AUTO-CORRECT ORDER
     food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani", "thali"]
     inquiry_words = ["available", "?", "price", "rate", "kitne ka", "kya hai"]
     
@@ -469,21 +477,13 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
 
-    # 6. GREETINGS
-    if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
-        if is_inhouse: 
-            send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} me aapka swagat hai. Wi-Fi: Ganga@2026\nBatayein kya khana order karna hai?")
-        else: 
-            send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
-        return
-
-    # 7. STAFF ESCALATION & AI FALLBACK
+    # 7. STAFF ESCALATION & PURE HUMAN-LIKE AI FALLBACK
     if is_staff_alert:
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
-        # BILINGUAL STAFF ALERT RESPONSE
-        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
-        if is_english and "hai" not in text_lower and "ji" not in text_lower:
+        # Bilingual Staff Response
+        is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
+        if is_eng_query:
             send_whatsapp_message(sender_phone, "I have informed the staff. They will be there to assist you shortly. 🙏")
         else:
             send_whatsapp_message(sender_phone, "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏")
@@ -492,24 +492,27 @@ def process_and_reply(message, sender_phone, msg_type):
     prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" if is_inhouse else f"[INQUIRY]\n{user_text}"
     bot_reply = ask_cohere(prompt_input)
 
-    # POLITE BILINGUAL FALLBACK
+    # NO-NONSENSE BILINGUAL FALLBACK (100% "AI" Free)
     if not bot_reply: 
-        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
+        is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
         if not is_inhouse and not is_checkout:
-            bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!"
-        else:
-            if is_english and "hai" not in text_lower:
-                bot_reply = "I apologize, but this facility or information might not be available right now. Please contact the reception for further assistance. 🙏"
+            if is_eng_query:
+                bot_reply = "We have Standard (₹1,800) and Deluxe AC Rooms (₹2,500) available. Type 'Room photo' to see the pictures!"
             else:
-                bot_reply = "Kshama karein, shayad abhi yeh suvidha uplabdh nahi hai. Kripya kisi bhi sahayata ke liye reception par call karein. 🙏"
+                bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!"
+        else:
+            if is_eng_query:
+                bot_reply = "I apologize, but this facility or information is currently unavailable. Please contact the reception for any assistance. 🙏"
+            else:
+                bot_reply = "Kshama karein, abhi yeh suvidha uplabdh nahi hai. Kisi bhi sahayata ke liye kripya reception par sampark karein. 🙏"
             
     if "[STAFF_ALERT:" in bot_reply:
         bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
         
-        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
-        if is_english and "hai" not in text_lower:
+        is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
+        if is_eng_query:
             bot_reply = "I have informed the staff. They will assist you shortly. 🙏"
         else:
             bot_reply = "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏"

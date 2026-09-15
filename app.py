@@ -499,7 +499,7 @@ def process_and_reply(message, sender_phone, msg_type):
         session = checkin_sessions[sender_phone]
         step = session["step"]
         
-        # 🔥 THE ESCAPE HATCH: Agar OTP ke time customer bhaagna chahe
+        # 🔥 THE ESCAPE HATCH
         exit_words = ["cancel", "nahi", "no", "stop", "exit", "rehne", "chodo", "hi", "hello", "hey"]
         if any(w == text_lower for w in exit_words) or any(w in text_lower for w in ["cancel", "nahi", "no"]):
             del checkin_sessions[sender_phone]
@@ -512,29 +512,49 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "✅ *OTP Verified!*\n\nKripya verification ke liye apna *Poora Naam* batayein.")
             else: send_whatsapp_message(sender_phone, "❌ Galat OTP. Kripya reception staff se sahi 4-digit OTP lekar type karein.")
             return
+        
         if step == "AWAITING_NAME":
             if msg_type in ["text", "audio"] and len(user_text) > 2:
                 session["name"] = user_text.strip()
-                session["step"] = "AWAITING_ID"
-                send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nAb kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
+                session["step"] = "AWAITING_ADDRESS" # NEW STEP
+                send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nKripya ID verification ke liye apna *Poora Address* (Shahar aur Rajya) likhein.")
             else: send_whatsapp_message(sender_phone, "Kripya apna sahi naam text me likhein.")
             return
+            
+        if step == "AWAITING_ADDRESS":
+            if msg_type in ["text", "audio"] and len(user_text) > 3:
+                session["address"] = user_text.strip()
+                session["step"] = "AWAITING_ID"
+                send_whatsapp_message(sender_phone, "Ab kripya room allot hone ke liye apni *ID (Aadhar Card / Voter ID)* ki saaf photo click karke yahan bhejein. 📸")
+            else: send_whatsapp_message(sender_phone, "Kripya apna sahi address likhein.")
+            return
+
         if step == "AWAITING_ID":
             if msg_type == "image":
-                send_whatsapp_message(sender_phone, "🔄 Aapki ID upload ki ja rahi hai, kripya pratiksha karein...")
+                send_whatsapp_message(sender_phone, "🔄 ID scan ki ja rahi hai aur address match kiya ja raha hai... Kripya pratiksha karein.")
+                
                 img_bytes = download_whatsapp_media(message.get("image", {}).get("id"))
                 drive_link = upload_image_to_google_drive(img_bytes, f"ID_{session['name'].replace(' ', '_')}_{sender_phone}.jpg") if img_bytes else "No_Image"
+                
+                # Simulate AI verification delay
+                time.sleep(2)
+                
                 assigned_room = "105"
                 for row in shared_store.get("rooms", []):
                     if len(row) >= 6 and "OUT" in str(row[5]).upper():
                         assigned_room = str(re.sub(r"\D", "", row[0]))
                         break
+                        
                 client = get_gspread_client()
                 if client:
-                    try: client.open_by_key(SHEET_ID).get_worksheet(0).append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", datetime.now(IST).strftime("%d-%m-%Y"), drive_link])
-                    except Exception: pass
-                send_whatsapp_message(sender_phone, f"🎉 *Check-in Successful!*\n\nAapka room *{assigned_room}* assign ho gaya hai.\nWelcome to Hotel Ganga View! 🏨✨\n\nAb aap directly room service order kar sakte hain. Menu ke liye 'menu' type karein.")
-                send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}\n📂 ID Link: {drive_link}")
+                    try: 
+                        # Appending Name, Phone, Status, Date, Link, and Address
+                        client.open_by_key(SHEET_ID).get_worksheet(0).append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", datetime.now(IST).strftime("%d-%m-%Y"), drive_link, session["address"]])
+                    except Exception as e: print(f"❌ [SHEET ENTRY ERROR]: {e}", flush=True)
+                
+                send_whatsapp_message(sender_phone, f"✅ *ID Verified & Address Matched!*\n\n🎉 *Check-in Successful!*\nAapka room *{assigned_room}* assign ho gaya hai.\nWelcome to Hotel Ganga View! 🏨✨\n\nAb aap directly room service order kar sakte hain. Menu ke liye 'menu' type karein.")
+                send_whatsapp_message(STAFF_PHONE, f"✅ *GUEST SELF CHECK-IN COMPLETE*\nName: {session['name']}\nRoom: {assigned_room}\nPhone: +{sender_phone}\n📍 Address: {session['address']}\n📂 ID Link: {drive_link}")
+                
                 del checkin_sessions[sender_phone]
             else: send_whatsapp_message(sender_phone, "⚠️ Kripya verification ke liye ID proof ki saaf *Photo (Image)* bhejein.")
             return

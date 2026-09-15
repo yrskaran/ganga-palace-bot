@@ -26,10 +26,10 @@ app = Flask(__name__)
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip() # 🔥 NOW USED FOR BOTH AUDIO AND CHAT
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
+# 🔥 HARDCODED NUMBERS
 KITCHEN_PHONE = "919058929796"
 STAFF_PHONE = "917668426524"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
@@ -247,6 +247,7 @@ def append_kitchen_order_to_sheet(room, guest_name, order_details, amount):
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         sheet.append_row([datetime.now(IST).strftime("%d-%b %I:%M %p"), str(room), str(guest_name), str(order_details), int(amount), "PENDING"])
+        print(f"✅ [ORDER APPENDED] Room {room}: {order_details}", flush=True)
     except Exception as e: 
         print(f"❌ [ORDER APPEND ERROR]: {e}", flush=True)
 
@@ -261,6 +262,7 @@ def cancel_kitchen_order_in_sheet(room, order_details):
             if len(row) >= 6:
                 if str(room) in str(row[1]) and str(order_details) in str(row[3]) and "PENDING" in str(row[5]).upper():
                     sheet.update_cell(i + 1, 6, "CANCELLED")
+                    print(f"✅ [ORDER CANCELLED IN SHEET] Room {room}: {order_details}", flush=True)
                     break
     except Exception as e: 
         print(f"❌ [SHEET CANCEL ERROR]: {e}", flush=True)
@@ -332,14 +334,13 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
     if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
+        print("❌ [DISPATCH ERROR] Missing Token or Phone ID", flush=True)
         return
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: 
-        requests.post(url, json=payload, headers=headers, timeout=10)
-    except Exception: 
-        pass
+    try: requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception: pass
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -386,36 +387,41 @@ def get_hotel_data():
     except Exception: pass
     return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-def ask_cohere(prompt_input):
-    if not COHERE_API_KEY: return None
-    url = "https://api.cohere.ai/v1/chat"
-    headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
+# 🔥 THE NEW BRAIN: GROQ (LLAMA-3) REPLACES COHERE COMPLETELY 🔥
+def ask_groq_chat(prompt_input):
+    if not GROQ_API_KEY: return None
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     
     hotel_context = get_hotel_data()
     
-    preamble = f"""[HOTEL DATA START]
+    system_prompt = f"""You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. 
+CRITICAL RULE 1: NEVER mention that you are an AI, bot, or virtual assistant. Act exactly like a real human staff member.
+CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish.
+CRITICAL RULE 3 (COMMON SENSE): If a Checked-Out guest asks about room quality or issues (e.g., 'koi dikkat to nahi hai'), treat it as a general inquiry for a FUTURE booking. Say our rooms are perfectly clean and well-maintained. DO NOT say "you checked out so we can't take complaints."
+HOTEL DATA START:
 {hotel_context}
-[HOTEL DATA END]
-Your task is to act exactly as described in the HOTEL DATA above.
-"""
+HOTEL DATA END:
+If they mention a current problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.'
+Keep replies to 1 or 2 short lines. Be warm and welcoming."""
+
+    payload = {
+        "model": "llama3-70b-8192", 
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt_input}
+        ],
+        "temperature": 0.3
+    }
     
-    # 1. Primary try with updated versioned model to prevent 404
-    payload = {"model": "command-r-plus-08-2024", "message": prompt_input, "preamble": preamble, "temperature": 0.3}
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=8)
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
         if res.status_code == 200: 
-            return res.json().get("text", "").strip()
+            return res.json()["choices"][0]["message"]["content"].strip()
         else:
-            print(f"❌ [COHERE API ERROR 'command-r-plus-08-2024'] {res.status_code} - {res.text}", flush=True)
-            # 2. Failsafe Fallback: Omitting the model parameter uses Cohere's active default model
-            payload_fallback = {"message": prompt_input, "preamble": preamble, "temperature": 0.3}
-            res_fallback = requests.post(url, json=payload_fallback, headers=headers, timeout=8)
-            if res_fallback.status_code == 200:
-                return res_fallback.json().get("text", "").strip()
-            else:
-                print(f"❌ [COHERE FALLBACK ERROR] {res_fallback.status_code} - {res_fallback.text}", flush=True)
+            print(f"❌ [GROQ CHAT ERROR] {res.status_code} - {res.text}", flush=True)
     except Exception as e: 
-        print(f"❌ [COHERE EXCEPTION]: {e}", flush=True)
+        print(f"❌ [GROQ CHAT EXCEPTION]: {e}", flush=True)
     return None
 
 # ==========================================
@@ -552,9 +558,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type not in ["text", "audio"] or not user_text: return
 
-    print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
-
-    # 1. GREETINGS (🔥 RESTORED: THIS WAS ACCIDENTALLY DELETED EARLIER)
+    # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -585,7 +589,7 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, menu_text)
         return
 
-    # 4. LOCAL GUIDE, LOCATION & DUAL PHOTOS
+    # 4. DUAL PHOTOS & LOCAL GUIDE
     if any(gw in text_lower for gw in ["guide", "ghoomne", "aarti", "places", "visit"]):
         send_whatsapp_message(sender_phone, "🗺️ *Haridwar Local Guide*\n\n🙏 *Ganga Aarti Timings:*\n• Subah: 5:30 AM - 6:30 AM\n• Shaam: 6:00 PM - 7:00 PM\n\n🛕 *Places:*\n1. Mansa Devi Temple\n2. Chandi Devi Temple\n3. Kankhal")
         return
@@ -626,7 +630,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 6. SMART INQUIRY FILTER & NEW CONFIRMATION ORDER
+    # 6. SMART INQUIRY FILTER
     food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani", "thali", "chapati", "bread"]
     inquiry_words = ["available", "?", "price", "rate", "kitne ka", "kya hai"]
     
@@ -653,7 +657,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
             return
 
-    # 7. DYNAMIC AI (COHERE)
+    # 🔥 7. DYNAMIC AI (NOW USING GROQ LLAMA-3 INSTEAD OF COHERE) 🔥
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:
@@ -661,7 +665,7 @@ def process_and_reply(message, sender_phone, msg_type):
     else:
         prompt_input = f"[NEW INQUIRY]\nUser says: {user_text}"
         
-    bot_reply = ask_cohere(prompt_input)
+    bot_reply = ask_groq_chat(prompt_input)
 
     if bot_reply: 
         if "[STAFF_ALERT:" in bot_reply:
@@ -674,21 +678,13 @@ def process_and_reply(message, sender_phone, msg_type):
             
         send_whatsapp_message(sender_phone, bot_reply)
     else:
-        # NO-NONSENSE BILINGUAL FALLBACK WITH "COMMON SENSE"
         is_eng_query = not any(hw in text_lower for hw in ["hai", "kya", "kaise", "karo", "do", "nahi", "haan", "ji"])
-        
         if len(text_lower) < 15 and any(w in text_lower for w in ["no", "nahi", "na", "ok", "okay", "thanks", "dhanyawad", "theek", "achha", "kya"]):
             send_whatsapp_message(sender_phone, "Ji theek hai. Agar koi sahayata chahiye ho toh kripya batayein. 🙏" if not is_eng_query else "Alright. Please let us know if you need any assistance. 🙏")
         elif not is_inhouse and not is_checkout:
-            if is_eng_query:
-                send_whatsapp_message(sender_phone, "We have Standard (₹1,800) and Deluxe AC Rooms (₹2,500) available. Type 'Room photo' to see the pictures!")
-            else:
-                send_whatsapp_message(sender_phone, "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!")
+            send_whatsapp_message(sender_phone, "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!")
         else:
-            if is_eng_query:
-                send_whatsapp_message(sender_phone, "I apologize, but this facility or information is currently unavailable. Please contact the reception for any assistance. 🙏")
-            else:
-                send_whatsapp_message(sender_phone, "Kshama karein, abhi yeh suvidha uplabdh nahi hai. Kisi bhi sahayata ke liye kripya reception par sampark karein. 🙏")
+            send_whatsapp_message(sender_phone, "Kshama karein, abhi yeh suvidha uplabdh nahi hai. Kisi bhi sahayata ke liye kripya reception par sampark karein. 🙏")
 
 def handle_incoming_async(message, sender_phone, msg_type):
     try: 

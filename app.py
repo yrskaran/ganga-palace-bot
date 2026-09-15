@@ -64,7 +64,6 @@ MENU_PRICES = {
 
 def resolve_item_price(order_text):
     text = str(order_text).lower()
-    # Translate Hindi numbers to digits for math parsing
     text = re.sub(r'\bek\b', '1', text)
     text = re.sub(r'\bdo\b', '2', text)
     text = re.sub(r'\bteen\b', '3', text)
@@ -73,8 +72,6 @@ def resolve_item_price(order_text):
     
     total = 0
     found_any = False
-    
-    # Sort by length descending to catch 'dal makhani' before 'dal'
     sorted_menu = sorted(MENU_PRICES.keys(), key=len, reverse=True)
     
     for item in sorted_menu:
@@ -87,7 +84,7 @@ def resolve_item_price(order_text):
             
             total += (MENU_PRICES[item] * qty)
             found_any = True
-            text = text.replace(item, "") # Remove processed string chunk
+            text = text.replace(item, "")
             
     return total if found_any else 30
 
@@ -125,7 +122,6 @@ def upload_image_to_google_drive(image_bytes, file_name):
         results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
         folders = results.get('files', [])
         
-        folder_id = None
         if folders: 
             folder_id = folders[0]['id']
         else:
@@ -207,7 +203,6 @@ def calculate_stay_nights(check_in_str):
 
 def get_guest_stay_status(sender_phone):
     clean_sender = re.sub(r"\D", "", str(sender_phone))[-10:]
-    # Scan from bottom to get latest stay record
     for row in reversed(shared_store.get("rooms", [])):
         vals = [str(v).strip() for v in row]
         if any(clean_sender == re.sub(r"\D", "", v)[-10:] for v in vals if len(re.sub(r"\D", "", v)) >= 10):
@@ -265,43 +260,48 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE
+# 3. DISPATCH ENGINE (NO NESTED THREADS)
 # ==========================================
 def send_whatsapp_message(to_number, text):
-    def _do():
-        clean_number = format_whatsapp_number(to_number)
-        if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
-        url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-        payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=10)
-            print(f"[DISPATCH SUCCESS -> {clean_number}] Text Message Sent.", flush=True)
-        except Exception as e:
-            print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
-    threading.Thread(target=_do, daemon=True).start()
+    clean_number = format_whatsapp_number(to_number)
+    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
+        print("[DISPATCH ABORT] Missing token or valid number.", flush=True)
+        return
+        
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
+    
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
+            print(f"[DISPATCH SUCCESS -> {clean_number}]", flush=True)
+        else:
+            print(f"[DISPATCH HTTP ERROR -> {clean_number}] {res.status_code}: {res.text}", flush=True)
+    except Exception as e:
+        print(f"[DISPATCH EXCEPTION]: {e}", flush=True)
 
 def send_whatsapp_image(to_number, image_url, caption=""):
-    def _do_img():
-        clean_number = format_whatsapp_number(to_number)
-        if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
-        url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-        payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
-        try:
-            res = requests.post(url, json=payload, headers=headers, timeout=12)
-            if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-        except Exception: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-    threading.Thread(target=_do_img, daemon=True).start()
+    clean_number = format_whatsapp_number(to_number)
+    if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
+    
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
+    
+    try:
+        res = requests.post(url, json=payload, headers=headers, timeout=12)
+        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception: 
+        send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
-    def _mark():
-        if not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
-        url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
-        try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
-        except Exception: pass
-    threading.Thread(target=_mark, daemon=True).start()
+    if not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: return
+    url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    try: 
+        requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
+    except Exception: pass
 
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
@@ -310,7 +310,10 @@ def ask_cohere(user_message):
     payload = {"model": "command-r", "message": user_message, "preamble": "You are WhatsApp AI Receptionist for Hotel Ganga View. Answer in 1-2 lines Hinglish.", "temperature": 0.2}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=5)
-        if res.status_code == 200: return res.json().get("text", "").strip()
+        if res.status_code == 200: 
+            return res.json().get("text", "").strip()
+        else:
+            print(f"[COHERE HTTP ERROR] {res.status_code}: {res.text}", flush=True)
     except Exception as e:
         print(f"[COHERE ERROR]: {e}", flush=True)
     return None
@@ -446,7 +449,7 @@ def process_and_reply(message, sender_phone, msg_type):
     staff_alert_words = ["towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat", "ganda", "paani nahi"]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
-    # 5. IN-HOUSE FOOD ORDER (Bypasses staff alert logic)
+    # 5. IN-HOUSE FOOD ORDER
     food_words = ["chai", "tea", "roti", "khana", "paratha", "poha", "bhature", "order", "coffee", "dahi", "dal", "paneer", "rice", "salad", "jalebi", "water", "pani"]
     if any(w in text_lower for w in food_words) and not is_staff_alert:
         if is_inhouse:
@@ -569,7 +572,6 @@ def handle_webhook():
         data = request.get_json()
         if not data: return jsonify({"status": "ignored"}), 200
         
-        # Safe Extraction with robust logging
         entry = data.get("entry", [])
         if not entry: return jsonify({"status": "ignored"}), 200
         
@@ -580,7 +582,6 @@ def handle_webhook():
         messages = value.get("messages", [])
         
         if not messages:
-            # Silently ignore non-message status updates (read/delivered ticks)
             return jsonify({"status": "ignored"}), 200
             
         msg = messages[0]

@@ -61,7 +61,7 @@ MENU_MAPPING = {
     "butter roti": ("Butter Roti", 20), "roti": ("Tawa Roti", 15),
     "dal tadka": ("Dal Fry", 160), "dal fry": ("Dal Fry", 160),
     "dal makhani": ("Dal Makhani", 190), "dal makhni": ("Dal Makhani", 190),
-    "dal": ("Dal Fry", 160),  # Catch-all for 'dal fet', 'dal bhej do' -> converts to Dal Fry
+    "dal": ("Dal Fry", 160), 
     "kadai paneer": ("Kadhai Paneer", 240), "shahi paneer": ("Shahi Paneer", 240),
     "paneer": ("Kadhai Paneer", 220),
     "jeera rice": ("Jeera Rice", 120), "rice": ("Plain Rice", 100),
@@ -257,7 +257,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (NO NESTED THREADS)
+# 3. DISPATCH ENGINE
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
@@ -367,15 +367,19 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, menu_text)
         return
 
-    # 2. LOCAL GUIDE, LOCATION & PHOTOS (Photo Feature Restored!)
+    # 2. LOCAL GUIDE, LOCATION & PHOTOS (Dual Photo Dispatch)
     if any(gw in text_lower for gw in ["guide", "ghoomne", "aarti", "places", "visit"]):
         send_whatsapp_message(sender_phone, "🗺️ *Haridwar Local Guide*\n\n🙏 *Ganga Aarti Timings:*\n• Subah: 5:30 AM - 6:30 AM\n• Shaam: 6:00 PM - 7:00 PM\n\n🛕 *Places:*\n1. Mansa Devi Temple\n2. Chandi Devi Temple\n3. Kankhal")
         return
     if any(lw in text_lower for lw in ["location", "map", "address"]):
         send_whatsapp_message(sender_phone, "📍 *Hotel Ganga View, Haridwar*\n🗺️ *Map:* https://maps.google.com/?q=29.9530,78.1700")
         return
-    if any(pw in text_lower for pw in ["photo", "photos", "pic", "image", "tasveer", "room dikhao"]):
-        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar*\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
+    # Updated Trigger: Caught "room ki" as well
+    if any(pw in text_lower for pw in ["photo", "photos", "pic", "image", "tasveer", "room dikhao", "room ki", "andar ki"]):
+        # 1st Image: Hotel Exterior
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar* (Exterior View)")
+        # 2nd Image: Room Interior
+        send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room.jpg", "🛏️ *Deluxe AC Room (Interior)*\n\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
         return
 
     # 3. BILL HANDLER
@@ -418,12 +422,10 @@ def process_and_reply(message, sender_phone, msg_type):
     
     if is_food and not is_staff_alert:
         if is_inquiry:
-            # Sawaal pucha hai ("Dal available hai?") - Reply with Menu info
             reply = "Ji, humare menu me Dal Fry (₹160), Dal Makhani (₹190), Kadhai Paneer (₹240), aur Roti (₹15) uplabdh hain. Order place karne ke liye kripya item ka naam aur quantity batayein. 🍽️"
             send_whatsapp_message(sender_phone, reply)
             return
         else:
-            # Order kiya hai ("1 dal fet") - Auto Correct & Place Order
             if is_inhouse:
                 total_price, corrected_order = resolve_item_price_and_name(user_text)
                 threading.Thread(target=append_kitchen_order_to_sheet, args=(guest_info['room'], guest_info['name'], corrected_order, total_price), daemon=True).start()

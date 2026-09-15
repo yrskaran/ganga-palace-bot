@@ -80,7 +80,6 @@ MENU_MAPPING = {
     "jalebi": ("Jalebi", 30), "thali": ("Special Thali", 250)
 }
 
-# INTERNAL HINDI TO HINGLISH TRANSLATOR
 def normalize_transcription(text):
     if not text: return ""
     text = text.lower()
@@ -396,17 +395,14 @@ def transcribe_audio_groq(audio_bytes):
         print(f"❌ [GROQ EXCEPTION]: {e}", flush=True)
     return None
 
-# 🔥 READ FROM EXTERNAL HOTEL_DATA.TXT
 def get_hotel_data():
     try:
         if os.path.exists("hotel_data.txt"):
             with open("hotel_data.txt", "r", encoding="utf-8") as f:
                 return f.read().strip()
     except Exception as e: print(f"❌ [HOTEL DATA FILE ERROR]: {e}", flush=True)
-    # Default Fallback if file doesn't exist
-    return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. Rooms are clean, spacious, and very comfortable."
+    return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-# 🔥 LATEST COHERE MODEL (command-r-plus) TO FIX 404 ERROR
 def ask_cohere(prompt_input):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
@@ -420,6 +416,7 @@ def ask_cohere(prompt_input):
 Your task is to act exactly as described in the HOTEL DATA above.
 """
     
+    # Primary try
     payload = {"model": "command-r-plus", "message": prompt_input, "preamble": preamble, "temperature": 0.3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
@@ -427,8 +424,8 @@ Your task is to act exactly as described in the HOTEL DATA above.
             return res.json().get("text", "").strip()
         else:
             print(f"❌ [COHERE API ERROR 'command-r-plus'] {res.status_code} - {res.text}", flush=True)
-            # Safe Fallback
-            payload_fallback = {"message": prompt_input, "preamble": preamble, "temperature": 0.3}
+            # 🔥 FIX: SPECIFIED FALLBACK MODEL TO PREVENT CRASH
+            payload_fallback = {"model": "command-light", "message": prompt_input, "preamble": preamble, "temperature": 0.3}
             res_fallback = requests.post(url, json=payload_fallback, headers=headers, timeout=8)
             if res_fallback.status_code == 200:
                 return res_fallback.json().get("text", "").strip()
@@ -443,7 +440,6 @@ def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
     print(f"\n🚀 [INCOMING MSG] Type: {msg_type} from {sender_phone}", flush=True)
     
-    # VOICE NOTE HANDLER
     if msg_type == "audio":
         media_id = message.get("audio", {}).get("id")
         audio_bytes = download_whatsapp_media(media_id)
@@ -662,9 +658,6 @@ def process_and_reply(message, sender_phone, msg_type):
             return
 
     # 6. DYNAMIC AI (COHERE) - STAFF ESCALATION & GENERAL KNOWLEDGE
-    # The DUMB staff_alert loop is GONE! Now, AI handles it unless explicitly tagged.
-    
-    # Prepare prompt with dynamic context
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:
@@ -675,13 +668,11 @@ def process_and_reply(message, sender_phone, msg_type):
     bot_reply = ask_cohere(prompt_input)
 
     if bot_reply: 
-        # Check if AI generated a staff alert
         if "[STAFF_ALERT:" in bot_reply:
             bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
             room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "New Customer Query"
             send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
             
-        # Check if AI generated a kitchen alert (Just in case AI triggers it instead of regex)
         if "[KITCHEN_ALERT:" in bot_reply:
             bot_reply = re.sub(r"\[KITCHEN_ALERT:\s*.*?\]", "", bot_reply).strip()
             
@@ -801,6 +792,7 @@ def handle_webhook():
     
     try:
         data = request.get_json()
+        
         if not data: return jsonify({"status": "ignored"}), 200
         
         entry = data.get("entry", [])
@@ -810,9 +802,17 @@ def handle_webhook():
         if not changes: return jsonify({"status": "ignored"}), 200
         
         value = changes[0].get("value", {})
+        
+        # Ignored Meta status updates (read/delivered)
+        if "statuses" in value:
+            return jsonify({"status": "success"}), 200
+
         messages = value.get("messages", [])
         
-        if not messages: return jsonify({"status": "ignored"}), 200
+        # 🔥 THE X-RAY SCANNER TO CATCH META'S TRAP
+        if not messages: 
+            print("⚠️ [META TRAP] Request aayi par message nahi! Apna Webhook Subscription check karein!", flush=True)
+            return jsonify({"status": "ignored"}), 200
             
         msg = messages[0]
         msg_id = msg.get("id")
@@ -822,7 +822,7 @@ def handle_webhook():
         if msg_id in processed_msg_ids: return jsonify({"status": "duplicate"}), 200
             
         processed_msg_ids.add(msg_id)
-        if len(processed_msg_ids) > 1000: processed_msg_ids.pop()
+        if len(processed_msg_ids) > 1000: processed_msg_ids.clear() # Fix: Safe Memory Clean
         
         mark_message_as_read(msg_id)
         threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()

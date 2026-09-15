@@ -51,6 +51,9 @@ RENDER_EXTERNAL_URL = os.getenv(
 
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
+APP_VERSION = "GANGA-V8"
+ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
+
 # -----------------------------
 # HOTEL DATA
 # -----------------------------
@@ -76,6 +79,7 @@ order_sessions = {}
 checkin_sessions = {}
 service_sessions = {}
 active_orders = {}
+last_bill_reply = {}
 
 welcomed_guests = set()
 guest_first_seen = {}
@@ -86,6 +90,10 @@ aarti_prompted = set()
 dinner_prompted = set()
 checked_out_guests = set()
 notified_paid_orders = set()
+# Payment notification state: avoids sending every historical PAID row
+# on startup and only notifies when a row transitions into PAID.
+payment_status_cache = {}
+payment_monitor_initialized = False
 
 ACTIVE_CHAT_MODEL = None
 last_model_fetch = 0
@@ -1324,6 +1332,115 @@ def complete_checkin_with_id(sender_phone, message):
         session["step"] = "STAFF_VERIFICATION"
 
 
+
+def _money(value):
+    try:
+        return f"₹{int(value):,}"
+    except Exception:
+        return "₹0"
+
+
+def _clean_bill_items(items):
+    """
+    Convert stored order rows into compact WhatsApp lines.
+    Filters accidental zero-value rows.
+    """
+    cleaned = []
+    for item in items or []:
+        text = str(item).strip()
+        if not text:
+            continue
+        # Do not display malformed zero-value legacy rows.
+        if re.search(r"(?:^|\s)Rs\.?0(?:\s|$)", text, re.I) or "₹0" in text:
+            continue
+        cleaned.append(text)
+    return cleaned
+
+
+def format_bill_message(fin, room, guest_name):
+    """
+    Default 'bill' response: complete, clean customer bill.
+    No long kitchen-history dump.
+    """
+    pending = _clean_bill_items(fin.get("pending_items", []))
+    paid = _clean_bill_items(fin.get("paid_items", []))
+
+    msg = (
+        "🧾 *HOTEL GANGA VIEW BILL*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *Guest:* {guest_name} ji\n"
+        f"🚪 *Room:* {room}\n"
+        f"🌙 *Stay:* {fin.get('nights', 1)} Night(s)\n\n"
+
+        "🏨 *ROOM*\n"
+        f"₹{fin.get('room_rate', 0):,} × {fin.get('nights', 1)} night(s) = "
+        f"*{_money(fin.get('room_total', 0))}*\n"
+        f"Advance Paid: {_money(fin.get('room_advance', 0))}\n\n"
+
+        "🍽️ *FOOD*\n"
+        f"Food Total: *{_money(fin.get('kitchen_total', 0))}*\n"
+        f"Food Paid: {_money(fin.get('kitchen_paid', 0))}\n"
+        f"Food Due: {_money(fin.get('kitchen_pending', 0))}\n\n"
+
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *GRAND TOTAL*   {_money(fin.get('grand_total', 0))}\n"
+        f"✅ *PAID*           {_money(fin.get('total_paid', 0))}\n"
+        f"⚠️ *BALANCE DUE*    {_money(fin.get('balance', 0))}\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        "💳 Payment: UPI / Cash / Card\n"
+        "🙏 Thank you for staying with us!"
+    )
+
+    # Only show food line-items when there are a small number of them.
+    # This prevents an ugly multi-line dump in the normal bill.
+    all_items = pending + paid
+    if 0 < len(all_items) <= 6:
+        item_block = "\n".join(f"• {x}" for x in all_items)
+        msg = msg.replace(
+            "🍽️ *FOOD*\n",
+            f"🍽️ *FOOD*\n{item_block}\n\n"
+        )
+
+    return msg
+
+
+def format_room_rent_message(fin, room, guest_name):
+    return (
+        "🏨 *ROOM BILL*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {guest_name} ji\n"
+        f"🚪 Room {room}\n"
+        f"🌙 {fin.get('nights', 1)} Night(s)\n\n"
+        f"Room Tariff: {_money(fin.get('room_rate', 0))} × {fin.get('nights', 1)}\n"
+        f"*Room Total:* {_money(fin.get('room_total', 0))}\n"
+        f"Advance Paid: {_money(fin.get('room_advance', 0))}\n"
+        f"⚠️ *Room Due:* {_money(max(0, fin.get('room_total', 0) - fin.get('room_advance', 0)))}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+def format_kitchen_bill_message(fin, room, guest_name):
+    pending = _clean_bill_items(fin.get("pending_items", []))
+    paid = _clean_bill_items(fin.get("paid_items", []))
+
+    pending_block = "\n".join(f"• {x}" for x in pending) or "• None"
+    paid_block = "\n".join(f"• {x}" for x in paid) or "• None"
+
+    return (
+        "🍽️ *KITCHEN BILL*\n"
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 {guest_name} ji  |  🚪 Room {room}\n\n"
+        "🕐 *Pending*\n"
+        f"{pending_block}\n\n"
+        "✅ *Paid*\n"
+        f"{paid_block}\n\n"
+        f"Food Total: {_money(fin.get('kitchen_total', 0))}\n"
+        f"Food Paid: {_money(fin.get('kitchen_paid', 0))}\n"
+        f"⚠️ *Food Due: {_money(fin.get('kitchen_pending', 0))}\n"
+        "━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
 # ============================================================
 # DETERMINISTIC MESSAGE ROUTER
 # ============================================================
@@ -1332,7 +1449,7 @@ def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
 
     print(
-        f"[INCOMING] type={msg_type} phone={sender_phone}",
+        f"[INCOMING] type={msg_type} phone={sender_phone} | BILL_ENGINE=v6",
         flush=True
     )
 
@@ -1764,6 +1881,14 @@ def process_and_reply(message, sender_phone, msg_type):
         "bill", "total", "hisaab", "hisab", "kharcha",
         "balance", "due", "paid", "kitna hua"
     ]):
+        # Prevent duplicate replies when the same WhatsApp webhook is retried.
+        bill_key = f"{sender_phone}:{t}"
+        now_ts = time.time()
+        with state_lock:
+            previous_bill = last_bill_reply.get(bill_key, 0)
+            if now_ts - previous_bill < 8:
+                return
+            last_bill_reply[bill_key] = now_ts
         if is_inhouse:
             # Refresh live kitchen data before financial response.
             fetch_sheet_data_sync()
@@ -1775,21 +1900,37 @@ def process_and_reply(message, sender_phone, msg_type):
             if "room rent" in t or "kamre ka" in t:
                 send_whatsapp_message(
                     sender_phone,
-                    f"Room {guest_info['room']} ka {fin['nights']} night total Rs.{fin['room_total']} hai. Due Rs.{max(0, fin['room_total'] - fin['room_advance'])} hai."
+                    format_room_rent_message(
+                        fin,
+                        guest_info["room"],
+                        guest_info["name"]
+                    )
                 )
                 return
 
-            if "complete" in t or "pura bill" in t or "grand total" in t:
+            # "bill", "total", "hisaab" => complete bill by default.
+            # Kitchen details are only shown when explicitly requested.
+            if any(x in t for x in [
+                "kitchen bill", "food bill", "food orders",
+                "kitchen orders", "khane ka bill"
+            ]):
                 send_whatsapp_message(
                     sender_phone,
-                    f"Room {guest_info['room']} ka Grand Total Rs.{fin['grand_total']}; Paid Rs.{fin['total_paid']}; Balance Due Rs.{fin['balance']}."
+                    format_kitchen_bill_message(
+                        fin,
+                        guest_info["room"],
+                        guest_info["name"]
+                    )
                 )
                 return
 
-            pending = ", ".join(fin["pending_items"]) or "Koi pending kitchen order nahi hai"
             send_whatsapp_message(
                 sender_phone,
-                f"Kitchen Total Rs.{fin['kitchen_total']}; Paid Rs.{fin['kitchen_paid']}; Pending Rs.{fin['kitchen_pending']}. {pending}"
+                format_bill_message(
+                    fin,
+                    guest_info["room"],
+                    guest_info["name"]
+                )
             )
             return
 
@@ -1947,6 +2088,39 @@ def handle_incoming_async(message, sender_phone, msg_type):
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================
 
+def kitchen_order_fingerprint(row):
+    """Stable ID based on sheet content, not row number."""
+    fields = [str(x).strip() for x in list(row[:5])]
+    return "|".join(fields)
+
+
+def build_paid_payment_message(name, room, orders):
+    total = sum(x["amount"] for x in orders)
+    if len(orders) == 1:
+        detail = orders[0]["item"]
+        return (
+            f"✅ *Payment Received*\n"
+            f"Namaste {name} ji! Room {room} ke *{detail}* ka payment "
+            f"₹{orders[0]['amount']:,} receive ho gaya hai. 🙏"
+        )
+
+    details = "\n".join(
+        f"• {x['item']} — ₹{x['amount']:,}" for x in orders
+    )
+    return (
+        f"✅ *Payments Received*\n"
+        f"Namaste {name} ji! Room {room} ke payments receive ho gaye hain:\n"
+        f"{details}\n"
+        f"💰 *Total Received: ₹{total:,}*"
+    )
+
+
+def process_payment_notifications(*_args, **_kwargs):
+    # Intentionally disabled. Payment status changes are shown only inside
+    # the guest-requested bill; never proactively message the guest.
+    return
+
+
 def monitor_guest_status_lifecycle():
     while True:
         try:
@@ -1962,6 +2136,7 @@ def monitor_guest_status_lifecycle():
             dinner_window = 19 <= hour <= 21
 
             room_phone_map = {}
+            room_name_map = {}
 
             with state_lock:
                 rows = list(shared_store.get("rooms", []))
@@ -1980,6 +2155,7 @@ def monitor_guest_status_lifecycle():
                     continue
 
                 room_phone_map[room] = phone
+                room_name_map[room] = name or "Guest"
                 key = f"{phone}_{room}"
 
                 if "IN" in status and "OUT" not in status:
@@ -2046,31 +2222,7 @@ def monitor_guest_status_lifecycle():
                             f"Namaste {name} ji! Hotel Ganga View me rukne ke liye dhanyawad. Shubh Yatra!"
                         )
                         checked_out_guests.add(out_key)
-
-            # Payment notification.
-            for index, row in enumerate(kitchen_rows, start=2):
-                if len(row) < 6:
-                    continue
-
-                room = clean_room(row[1])
-                item = str(row[3]).strip()
-                amount = safe_int(row[4])
-                status = str(row[5]).upper()
-
-                if amount <= 0 or "PAID" not in status:
-                    continue
-
-                unique = f"{room}_{index}_{amount}"
-                if unique in notified_paid_orders:
-                    continue
-
-                phone = room_phone_map.get(room)
-                if phone:
-                    send_whatsapp_message(
-                        phone,
-                        f"Payment received for Room {room}: Rs.{amount}."
-                    )
-                    notified_paid_orders.add(unique)
+            # Proactive payment notifications are intentionally disabled.
 
         except Exception as exc:
             print("LIFECYCLE ERROR:", exc, flush=True)
@@ -2084,7 +2236,7 @@ def monitor_guest_status_lifecycle():
 
 @app.route("/", methods=["GET"])
 def index():
-    return "Hotel Ganga View WhatsApp Bot is Live!", 200
+    return f"Hotel Ganga View WhatsApp Bot is Live | {APP_VERSION}", 200
 
 
 @app.route("/health", methods=["GET"])
@@ -2094,6 +2246,7 @@ def health():
 
     return jsonify({
         "status": "active",
+        "version": APP_VERSION,
         "hotel": get_hotel_name(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,
@@ -2173,10 +2326,30 @@ def webhook():
 # ============================================================
 
 def startup():
+    print(f"========== {APP_VERSION} STARTING ==========", flush=True)
     try:
         fetch_sheet_data_sync()
     except Exception:
         traceback.print_exc()
+
+    # Seed current PAID statuses before lifecycle begins.
+    # This guarantees old PAID rows never trigger guest notifications.
+    try:
+        with state_lock:
+            initial_rows = list(shared_store.get("kitchen_orders", []))
+            payment_status_cache.clear()
+            for row in initial_rows:
+                if len(row) >= 6:
+                    payment_status_cache[kitchen_order_fingerprint(row)] = str(row[5]).strip().upper()
+            global payment_monitor_initialized
+            payment_monitor_initialized = True
+        print(
+            f"[{APP_VERSION}] Payment notification seed complete; "
+            f"{len(payment_status_cache)} existing orders loaded.",
+            flush=True
+        )
+    except Exception as exc:
+        print(f"[{APP_VERSION}] PAYMENT SEED ERROR: {exc}", flush=True)
 
     threading.Thread(
         target=sync_sheets_in_background,
@@ -2189,6 +2362,8 @@ def startup():
         daemon=True,
         name="guest-lifecycle"
     ).start()
+
+    print(f"========== {APP_VERSION} READY ==========", flush=True)
 
 
 startup()

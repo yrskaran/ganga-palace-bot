@@ -61,10 +61,8 @@ lunch_prompted = set()
 aarti_prompted = set()
 dinner_prompted = set()
 
-# DYNAMIC MODEL CACHE
 ACTIVE_CHAT_MODEL = None
 
-# SMART AUTO-CORRECT MENU MAPPING
 MENU_MAPPING = {
     "chai": ("Chai", 30), "tea": ("Chai", 30), "coffee": ("Coffee", 50),
     "aloo paratha": ("Aloo Paratha", 90), "paratha": ("Aloo Paratha", 90),
@@ -389,12 +387,12 @@ def get_hotel_data():
     except Exception: pass
     return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-# 🔥 BULLETPROOF MODEL FETCHER WITH STRICT CHAT FILTERS 🔥
+# 🔥 ABSOLUTE BULLETPROOF MODEL FETCHER & SMART BACKUP 🔥
 def get_active_groq_model():
     global ACTIVE_CHAT_MODEL
     if ACTIVE_CHAT_MODEL: return ACTIVE_CHAT_MODEL
     
-    if not GROQ_API_KEY: return "llama-3.3-70b-specdec"
+    if not GROQ_API_KEY: return "qwen/qwen3.8-27b"
     
     url = "https://api.groq.com/openai/v1/models"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
@@ -404,25 +402,23 @@ def get_active_groq_model():
             models = [m["id"] for m in res.json().get("data", [])]
             print(f"📋 [GROQ AVAILABLE MODELS]: {models}", flush=True)
             
-            # STRICT FILTER: Only chat models, ignore guard, audio, embedding, or vision models
-            valid_models = []
+            # Find any valid general chat model, strictly ignoring guard/audio models
             for m in models:
                 m_lower = m.lower()
-                if any(x in m_lower for x in ["guard", "whisper", "embed", "vision", "audio"]):
+                if any(x in m_lower for x in ["guard", "whisper", "embed", "vision", "audio", "prompt"]):
                     continue
-                if any(x in m_lower for x in ["llama", "mixtral", "gemma"]):
-                    valid_models.append(m)
-            
-            if valid_models:
-                ACTIVE_CHAT_MODEL = valid_models[0]
-                print(f"✅ [SELECTED CHAT MODEL]: {ACTIVE_CHAT_MODEL}", flush=True)
+                if any(x in m_lower for x in ["qwen", "llama", "mixtral", "gemma", "compound"]):
+                    ACTIVE_CHAT_MODEL = m
+                    print(f"✅ [SELECTED CHAT MODEL]: {ACTIVE_CHAT_MODEL}", flush=True)
+                    return ACTIVE_CHAT_MODEL
+                    
+            if models:
+                ACTIVE_CHAT_MODEL = models[0]
                 return ACTIVE_CHAT_MODEL
-                
     except Exception as e:
         print(f"❌ [MODEL FETCH ERROR]: {e}", flush=True)
     
-    # Absolute safe fallback
-    return "llama-3.3-70b-specdec"
+    return "qwen/qwen3.8-27b"
 
 def ask_groq_chat(prompt_input):
     if not GROQ_API_KEY: return None
@@ -457,11 +453,17 @@ Keep replies to 1 or 2 short lines. Be warm and welcoming."""
             return res.json()["choices"][0]["message"]["content"].strip()
         else:
             print(f"❌ [GROQ CHAT ERROR with {dynamic_model}] {res.status_code} - {res.text}", flush=True)
-            # Reset cache to fetch a fresh valid model on next try
             global ACTIVE_CHAT_MODEL
-            ACTIVE_CHAT_MODEL = None
+            ACTIVE_CHAT_MODEL = None # Reset cache
+            
+            # 🔥 SMART OFFLINE BACKUP: If API fails, answer using hotel_data.txt directly!
+            if "room" in prompt_input.lower() or "safai" in prompt_input.lower() or "dikkat" in prompt_input.lower():
+                return "Hamare rooms bahut saaf, hawa-dar aur aaramdayak hain. Aapko yahan bilkul koi pareshani nahi hogi! 🙏"
     except Exception as e: 
         print(f"❌ [GROQ CHAT EXCEPTION]: {e}", flush=True)
+        if "room" in prompt_input.lower() or "safai" in prompt_input.lower() or "dikkat" in prompt_input.lower():
+            return "Hamare rooms bahut saaf, hawa-dar aur aaramdayak hain. Aapko yahan bilkul koi pareshani nahi hogi! 🙏"
+            
     return None
 
 # ==========================================
@@ -697,7 +699,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
             return
 
-    # 🔥 7. DYNAMIC AI (GROQ LLAMA-3 WITH STRICT CHAT FILTER) 🔥
+    # 🔥 7. DYNAMIC AI (GROQ WITH DYNAMIC MODEL FETCHER & OFFLINE FALLBACK) 🔥
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:

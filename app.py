@@ -29,7 +29,6 @@ VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip() 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-# 🔥 HARDCODED NUMBERS
 KITCHEN_PHONE = "919058929796"
 STAFF_PHONE = "917668426524"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
@@ -387,7 +386,6 @@ def get_hotel_data():
     except Exception: pass
     return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-# 🔥 ABSOLUTE BULLETPROOF MODEL FETCHER & SMART BACKUP 🔥
 def get_active_groq_model():
     global ACTIVE_CHAT_MODEL
     if ACTIVE_CHAT_MODEL: return ACTIVE_CHAT_MODEL
@@ -400,18 +398,13 @@ def get_active_groq_model():
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             models = [m["id"] for m in res.json().get("data", [])]
-            print(f"📋 [GROQ AVAILABLE MODELS]: {models}", flush=True)
-            
-            # Find any valid general chat model, strictly ignoring guard/audio models
             for m in models:
                 m_lower = m.lower()
                 if any(x in m_lower for x in ["guard", "whisper", "embed", "vision", "audio", "prompt"]):
                     continue
                 if any(x in m_lower for x in ["qwen", "llama", "mixtral", "gemma", "compound"]):
                     ACTIVE_CHAT_MODEL = m
-                    print(f"✅ [SELECTED CHAT MODEL]: {ACTIVE_CHAT_MODEL}", flush=True)
                     return ACTIVE_CHAT_MODEL
-                    
             if models:
                 ACTIVE_CHAT_MODEL = models[0]
                 return ACTIVE_CHAT_MODEL
@@ -428,23 +421,19 @@ def ask_groq_chat(prompt_input):
     hotel_context = get_hotel_data()
     dynamic_model = get_active_groq_model()
     
-    system_prompt = f"""You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. 
-CRITICAL RULE 1: NEVER mention that you are an AI, bot, or virtual assistant. Act exactly like a real human staff member.
-CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish.
-CRITICAL RULE 3 (COMMON SENSE): If a Checked-Out guest asks about room quality or issues (e.g., 'koi dikkat to nahi hai'), treat it as a general inquiry for a FUTURE booking. Say our rooms are perfectly clean and well-maintained. DO NOT say "you checked out so we can't take complaints."
-HOTEL DATA START:
-{hotel_context}
-HOTEL DATA END:
-If they mention a current problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.'
-Keep replies to 1 or 2 short lines. Be warm and welcoming."""
+    system_prompt = f"""You are a polite receptionist at Hotel Ganga View, Haridwar. Answer guest queries shortly (1-2 lines) using the HOTEL DATA below. Match user's language (English/Hinglish).
+HOTEL DATA:
+{hotel_context}"""
 
+    # 🔥 FIX: Added max_tokens=300 to strictly prevent Rate Limit (OTPM) errors!
     payload = {
         "model": dynamic_model, 
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt_input}
         ],
-        "temperature": 0.3
+        "temperature": 0.3,
+        "max_tokens": 300 
     }
     
     try:
@@ -452,17 +441,17 @@ Keep replies to 1 or 2 short lines. Be warm and welcoming."""
         if res.status_code == 200: 
             return res.json()["choices"][0]["message"]["content"].strip()
         else:
-            print(f"❌ [GROQ CHAT ERROR with {dynamic_model}] {res.status_code} - {res.text}", flush=True)
+            print(f"❌ [GROQ CHAT ERROR] {res.status_code} - {res.text}", flush=True)
             global ACTIVE_CHAT_MODEL
-            ACTIVE_CHAT_MODEL = None # Reset cache
+            ACTIVE_CHAT_MODEL = None
             
-            # 🔥 SMART OFFLINE BACKUP: If API fails, answer using hotel_data.txt directly!
-            if "room" in prompt_input.lower() or "safai" in prompt_input.lower() or "dikkat" in prompt_input.lower():
-                return "Hamare rooms bahut saaf, hawa-dar aur aaramdayak hain. Aapko yahan bilkul koi pareshani nahi hogi! 🙏"
+            # 🔥 SMART OFFLINE FALLBACK (Guarantees reply even if Groq fails)
+            if any(w in prompt_input.lower() for w in ["room", "safai", "dikkat", "tariff", "rate"]):
+                return "Hamare rooms bahut saaf aur aaramdayak hain. Standard room ₹1,800 aur Deluxe AC room ₹2,500 per night hai! 🙏"
     except Exception as e: 
         print(f"❌ [GROQ CHAT EXCEPTION]: {e}", flush=True)
-        if "room" in prompt_input.lower() or "safai" in prompt_input.lower() or "dikkat" in prompt_input.lower():
-            return "Hamare rooms bahut saaf, hawa-dar aur aaramdayak hain. Aapko yahan bilkul koi pareshani nahi hogi! 🙏"
+        if any(w in prompt_input.lower() for w in ["room", "safai", "dikkat", "tariff", "rate"]):
+            return "Hamare rooms bahut saaf aur aaramdayak hain. Standard room ₹1,800 aur Deluxe AC room ₹2,500 per night hai! 🙏"
             
     return None
 
@@ -699,7 +688,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
             return
 
-    # 🔥 7. DYNAMIC AI (GROQ WITH DYNAMIC MODEL FETCHER & OFFLINE FALLBACK) 🔥
+    # 🔥 7. DYNAMIC AI (GROQ WITH RATE-LIMIT PREVENTION) 🔥
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:

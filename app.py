@@ -30,8 +30,8 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058514478")
-STAFF_PHONE = os.getenv("STAFF_PHONE", "919058514488")
+KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796")
+STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524")
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
@@ -50,7 +50,7 @@ checkin_sessions = {}
 order_sessions = {}  
 active_orders = {}   
 
-# LIFECYCLE MEMORY (With New Proactive Alerts)
+# LIFECYCLE MEMORY
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -206,7 +206,6 @@ def fetch_sheet_data_sync():
                             if "IN" in r_status and "OUT" not in r_status:
                                 welcomed_guests.add(f"{r_phone}_{r_num}")
                                 notified_30min.add(f"{r_phone}_{r_num}")
-                                # 🔥 FULL DAY ANTI-SPAM (For Breakfast, Lunch, Aarti, Dinner)
                                 if now_ist.hour >= 10: breakfast_prompted.add(f"{r_phone}_{r_num}_{today_str}")
                                 if now_ist.hour >= 15: lunch_prompted.add(f"{r_phone}_{r_num}_{today_str}")
                                 if now_ist.hour >= 18: aarti_prompted.add(f"{r_phone}_{r_num}_{today_str}")
@@ -405,6 +404,7 @@ def ask_cohere(user_message):
         "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
         "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member. "
         "CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish. "
+        "HOTEL INFO: Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. "
         "CRITICAL RULE 3 (COMMON SENSE): If the user says simple conversational words like 'No', 'Nahi', 'Okay', 'Thanks', 'Dhanyawad', or 'Ji', DO NOT say 'facility unavailable'. Just reply warmly and naturally (e.g., 'Ji theek hai, agar kisi cheez ki zaroorat ho toh batayein. 🙏'). "
         "CRITICAL RULE 4: If they ask for a facility/food NOT available, decline politely without making up excuses. "
         "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
@@ -494,10 +494,18 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "Kripya 'Haan' (Yes) ya 'Nahi' (No) likh kar bataein ki kya aap order confirm karna chahte hain?")
                 return
 
-    # --- SELF CHECK-IN STATE MACHINE ---
+    # --- SELF CHECK-IN STATE MACHINE WITH ESCAPE LOOP ---
     if sender_phone in checkin_sessions:
         session = checkin_sessions[sender_phone]
         step = session["step"]
+        
+        # 🔥 THE ESCAPE HATCH: Agar OTP ke time customer bhaagna chahe
+        exit_words = ["cancel", "nahi", "no", "stop", "exit", "rehne", "chodo", "hi", "hello", "hey"]
+        if any(w == text_lower for w in exit_words) or any(w in text_lower for w in ["cancel", "nahi", "no"]):
+            del checkin_sessions[sender_phone]
+            send_whatsapp_message(sender_phone, "✅ Koi baat nahi. Aap hotel pohoch kar reception par jaake bhi check-in kar sakte hain. 🙏\n\nKisi aur jankari (rooms, parking, location) ke liye mujhe message karein.")
+            return
+
         if step == "AWAITING_OTP":
             if msg_type in ["text", "audio"] and text_lower == session["otp"]:
                 session["step"] = "AWAITING_NAME"
@@ -533,12 +541,14 @@ def process_and_reply(message, sender_phone, msg_type):
 
     if msg_type not in ["text", "audio"] or not user_text: return
 
-    # 1. GREETINGS (NO FOOD PUSH, NO SPAM WIFI)
+    print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
+
+    # 1. GREETINGS (🔥 RECEPTIONIST STYLE FOR NEW GUESTS)
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
         else: 
-            send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View*.\nSelf check-in karne ke liye 'check in' type karein!")
+            send_whatsapp_message(sender_phone, "Namaste! 🙏 Welcome to *Hotel Ganga View, Haridwar*.\nMain aapki kaise sahayata kar sakta hoon? Aap rooms, tariff, parking ya location ke baare me pooch sakte hain.\n\n*(Agar aap hotel me hain aur Self Check-in karna chahte hain, toh 'check in' type karein)*")
         return
 
     # WI-FI ON DEMAND

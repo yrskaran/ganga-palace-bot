@@ -389,12 +389,12 @@ def get_hotel_data():
     except Exception: pass
     return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-# 🔥 THE GOD MODE FIX: DYNAMICALLY FETCH ACTIVE GROQ MODEL
+# 🔥 BULLETPROOF MODEL FETCHER WITH STRICT CHAT FILTERS 🔥
 def get_active_groq_model():
     global ACTIVE_CHAT_MODEL
     if ACTIVE_CHAT_MODEL: return ACTIVE_CHAT_MODEL
     
-    if not GROQ_API_KEY: return "llama-3.1-70b-versatile"
+    if not GROQ_API_KEY: return "llama-3.3-70b-specdec"
     
     url = "https://api.groq.com/openai/v1/models"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
@@ -402,24 +402,27 @@ def get_active_groq_model():
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             models = [m["id"] for m in res.json().get("data", [])]
-            # Priority 1: Llama 70B variant
+            print(f"📋 [GROQ AVAILABLE MODELS]: {models}", flush=True)
+            
+            # STRICT FILTER: Only chat models, ignore guard, audio, embedding, or vision models
+            valid_models = []
             for m in models:
-                if "llama" in m.lower() and "70b" in m.lower():
-                    ACTIVE_CHAT_MODEL = m
-                    return m
-            # Priority 2: Any Llama
-            for m in models:
-                if "llama" in m.lower():
-                    ACTIVE_CHAT_MODEL = m
-                    return m
-            # Priority 3: First available model
-            if models:
-                ACTIVE_CHAT_MODEL = models[0]
+                m_lower = m.lower()
+                if any(x in m_lower for x in ["guard", "whisper", "embed", "vision", "audio"]):
+                    continue
+                if any(x in m_lower for x in ["llama", "mixtral", "gemma"]):
+                    valid_models.append(m)
+            
+            if valid_models:
+                ACTIVE_CHAT_MODEL = valid_models[0]
+                print(f"✅ [SELECTED CHAT MODEL]: {ACTIVE_CHAT_MODEL}", flush=True)
                 return ACTIVE_CHAT_MODEL
+                
     except Exception as e:
         print(f"❌ [MODEL FETCH ERROR]: {e}", flush=True)
     
-    return "llama3-8b-8192" # Fallback if fetch fails completely
+    # Absolute safe fallback
+    return "llama-3.3-70b-specdec"
 
 def ask_groq_chat(prompt_input):
     if not GROQ_API_KEY: return None
@@ -454,7 +457,7 @@ Keep replies to 1 or 2 short lines. Be warm and welcoming."""
             return res.json()["choices"][0]["message"]["content"].strip()
         else:
             print(f"❌ [GROQ CHAT ERROR with {dynamic_model}] {res.status_code} - {res.text}", flush=True)
-            # If dynamic model failed (e.g. just decommissioned), clear cache to fetch new one next time
+            # Reset cache to fetch a fresh valid model on next try
             global ACTIVE_CHAT_MODEL
             ACTIVE_CHAT_MODEL = None
     except Exception as e: 
@@ -567,7 +570,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
         if step == "AWAITING_ID":
             if msg_type == "image":
-                send_whatsapp_message(sender_phone, "🔄 ID scan ki ja rahi aur address match kiya ja raha hai... Kripya pratiksha karein.")
+                send_whatsapp_message(sender_phone, "🔄 ID scan ki ja rahi hai aur address match kiya ja raha hai... Kripya pratiksha karein.")
                 
                 img_bytes = download_whatsapp_media(message.get("image", {}).get("id"))
                 drive_link = upload_image_to_google_drive(img_bytes, f"ID_{session['name'].replace(' ', '_')}_{sender_phone}.jpg") if img_bytes else "No_Image"
@@ -694,7 +697,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
             return
 
-    # 🔥 7. DYNAMIC AI (GROQ LLAMA-3 WITH DYNAMIC FETCHER) 🔥
+    # 🔥 7. DYNAMIC AI (GROQ LLAMA-3 WITH STRICT CHAT FILTER) 🔥
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:

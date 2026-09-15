@@ -45,7 +45,7 @@ chat_histories = {}
 processed_msg_ids = set()
 checkin_sessions = {}
 
-# MEMORY SETS (Inhe restart par silently fill kiya jayega)
+# MEMORY SETS
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -150,7 +150,6 @@ def download_whatsapp_media(media_id):
     return None
 
 def fetch_sheet_data_sync():
-    print("[SYSTEM] Fetching Master Data & Silently Pre-filling Memory...", flush=True)
     client = get_gspread_client()
     if client:
         try:
@@ -158,7 +157,6 @@ def fetch_sheet_data_sync():
             r_data = sh.get_worksheet(0).get_all_values()
             if len(r_data) > 1: 
                 shared_store["rooms"] = r_data[1:]
-                # 🛑 SILENT PRE-FILL FOR ROOMS (No restart spam)
                 for row in shared_store["rooms"]:
                     if len(row) >= 6:
                         r_num = re.sub(r"\D", "", str(row[0]))
@@ -174,7 +172,6 @@ def fetch_sheet_data_sync():
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
             if len(k_data) > 1: 
                 shared_store["kitchen_orders"] = k_data[1:]
-                # 🛑 SILENT PRE-FILL FOR KITCHEN (Stops bill spam on restart)
                 for idx, k_row in enumerate(shared_store["kitchen_orders"], start=2):
                     if len(k_row) >= 6:
                         k_room = re.sub(r"\D", "", str(k_row[1]))
@@ -184,9 +181,7 @@ def fetch_sheet_data_sync():
                             notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
 
             shared_store["last_synced"] = time.time()
-            print("[SYSTEM] Silent Memory Pre-fill Complete. Spam prevented.", flush=True)
-        except Exception as e: 
-            print(f"[SHEET SYNC ERROR]: {e}", flush=True)
+        except Exception: pass
 
 def sync_sheets_in_background():
     while True:
@@ -305,17 +300,20 @@ def mark_message_as_read(message_id):
     try: requests.post(url, json={"messaging_product": "whatsapp", "status": "read", "message_id": message_id}, headers=headers, timeout=5)
     except Exception: pass
 
+# --- THE BILINGUAL & SMART AI BRAIN ---
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
     
     preamble = (
-        "You are the friendly WhatsApp AI Receptionist for Hotel Ganga View, Haridwar. "
-        "Reply politely in 1 or 2 lines in Hinglish. "
-        "If a guest asks strange, irrelevant questions (like selling the hotel, who is the owner, discounts, etc.) OR something you don't know, "
-        "DO NOT say 'Ji batayein'. Instead, always reply with: 'Is baare mein adhik jankari ke liye kripya reception par sampark karein.' "
-        "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
+        "You are a highly professional, human Receptionist working at Hotel Ganga View, Haridwar. "
+        "NEVER mention that you are an AI, bot, or virtual assistant. Act exactly like a real hotel staff member. "
+        "CRITICAL LANGUAGE RULE: Match the user's language! If the user writes in English, reply in pure, polite English. If the user writes in Hindi or Hinglish, reply in polite Hinglish. "
+        "Reply politely in 1 or 2 short lines. "
+        "If a guest asks for a facility, food item, or service that is NOT available (or strange requests like selling the hotel), "
+        "politely decline in their language (e.g., 'Kshama karein, abhi yeh suvidha uplabdh nahi hai' OR 'Sorry, this facility is currently unavailable'). "
+        "If they mention a problem (mouse, dirty, help, cleaning), say: '[STAFF_ALERT: complaint] Ji, maine staff ko inform kar diya hai' (or English equivalent). "
     )
     payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
@@ -328,6 +326,13 @@ def ask_cohere(user_message):
 # 4. MESSAGE ROUTER & SELF CHECK-IN
 # ==========================================
 def process_and_reply(message, sender_phone, msg_type):
+    
+    # 🎤 NEW VOICE NOTE HANDLER
+    if msg_type == "audio":
+        reply_msg = "Maaf kijiye, main abhi voice notes nahi sun sakta. Kripya apna message likh kar bhejein. 🙏\n\nSorry, I am unable to listen to voice notes right now. Please type your message."
+        send_whatsapp_message(sender_phone, reply_msg)
+        return
+        
     user_text = message.get("text", {}).get("body", "") if msg_type == "text" else ""
     text_lower = user_text.lower().strip()
     
@@ -432,7 +437,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 4. HOUSEKEEPING & STAFF ALERTS (NOW WITH ENGLISH WORDS!)
+    # 4. HOUSEKEEPING & STAFF ALERTS
     staff_alert_words = [
         "towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", 
         "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", 
@@ -476,27 +481,38 @@ def process_and_reply(message, sender_phone, msg_type):
     if is_staff_alert:
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
-        send_whatsapp_message(sender_phone, "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏")
+        # BILINGUAL STAFF ALERT RESPONSE
+        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
+        if is_english and "hai" not in text_lower and "ji" not in text_lower:
+            send_whatsapp_message(sender_phone, "I have informed the staff. They will be there to assist you shortly. 🙏")
+        else:
+            send_whatsapp_message(sender_phone, "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏")
         return
         
     prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" if is_inhouse else f"[INQUIRY]\n{user_text}"
     bot_reply = ask_cohere(prompt_input)
 
-    # NEW SMART NO-NONSENSE FALLBACK (If AI fails or gets confused)
+    # POLITE BILINGUAL FALLBACK
     if not bot_reply: 
+        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
         if not is_inhouse and not is_checkout:
             bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!"
         else:
-            bot_reply = "Maaf kijiye, main ek AI bot hoon aur ise samajh nahi paya. Kisi bhi jankari ya shikayat ke liye kripya direct Reception par call karein. 🙏"
+            if is_english and "hai" not in text_lower:
+                bot_reply = "I apologize, but this facility or information might not be available right now. Please contact the reception for further assistance. 🙏"
+            else:
+                bot_reply = "Kshama karein, shayad abhi yeh suvidha uplabdh nahi hai. Kripya kisi bhi sahayata ke liye reception par call karein. 🙏"
             
     if "[STAFF_ALERT:" in bot_reply:
         bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
-        bot_reply = "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏"
-
-    if not bot_reply:
-        bot_reply = "Is baare mein adhik jankari ke liye kripya reception par sampark karein."
+        
+        is_english = re.match(r'^[a-zA-Z0-9\s.,?!]+$', user_text)
+        if is_english and "hai" not in text_lower:
+            bot_reply = "I have informed the staff. They will assist you shortly. 🙏"
+        else:
+            bot_reply = "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏"
 
     send_whatsapp_message(sender_phone, bot_reply)
 
@@ -504,7 +520,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
     try: 
         process_and_reply(message, sender_phone, msg_type)
     except Exception as e: 
-        print(f"\n[CRITICAL ERROR]: {e}", flush=True)
+        pass
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR

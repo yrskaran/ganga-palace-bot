@@ -30,8 +30,9 @@ COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
-KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796")
-STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524")
+# 🔥 HARDCODED NUMBERS TO PREVENT RENDER OVERRIDE
+KITCHEN_PHONE = "919058929796"
+STAFF_PHONE = "917668426524"
 SHEET_ID = "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
 
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "https://ganga-palace-bot.onrender.com")
@@ -396,6 +397,7 @@ def transcribe_audio_groq(audio_bytes):
         print(f"❌ [GROQ EXCEPTION]: {e}", flush=True)
     return None
 
+# 🔥 FIX: MODEL CHANGED TO 'command' BECAUSE 'command-r' IS DEPRECATED
 def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
@@ -404,13 +406,13 @@ def ask_cohere(user_message):
         "You are a highly professional, polite human Receptionist working at Hotel Ganga View, Haridwar. "
         "CRITICAL RULE 1: NEVER mention that you are an AI, bot, virtual assistant. Act exactly like a real human staff member. "
         "CRITICAL RULE 2: Match the user's language EXACTLY! English for English, Hinglish for Hindi/Hinglish. "
-        "HOTEL INFO: Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. "
+        "HOTEL INFO: Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. 4-Bed Family Room is available. We have safe Parking available. Ganga Aarti is nearby. Rooms are clean, spacious, and very comfortable. "
         "CRITICAL RULE 3 (COMMON SENSE): If the user says simple conversational words like 'No', 'Nahi', 'Okay', 'Thanks', 'Dhanyawad', or 'Ji', DO NOT say 'facility unavailable'. Just reply warmly and naturally (e.g., 'Ji theek hai, agar kisi cheez ki zaroorat ho toh batayein. 🙏'). "
         "CRITICAL RULE 4: If they ask for a facility/food NOT available, decline politely without making up excuses. "
         "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
         "Keep replies to 1 or 2 short lines."
     )
-    payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
+    payload = {"model": "command", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=8)
         if res.status_code == 200: 
@@ -499,7 +501,6 @@ def process_and_reply(message, sender_phone, msg_type):
         session = checkin_sessions[sender_phone]
         step = session["step"]
         
-        # 🔥 THE ESCAPE HATCH
         exit_words = ["cancel", "nahi", "no", "stop", "exit", "rehne", "chodo", "hi", "hello", "hey"]
         if any(w == text_lower for w in exit_words) or any(w in text_lower for w in ["cancel", "nahi", "no"]):
             del checkin_sessions[sender_phone]
@@ -516,7 +517,7 @@ def process_and_reply(message, sender_phone, msg_type):
         if step == "AWAITING_NAME":
             if msg_type in ["text", "audio"] and len(user_text) > 2:
                 session["name"] = user_text.strip()
-                session["step"] = "AWAITING_ADDRESS" # NEW STEP
+                session["step"] = "AWAITING_ADDRESS"
                 send_whatsapp_message(sender_phone, f"Dhanyawad {session['name']} ji!\n\nKripya ID verification ke liye apna *Poora Address* (Shahar aur Rajya) likhein.")
             else: send_whatsapp_message(sender_phone, "Kripya apna sahi naam text me likhein.")
             return
@@ -536,7 +537,6 @@ def process_and_reply(message, sender_phone, msg_type):
                 img_bytes = download_whatsapp_media(message.get("image", {}).get("id"))
                 drive_link = upload_image_to_google_drive(img_bytes, f"ID_{session['name'].replace(' ', '_')}_{sender_phone}.jpg") if img_bytes else "No_Image"
                 
-                # Simulate AI verification delay
                 time.sleep(2)
                 
                 assigned_room = "105"
@@ -548,7 +548,6 @@ def process_and_reply(message, sender_phone, msg_type):
                 client = get_gspread_client()
                 if client:
                     try: 
-                        # Appending Name, Phone, Status, Date, Link, and Address
                         client.open_by_key(SHEET_ID).get_worksheet(0).append_row([assigned_room, "Deluxe", "1800", session["name"], sender_phone, "CHECKED_IN", datetime.now(IST).strftime("%d-%m-%Y"), drive_link, session["address"]])
                     except Exception as e: print(f"❌ [SHEET ENTRY ERROR]: {e}", flush=True)
                 
@@ -563,7 +562,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
     print(f"[EVALUATING] Text: '{text_lower}'", flush=True)
 
-    # 1. GREETINGS (🔥 RECEPTIONIST STYLE FOR NEW GUESTS)
+    # 1. GREETINGS
     if text_lower in ["hi", "hello", "namaste", "hey", "start", "hlo"] or len(text_lower) <= 2:
         if is_inhouse: 
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nRoom {guest_info['room']} se sampark karne ke liye dhanyawad.\nMain aapki kya sahayata kar sakta hoon?")
@@ -674,7 +673,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
                 return
 
-    # 7. STAFF ESCALATION & COMMON SENSE AI
+    # 7. STAFF ESCALATION & AI BRAIN (COHERE)
     if is_staff_alert:
         room_tag = f"Room {guest_info['room']} ({guest_info['name']})" if is_inhouse else "Customer Query"
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")

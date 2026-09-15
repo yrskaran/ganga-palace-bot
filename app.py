@@ -44,6 +44,8 @@ shared_store = {
 chat_histories = {}
 processed_msg_ids = set()
 checkin_sessions = {}
+
+# MEMORY SETS (Inhe restart par silently fill kiya jayega)
 notified_paid_orders = set()
 welcomed_guests = set()
 checked_out_guests = set()
@@ -148,18 +150,43 @@ def download_whatsapp_media(media_id):
     return None
 
 def fetch_sheet_data_sync():
-    print("[SYSTEM] Fetching Master Data from Google Sheets...", flush=True)
+    print("[SYSTEM] Fetching Master Data & Silently Pre-filling Memory...", flush=True)
     client = get_gspread_client()
     if client:
         try:
             sh = client.open_by_key(SHEET_ID)
             r_data = sh.get_worksheet(0).get_all_values()
-            if len(r_data) > 1: shared_store["rooms"] = r_data[1:]
+            if len(r_data) > 1: 
+                shared_store["rooms"] = r_data[1:]
+                # 🛑 SILENT PRE-FILL FOR ROOMS (No restart spam)
+                for row in shared_store["rooms"]:
+                    if len(row) >= 6:
+                        r_num = re.sub(r"\D", "", str(row[0]))
+                        r_phone = re.sub(r"\D", "", str(row[4]))[-10:] if len(row)>4 else ""
+                        r_status = str(row[5]).upper()
+                        if r_phone:
+                            if "CHECKED_IN" in r_status:
+                                welcomed_guests.add(f"{r_phone}_{r_num}")
+                                notified_30min.add(f"{r_phone}_{r_num}")
+                            elif "CHECKOUT" in r_status:
+                                checked_out_guests.add(f"{r_phone}_{r_num}_out")
+
             k_data = sh.worksheet("Kitchen_Orders").get_all_values()
-            if len(k_data) > 1: shared_store["kitchen_orders"] = k_data[1:]
+            if len(k_data) > 1: 
+                shared_store["kitchen_orders"] = k_data[1:]
+                # 🛑 SILENT PRE-FILL FOR KITCHEN (Stops bill spam on restart)
+                for idx, k_row in enumerate(shared_store["kitchen_orders"], start=2):
+                    if len(k_row) >= 6:
+                        k_room = re.sub(r"\D", "", str(k_row[1]))
+                        k_amt = re.sub(r"\D", "", str(k_row[4])) or "0"
+                        k_status = str(k_row[5]).upper()
+                        if "PAID" in k_status:
+                            notified_paid_orders.add(f"{k_room}_{idx}_{k_amt}")
+
             shared_store["last_synced"] = time.time()
-            print("[SYSTEM] Sheet Data Sync Complete.", flush=True)
-        except Exception as e: print(f"[SHEET SYNC ERROR]: {e}", flush=True)
+            print("[SYSTEM] Silent Memory Pre-fill Complete. Spam prevented.", flush=True)
+        except Exception as e: 
+            print(f"[SHEET SYNC ERROR]: {e}", flush=True)
 
 def sync_sheets_in_background():
     while True:
@@ -248,7 +275,7 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
     }
 
 # ==========================================
-# 3. DISPATCH ENGINE (EXPLICIT LOGGING)
+# 3. DISPATCH ENGINE
 # ==========================================
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
@@ -256,11 +283,8 @@ def send_whatsapp_message(to_number, text):
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "text", "text": {"body": text}}
-    try: 
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        print(f"[TEXT SUCCESS -> {clean_number}] Code: {res.status_code}", flush=True)
-    except Exception as e: 
-        print(f"[TEXT ERROR -> {clean_number}] {e}", flush=True)
+    try: requests.post(url, json=payload, headers=headers, timeout=10)
+    except Exception: pass
 
 def send_whatsapp_image(to_number, image_url, caption=""):
     clean_number = format_whatsapp_number(to_number)
@@ -270,11 +294,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     payload = {"messaging_product": "whatsapp", "to": clean_number, "type": "image", "image": {"link": image_url.strip(), "caption": caption}}
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
-        print(f"[IMAGE SUCCESS -> {clean_number}] Code: {res.status_code}", flush=True)
-        if res.status_code != 200: 
-            send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
-    except Exception as e: 
-        print(f"[IMAGE ERROR -> {clean_number}] {e}", flush=True)
+        if res.status_code != 200: send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
+    except Exception: 
         send_whatsapp_message(clean_number, f"{caption}\n\n🖼️ Link: {image_url}")
 
 def mark_message_as_read(message_id):
@@ -288,9 +309,17 @@ def ask_cohere(user_message):
     if not COHERE_API_KEY: return None
     url = "https://api.cohere.ai/v1/chat"
     headers = {"Authorization": f"Bearer {COHERE_API_KEY}", "Content-Type": "application/json"}
-    payload = {"model": "command-r", "message": user_message, "preamble": "You are WhatsApp AI Receptionist for Hotel Ganga View. Answer politely in 1-2 lines Hinglish.", "temperature": 0.2}
+    
+    preamble = (
+        "You are the friendly WhatsApp AI Receptionist for Hotel Ganga View, Haridwar. "
+        "Reply politely in 1 or 2 lines in Hinglish. "
+        "If a guest asks strange, irrelevant questions (like selling the hotel, who is the owner, discounts, etc.) OR something you don't know, "
+        "DO NOT say 'Ji batayein'. Instead, always reply with: 'Is baare mein adhik jankari ke liye kripya reception par sampark karein.' "
+        "If they mention a problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.' "
+    )
+    payload = {"model": "command-r", "message": user_message, "preamble": preamble, "temperature": 0.3}
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=5)
+        res = requests.post(url, json=payload, headers=headers, timeout=8)
         if res.status_code == 200: return res.json().get("text", "").strip()
     except Exception: pass
     return None
@@ -301,8 +330,6 @@ def ask_cohere(user_message):
 def process_and_reply(message, sender_phone, msg_type):
     user_text = message.get("text", {}).get("body", "") if msg_type == "text" else ""
     text_lower = user_text.lower().strip()
-    
-    print(f"\n[PROCESS START] 📞 Number: {sender_phone} | 📝 Message: '{user_text}'", flush=True)
     
     guest_info = get_guest_stay_status(sender_phone)
     is_inhouse = guest_info and guest_info.get("is_inhouse")
@@ -366,20 +393,15 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, menu_text)
         return
 
-    # 2. LOCAL GUIDE, LOCATION & PHOTOS (Dual Photo Dispatch for everyone)
+    # 2. LOCAL GUIDE, LOCATION & PHOTOS
     if any(gw in text_lower for gw in ["guide", "ghoomne", "aarti", "places", "visit"]):
         send_whatsapp_message(sender_phone, "🗺️ *Haridwar Local Guide*\n\n🙏 *Ganga Aarti Timings:*\n• Subah: 5:30 AM - 6:30 AM\n• Shaam: 6:00 PM - 7:00 PM\n\n🛕 *Places:*\n1. Mansa Devi Temple\n2. Chandi Devi Temple\n3. Kankhal")
         return
     if any(lw in text_lower for lw in ["location", "map", "address"]):
         send_whatsapp_message(sender_phone, "📍 *Hotel Ganga View, Haridwar*\n🗺️ *Map:* https://maps.google.com/?q=29.9530,78.1700")
         return
-    
-    # DUAL PHOTO FEATURE ADDED
     if any(pw in text_lower for pw in ["photo", "photos", "pic", "image", "tasveer", "room dikhao", "room ki", "andar ki"]):
-        print(f"[PROCESS] Sending Photos to {sender_phone}", flush=True)
-        # Bhejenge Bahar Ki Photo (main.jpg)
         send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg", "🏨 *Hotel Ganga View, Haridwar* (Exterior View)")
-        # Bhejenge Andar Ki Photo (room.jpg)
         send_whatsapp_image(sender_phone, "https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room.jpg", "🛏️ *Deluxe AC Room (Interior)*\n\n• Standard Non-AC: ₹1,800/night\n• Deluxe AC Room: ₹2,500/night")
         return
 
@@ -410,8 +432,13 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, f"Namaste {guest_name} ji! 🙏\nAapka check-out ho chuka hai. Purani payment details ke liye kripya reception par call karein.")
             return
 
-    # 4. HOUSEKEEPING & STAFF ALERTS
-    staff_alert_words = ["towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", "badbu", "late", "problem", "shikayat", "ganda", "paani nahi"]
+    # 4. HOUSEKEEPING & STAFF ALERTS (NOW WITH ENGLISH WORDS!)
+    staff_alert_words = [
+        "towel", "sabun", "soap", "kambal", "blanket", "takia", "pillow", "safai", "cleaning", 
+        "housekeeping", "kachra", "thandi", "kharab", "bekar", "nahi chal", "not working", 
+        "badbu", "late", "problem", "shikayat", "ganda", "paani nahi", 
+        "mouse", "rat", "chuha", "dirty", "staff", "manager", "room service", "help", "owner", "reception"
+    ]
     is_staff_alert = any(cw in text_lower for cw in staff_alert_words)
     
     # 5. SMART INQUIRY FILTER & AUTO-CORRECT ORDER
@@ -455,11 +482,12 @@ def process_and_reply(message, sender_phone, msg_type):
     prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']}]\n{user_text}" if is_inhouse else f"[INQUIRY]\n{user_text}"
     bot_reply = ask_cohere(prompt_input)
 
+    # NEW SMART NO-NONSENSE FALLBACK (If AI fails or gets confused)
     if not bot_reply: 
         if not is_inhouse and not is_checkout:
             bot_reply = "Hamare paas Standard (₹1,800) aur Deluxe AC Rooms (₹2,500) uplabdh hain. Photos dekhne ke liye 'Room photo' likhein!"
         else:
-            bot_reply = "Ji batayein, mai aapki kya sahayata kar sakta hoon?"
+            bot_reply = "Maaf kijiye, main ek AI bot hoon aur ise samajh nahi paya. Kisi bhi jankari ya shikayat ke liye kripya direct Reception par call karein. 🙏"
             
     if "[STAFF_ALERT:" in bot_reply:
         bot_reply = re.sub(r"\[STAFF_ALERT:\s*.*?\]", "", bot_reply).strip()
@@ -467,15 +495,16 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(STAFF_PHONE, f"🛎️ *STAFF ALERT*\n📌 Location: {room_tag}\n📋 Details: {user_text}\n📞 Contact: +{sender_phone}")
         bot_reply = "Ji, maine staff ko inform kar diya hai. Wo turant aapki sahayata ke liye aa rahe hain. 🙏"
 
+    if not bot_reply:
+        bot_reply = "Is baare mein adhik jankari ke liye kripya reception par sampark karein."
+
     send_whatsapp_message(sender_phone, bot_reply)
 
 def handle_incoming_async(message, sender_phone, msg_type):
     try: 
         process_and_reply(message, sender_phone, msg_type)
     except Exception as e: 
-        print(f"\n[CRITICAL ERROR in handle_incoming_async]: {e}", flush=True)
-        traceback.print_exc()
-        send_whatsapp_message(sender_phone, "⚠️ Technical error ho gayi. Kripya apna message dobara bhejein.")
+        print(f"\n[CRITICAL ERROR]: {e}", flush=True)
 
 # ==========================================
 # 5. PROACTIVE LIFECYCLE MONITOR
@@ -572,7 +601,7 @@ def handle_webhook():
         mark_message_as_read(msg_id)
         threading.Thread(target=handle_incoming_async, args=(msg, sender, msg_type), daemon=True).start()
         
-    except Exception as e: print(f"[WEBHOOK PARSE ERROR]: {e}", flush=True)
+    except Exception: pass
         
     return jsonify({"status": "success"}), 200
 

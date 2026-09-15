@@ -9,6 +9,7 @@ import hmac
 import hashlib
 import traceback
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 import requests
 import gspread
@@ -200,6 +201,15 @@ def extract_room_number(text):
     # A bare 3-digit room number is accepted only if clearly present.
     m = re.search(r"\b([1-9]\d{2,3})\b", t)
     return m.group(1) if m else ""
+
+
+
+def get_hotel_name():
+    raw = get_hotel_data()
+    m = re.search(r"(?im)^\s*-\s*Name\s*:\s*(.+?)\s*$", raw)
+    if m:
+        return m.group(1).strip()
+    return "Hotel Ganga View"
 
 
 def get_hotel_data():
@@ -941,7 +951,7 @@ def ask_groq_chat(user_text, guest_info=None):
     hotel_db = get_hotel_data()
 
     system_prompt = f"""
-You are the WhatsApp receptionist for {HOTEL_NAME}, Haridwar.
+You are the WhatsApp receptionist for {get_hotel_name()}, Haridwar.
 
 {language_rule}
 
@@ -958,7 +968,10 @@ Hotel knowledge file:
 Important:
 - Use the hotel knowledge file as your primary source of hotel facts.
 - Understand natural language; do not require a keyword for every question.
-- You may reason, clarify, recommend, and answer follow-up questions from the hotel data.
+- Use common sense and conversation context to infer what the guest is asking.
+- You may reason, clarify, recommend, compare, explain, and answer follow-up questions from the hotel data.
+- You must ALWAYS provide a useful reply to a guest message. Never stay silent.
+- When the answer is not available in the hotel data, do not invent facts; politely say you will have reception confirm it.
 - Never invent availability, room numbers, prices, bookings, payments, discounts, or verification results.
 - Transactional actions such as placing food orders, changing payment status, assigning rooms, or approving ID verification are handled by the backend.
 - If a delivered food/item complaint is mentioned, treat it as a complaint and say staff will be informed.
@@ -1805,23 +1818,31 @@ def process_and_reply(message, sender_phone, msg_type):
     ai_reply = ask_groq_chat(user_text, guest_info)
 
     if ai_reply:
-        # Never allow accidental internal tags to reach guest.
-        ai_reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", ai_reply).strip()
-        send_whatsapp_message(sender_phone, ai_reply)
-        return
+        # Never allow accidental internal tags to reach the guest.
+        ai_reply = re.sub(
+            r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]",
+            "",
+            ai_reply
+        ).strip()
+
+        if ai_reply:
+            send_whatsapp_message(sender_phone, ai_reply)
+            return
 
     # ========================================================
-    # 17. SAFE FALLBACK
+    # 17. RECEPTION SAFETY NET
+    # Never leave an ordinary guest question unanswered.
     # ========================================================
     if is_inhouse:
         send_whatsapp_message(
             sender_phone,
-            f"Ji {guest_info['name']} ji, kripya thoda aur detail me batayein; main madad karta hoon."
+            f"Ji {guest_info['name']} ji, main reception ko inform kar deta hoon. "
+            f"Kripya thoda samay dein, ya urgent help ke liye reception se sampark karein."
         )
     else:
         send_whatsapp_message(
             sender_phone,
-            "Ji, rooms, rates, parking, Wi-Fi, location ya booking ke baare me pooch sakte hain."
+            "Ji, main reception se confirm karwa deta hoon. Aapka sawaal reception team tak bhej diya jayega."
         )
 
 
@@ -1984,7 +2005,7 @@ def health():
 
     return jsonify({
         "status": "active",
-        "hotel": HOTEL_NAME,
+        "hotel": get_hotel_name(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,
         "time_ist": now_ist().isoformat(),

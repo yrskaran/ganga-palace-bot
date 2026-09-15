@@ -26,7 +26,7 @@ app = Flask(__name__)
 WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "").strip()
 PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip() # 🔥 NOW USED FOR BOTH AUDIO AND CHAT
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip() 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 
 # 🔥 HARDCODED NUMBERS
@@ -334,7 +334,6 @@ def get_guest_comprehensive_financials(room_number, sender_phone=""):
 def send_whatsapp_message(to_number, text):
     clean_number = format_whatsapp_number(to_number)
     if not clean_number or not PHONE_NUMBER_ID or not WHATSAPP_TOKEN: 
-        print("❌ [DISPATCH ERROR] Missing Token or Phone ID", flush=True)
         return
     url = f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
@@ -387,7 +386,7 @@ def get_hotel_data():
     except Exception: pass
     return "Standard Non-AC Room is ₹1800/night. Deluxe AC Room is ₹2500/night. We have safe Parking available."
 
-# 🔥 THE NEW BRAIN: GROQ (LLAMA-3) REPLACES COHERE COMPLETELY 🔥
+# 🔥 THE UNKILLABLE GROQ CHAT (MULTI-MODEL AUTO FALLBACK) 🔥
 def ask_groq_chat(prompt_input):
     if not GROQ_API_KEY: return None
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -405,23 +404,28 @@ HOTEL DATA END:
 If they mention a current problem (mouse, dirty, help), say: '[STAFF_ALERT: complaint] Ji, maine staff ko bhej diya hai.'
 Keep replies to 1 or 2 short lines. Be warm and welcoming."""
 
-    payload = {
-        "model": "llama3-70b-8192", 
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt_input}
-        ],
-        "temperature": 0.3
-    }
+    # 🔥 Fallback loop: If one model is deprecated, it instantly tries the next one!
+    models_to_try = ["llama-3.1-70b-versatile", "mixtral-8x7b-32768", "llama3-8b-8192"]
     
-    try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code == 200: 
-            return res.json()["choices"][0]["message"]["content"].strip()
-        else:
-            print(f"❌ [GROQ CHAT ERROR] {res.status_code} - {res.text}", flush=True)
-    except Exception as e: 
-        print(f"❌ [GROQ CHAT EXCEPTION]: {e}", flush=True)
+    for model in models_to_try:
+        payload = {
+            "model": model, 
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt_input}
+            ],
+            "temperature": 0.3
+        }
+        
+        try:
+            res = requests.post(url, json=payload, headers=headers, timeout=10)
+            if res.status_code == 200: 
+                return res.json()["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"⚠️ [GROQ API WARNING - {model} FAILED] {res.status_code} - {res.text}. Trying next model...", flush=True)
+        except Exception as e: 
+            print(f"❌ [GROQ CHAT EXCEPTION - {model}]: {e}", flush=True)
+            
     return None
 
 # ==========================================
@@ -657,7 +661,7 @@ def process_and_reply(message, sender_phone, msg_type):
             send_whatsapp_message(sender_phone, "🙏 Maaf kijiye, Room Service sirf In-House guests ke liye hai. Nayi booking ke liye 'check in' likhein!")
             return
 
-    # 🔥 7. DYNAMIC AI (NOW USING GROQ LLAMA-3 INSTEAD OF COHERE) 🔥
+    # 🔥 7. DYNAMIC AI (GROQ LLAMA-3 WITH MULTI-MODEL FALLBACK) 🔥
     if is_inhouse:
         prompt_input = f"[IN-HOUSE GUEST: Room {guest_info['room']} | Name: {guest_info['name']}]\nGuest says: {user_text}"
     elif is_checkout:

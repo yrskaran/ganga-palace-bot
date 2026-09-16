@@ -307,17 +307,17 @@ PHOTOS & MEDIA
 # Replace these public HTTPS URLs when hotel photos change.
 # Do not change Python code just to change a photo.
 
-Exterior: 
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
+Exterior:  https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
 
-Deluxe Room:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
 
-Super Deluxe Room:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
+Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
 
-Family Suite:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
+
+Super Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
+
+
+Family Suite: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
+ 
 
 ==================================================
 PHOTO BEHAVIOUR

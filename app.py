@@ -47,7 +47,9 @@ GEMINI_FALLBACK_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.5-flash",
 ]
-GEMINI_MAX_RETRIES_PER_MODEL = 2
+# Keep guest replies fast. A busy model should hand off to the next model
+# instead of making WhatsApp wait through a long retry chain.
+GEMINI_MAX_RETRIES_PER_MODEL = 0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -1311,16 +1313,10 @@ def download_whatsapp_media(media_id):
 # ============================================================
 
 def transcribe_audio_gemini(audio_bytes):
-    """Transcribe a WhatsApp voice note with Gemini.
-
-    Gemini 2.5 Flash accepts audio input, so the bot no longer depends on
-    Groq for voice notes. The existing Groq STT remains an optional fallback.
-    """
+    """Transcribe WhatsApp voice using the same Gemini failover pool as chat."""
     if not GEMINI_API_KEY or not audio_bytes:
         return None
 
-    url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent"
-    params = {"key": GEMINI_API_KEY}
     payload = {
         "contents": [{
             "role": "user",
@@ -1329,8 +1325,8 @@ def transcribe_audio_gemini(audio_bytes):
                     "text": (
                         "Transcribe this WhatsApp voice note exactly as spoken. "
                         "The speaker may use Hindi, Hinglish, Punjabi, English, "
-                        "or another Indian language. Return ONLY the transcription, "
-                        "with no explanation. Preserve names, numbers and food item names."
+                        "or another Indian language. Return ONLY the transcription. "
+                        "Preserve names, numbers and food item names."
                     )
                 },
                 {
@@ -1340,20 +1336,21 @@ def transcribe_audio_gemini(audio_bytes):
                     }
                 }
             ]
-        }]
+        }],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 500},
     }
-    try:
-        res = requests.post(url, params=params, json=payload, timeout=45)
-        if res.status_code == 200:
-            data = res.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                text = "".join(str(x.get("text", "")) for x in parts).strip()
-                return text or None
-        print("GEMINI STT ERROR:", res.status_code, res.text[:500], flush=True)
-    except Exception as exc:
-        print("GEMINI STT EXCEPTION:", exc, flush=True)
+    result = _gemini_post(payload, timeout=18, purpose="STT")
+    if not result:
+        return None
+
+    data, model = result
+    candidates = data.get("candidates", [])
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        text = "".join(str(x.get("text", "")) for x in parts).strip()
+        if text:
+            print(f"GEMINI STT OK: {model}", flush=True)
+            return text
     return None
 
 
@@ -1534,21 +1531,22 @@ def _gemini_models():
     return models
 
 
-def _gemini_post(payload, timeout=35, purpose="chat"):
-    """Call Gemini with retry/backoff and automatic model failover.
+def _gemini_post(payload, timeout=18, purpose="chat"):
+    """Call Gemini with bounded failover so a busy model never makes the bot silent.
 
-    503/429/408/5xx are treated as transient. 404/400/403 are not retried
-    on the same model; 404 advances to the next configured model so an old or
-    unavailable model ID cannot make the receptionist go silent.
+    404/400/401/403 advance or stop appropriately. 408/429/5xx advance
+    quickly to the next configured model. The old Groq path remains the final
+    AI fallback and the caller still has a deterministic reception fallback.
     """
     if not GEMINI_API_KEY:
+        print("GEMINI: GEMINI_API_KEY is missing", flush=True)
         return None
 
     import random as _random
+    models = _gemini_models()
 
-    for model_index, model in enumerate(_gemini_models()):
+    for model_index, model in enumerate(models):
         url = f"{GEMINI_API_BASE}/{model}:generateContent"
-        last_status = None
         for attempt in range(GEMINI_MAX_RETRIES_PER_MODEL + 1):
             try:
                 res = requests.post(
@@ -1557,82 +1555,54 @@ def _gemini_post(payload, timeout=35, purpose="chat"):
                     json=payload,
                     timeout=timeout,
                 )
-                last_status = res.status_code
 
                 if res.status_code == 200:
                     return res.json(), model
 
-                # Invalid/retired model: immediately try the next model.
-                if res.status_code == 404:
-                    print(
-                        f"GEMINI {purpose}: model {model} returned 404; trying next fallback.",
-                        flush=True,
-                    )
-                    break
-
-                # Auth/request errors should not be hammered.
-                if res.status_code in {400, 401, 403}:
-                    print(
-                        f"GEMINI {purpose} ERROR {res.status_code}: {res.text[:500]}",
-                        flush=True,
-                    )
-                    return None
-
-                # Transient overload/rate-limit/server errors.
-                if res.status_code in {408, 429, 500, 502, 503, 504}:
-                    if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
-                        delay = min(8, 1.5 * (2 ** attempt)) + _random.uniform(0, 0.7)
-                        print(
-                            f"GEMINI {purpose}: {model} returned {res.status_code}; "
-                            f"retry {attempt + 1}/{GEMINI_MAX_RETRIES_PER_MODEL} in {delay:.1f}s",
-                            flush=True,
-                        )
-                        time.sleep(delay)
-                        continue
-                    print(
-                        f"GEMINI {purpose}: {model} exhausted retries with {res.status_code}; "
-                        "trying next fallback.",
-                        flush=True,
-                    )
-                    break
-
                 print(
-                    f"GEMINI {purpose} ERROR {res.status_code}: {res.text[:700]}",
+                    f"GEMINI {purpose} ERROR {res.status_code} on {model}: {res.text[:350]}",
                     flush=True,
                 )
+
+                if res.status_code in {400, 401, 403}:
+                    # These are request/auth problems, not transient model load.
+                    # Do not waste time retrying the same request.
+                    break
+
+                if res.status_code in {404, 408, 429, 500, 502, 503, 504}:
+                    if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
+                        delay = min(3.0, 0.8 * (2 ** attempt)) + _random.uniform(0, 0.3)
+                        time.sleep(delay)
+                    break
+
                 break
 
             except requests.RequestException as exc:
+                print(f"GEMINI {purpose} NETWORK ERROR on {model}: {exc}", flush=True)
                 if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
-                    delay = min(8, 1.5 * (2 ** attempt)) + _random.uniform(0, 0.7)
-                    print(
-                        f"GEMINI {purpose}: network error on {model}; "
-                        f"retry {attempt + 1}/{GEMINI_MAX_RETRIES_PER_MODEL} in {delay:.1f}s: {exc}",
-                        flush=True,
-                    )
+                    delay = min(3.0, 0.8 * (2 ** attempt)) + _random.uniform(0, 0.3)
                     time.sleep(delay)
-                    continue
-                print(
-                    f"GEMINI {purpose}: network retries exhausted on {model}: {exc}",
-                    flush=True,
-                )
                 break
             except Exception as exc:
                 print(f"GEMINI {purpose} EXCEPTION on {model}: {exc}", flush=True)
                 break
 
-        # Continue to next model after transient exhaustion / invalid model.
-        if model_index < len(_gemini_models()) - 1:
+        if model_index < len(models) - 1:
             print(
-                f"GEMINI {purpose}: switching {model} -> {_gemini_models()[model_index + 1]}",
+                f"GEMINI {purpose}: switching {model} -> {models[model_index + 1]}",
                 flush=True,
             )
 
+    print(f"GEMINI {purpose}: all configured models failed", flush=True)
     return None
 
 
 def _gemini_generate(system_prompt, history, user_text):
-    """Call Gemini with real conversation turns, retry and model failover."""
+    """Call Gemini quickly with real conversation turns and bounded failover.
+
+    Keep the WhatsApp path responsive: a temporarily overloaded Gemini model
+    must not hold the guest message for minutes.
+    """
     if not GEMINI_API_KEY:
         return None
 
@@ -1656,7 +1626,7 @@ def _gemini_generate(system_prompt, history, user_text):
             "maxOutputTokens": 400,
         },
     }
-    result = _gemini_post(payload, timeout=35, purpose="CHAT")
+    result = _gemini_post(payload, timeout=8, purpose="CHAT")
     if not result:
         return None
 
@@ -1813,7 +1783,7 @@ Latest message: {user_text}
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0, "maxOutputTokens": 8},
     }
-    result = _gemini_post(payload, timeout=15, purpose="CHECKIN")
+    result = _gemini_post(payload, timeout=7, purpose="CHECKIN")
     if result:
         data, model = result
         candidates = data.get("candidates", [])
@@ -3097,6 +3067,7 @@ def process_and_reply(message, sender_phone, msg_type):
             f"Kripya thoda samay dein." if is_inhouse else
             "Ji, main reception se confirm karwa deta hoon. Kripya thoda samay dein."
         )
+    print(f"AI SAFETY FALLBACK: replying without AI for +{sender_phone}: {user_text}", flush=True)
     send_whatsapp_message(sender_phone, fallback_in)
 
 

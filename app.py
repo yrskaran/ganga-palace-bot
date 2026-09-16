@@ -1520,6 +1520,9 @@ Important:
 - Never invent availability, room numbers, prices, bookings, payments, discounts, or verification results.
 - Transactional actions such as placing food orders, changing payment status, assigning rooms, or approving ID verification are handled by the backend.
 - Room service, kitchen orders, food delivery, and housekeeping actions are available ONLY when the backend identifies the user as an in-house guest.
+- "Room service" by itself is an ambiguous service request, NOT an unavailable food item. If an in-house guest says only "room service", respond naturally by asking what they would like (food/order or another room-service need). Do not say the item is unavailable.
+- If a non-in-house guest says only "room service", explain that room service is available after check-in and invite them to contact reception/check in.
+- If the guest names a food item together with room service, treat it as a food-order request and let the backend handle the order.
 - For a non-in-house guest asking for room service or kitchen delivery, politely refuse and invite them to check in or contact reception.
 - If a delivered food/item complaint is mentioned, treat it as a complaint and say staff will be informed.
 - If a guest says they will show original ID at reception, accept that politely.
@@ -1782,8 +1785,10 @@ def format_order(items):
 def looks_like_food(text):
     t = normalize_text(text)
 
+    # "room service" by itself is a service/conversation request, not a food
+    # item. It must not be routed into the food-item parser.
     food_markers = set(get_hotel_menu().keys()) | set(get_hotel_config().get("generic_menu", {}).keys()) | {
-        "food", "khana", "order", "room service"
+        "food", "khana", "order"
     }
 
     return any(
@@ -2689,7 +2694,53 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     # ========================================================
-    # 15. FOOD ORDERING - DETERMINISTIC
+    # 15. AMBIGUOUS SERVICE REQUEST -> AI CONVERSATION
+    # "Room service" alone does not contain enough information to create
+    # an order. Let the conversational brain clarify instead of guessing.
+    # ========================================================
+    normalized_service_request = normalize_text(user_text)
+    if normalized_service_request in {
+        "room service",
+        "roomservice",
+        "room service please",
+        "roomservice please",
+        "room service ji",
+        "roomservice ji",
+    }:
+        if not is_inhouse:
+            send_whatsapp_message(
+                sender_phone,
+                bilingual_text(
+                    sender_phone,
+                    "Room service is available for in-house guests. Please contact reception for assistance or check in first.",
+                    "Ji, room service sirf in-house guests ke liye available hai. Reception se contact karein ya pehle check-in kar lein.",
+                    "Ji, room service sirf in-house guests ke liye available hai. Reception se contact karein ya pehle check-in kar lein."
+                )
+            )
+            remember_conversation(sender_phone, "user", user_text)
+            return
+
+        ai_reply = ask_groq_chat(user_text, guest_info, sender_phone)
+        if ai_reply:
+            ai_reply = re.sub(
+                r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]",
+                "",
+                ai_reply
+            ).strip()
+            ai_reply = attach_google_maps_links(ai_reply).strip()
+            send_whatsapp_message(sender_phone, ai_reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", ai_reply)
+            return
+
+        reply = "Bilkul ji. Room service mein kya chahiye—food order ya koi aur assistance?"
+        send_whatsapp_message(sender_phone, reply)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", reply)
+        return
+
+    # ========================================================
+    # 16. FOOD ORDERING - DETERMINISTIC
     # ========================================================
     if looks_like_food(user_text):
         if not is_inhouse:
@@ -2755,7 +2806,7 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     # ========================================================
-    # 16. GENERAL AI
+    # 17. GENERAL AI
     # ========================================================
     remember_guest_language(sender_phone, user_text)
     # Give the AI current local-guide context without hardcoding it in Python.

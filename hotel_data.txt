@@ -31,7 +31,7 @@ RULES:
 The following is the hotel kitchen's current pure-vegetarian room-service menu. Only these listed items may be ordered.
 
 - Cutting Chai: Rs. 20
-- Masala Chai: Rs. 30
+- Chai: Rs. 30
 - Hot Coffee: Rs. 40
 - Cold Coffee: Rs. 80
 - Hot Milk: Rs. 50

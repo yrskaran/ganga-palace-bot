@@ -67,7 +67,9 @@ HOTEL_CONFIG_CACHE = {"signature": None, "data": {}}
 # -----------------------------
 shared_store = {
     "rooms": [],
+    "room_headers": [],
     "kitchen_orders": [],
+    "kitchen_headers": [],
     "last_synced": 0,
 }
 
@@ -87,7 +89,7 @@ guest_language_cache = {}
 # "more options", "what else?" and "tell me a story" have context.
 # This is intentionally bounded to keep the AI prompt small.
 conversation_memory = {}
-CONVERSATION_MEMORY_LIMIT = 8
+CONVERSATION_MEMORY_LIMIT = 12
 
 welcomed_guests = set()
 guest_first_seen = {}
@@ -95,6 +97,8 @@ notified_30min = set()
 payment_status_cache = {}
 payment_monitor_initialized = False
 notified_paid_orders = set()
+full_bill_paid_state = {}
+full_bill_paid_initialized = False
 breakfast_prompted = set()
 lunch_prompted = set()
 aarti_prompted = set()
@@ -185,19 +189,7 @@ def guest_language(text):
     if not raw:
         return 'english'
 
-    # Language-preference statements take priority over bare language names.
-    # Example: "English nahi aati mujhe" means the guest does NOT want English.
-    low_raw = raw.lower()
-    english_not_understood = [
-        r'\benglish\s+(?:nahi|nahin)\s+(?:aati|ati|samajh|samajhti|samajhta)\b',
-        r'\benglish\s+(?:nahi|nahin)\s+(?:aati|ati)\b',
-        r'\bmujhe\s+english\s+(?:nahi|nahin)\s+(?:aati|ati|samajh)\b',
-        r'\benglish\s+samajh\s+(?:nahi|nahin)\s+aati\b',
-    ]
-    if any(re.search(pattern, low_raw) for pattern in english_not_understood):
-        return 'hinglish'
-
-    # Explicit language-name requests are otherwise unambiguous.
+    # Explicit language-name requests are unambiguous.
     explicit = [
         ('rajasthani', r'\brajasthani\b|राजस्थानी'), ('bengali', r'\bbengali\b|বাংলা|বাঙালি'),
         ('punjabi', r'\bpunjabi\b|ਪੰਜਾਬੀ'), ('gujarati', r'\bgujarati\b|ગુજરાતી'),
@@ -228,16 +220,7 @@ def guest_language(text):
 
     words = set(re.findall(r'[a-zA-Z]+', raw.lower()))
     sets = {
-        'hinglish': {
-            'hai','hain','ho','hoga','hogi','honge','tha','thi','the','mujhe','chahiye',
-            'karo','karna','karni','kare','kar','bhejo','bhej','kitna','kitne','kahan','kahaan',
-            'kaha','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','aapki','ji','kab',
-            'abhi','kal','aaj','subah','shaam','raat','khana','pani','kamra','saaf','safai',
-            'batao','bataiye','dikhao','ghoomne','ghumne','ghoomna','ghumna','niklu','nikalun',
-            'nikalna','jana','jaana','jaun','jau','jaaye','jaye','ja sakte','sakta','sakti','sakte',
-            'band','khula','khuli','khule','chuka','chuki','chuke','raha','rahi','rahe','wala',
-            'wali','waale'
-        },
+        'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao'},
         'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','meni','saanu','thoda','kar deo','bhejdo','chaahidi'},
         'rajasthani': {'mhane','mharo','mhari','thare','tharo','thari','mhare','koni','ghano','ghani','khamma','padharo','chokho','chhoro','chhori','kai','mhane','thareko','baisa','sa'},
         'bengali': {'ami','amake','amar','apni','apnar','ache','achi','kothay','koto','chai','diben','den','bhalo','khabar','ghor','ekhane','amar','lagbe','din','ekta'},
@@ -255,18 +238,6 @@ def guest_language(text):
     }
     scores = {k: len(words & v) for k, v in sets.items()}
     low = raw.lower()
-
-    # Distinctive Roman-Hindi/Hinglish phrases. These are intentionally
-    # separated from common English words so ordinary English stays English.
-    roman_hindi_phrases = {
-        'ghoomne', 'ghumne', 'kaha niklu', 'kahan niklu', 'kaha ghoomu',
-        'kahan ghoomu', 'kya karu', 'kya karoon', 'kaise jaaun', 'kaise jaun',
-        'kitne baje', 'abhi band', 'band ho', 'khula hai',
-        'khuli hai', 'chuka hoga', 'nahi aati', 'nahi pata', 'batao',
-        'aur batao', 'aur jagah', 'ghoomne ki', 'ja sakte hain', 'jana hai',
-        'kaha jana', 'kahan jana', 'kya milega', 'kya available hai'
-    }
-    scores['hinglish'] += sum(2 for phrase in roman_hindi_phrases if phrase in low)
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
@@ -327,27 +298,9 @@ def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
 
 
 def remember_guest_language(sender_phone,text):
-    """Remember meaningful language choices without letting generic greetings
-    such as 'hello' erase an established Hindi/Hinglish preference.
-    """
-    text = str(text or '').strip()
-    detected = guest_language(text)
-    normalized = normalize_text(text)
-    generic_only = normalized in {
-        'hi', 'hello', 'hlo', 'namaste', 'hey', 'good morning',
-        'good evening', 'good afternoon', 'sat sri akal',
-        'more', 'more options', 'more places', 'other options',
-        'anything else', 'what else', 'what other places', 'other places',
-        'tell me more', 'more suggestions', 'more sightseeing',
-        'any other options', 'anything more', 'story', 'a story',
-        'tell me a story', 'history', 'historical story'
-    }
-    with state_lock:
-        previous = guest_language_cache.get(sender_phone)
-        if generic_only and previous and previous != 'english':
-            return previous
-        guest_language_cache[sender_phone] = detected
-    return detected
+    lang=guest_language(text)
+    with state_lock: guest_language_cache[sender_phone]=lang
+    return lang
 
 def get_guest_response_language(sender_phone,text=None):
     if text is not None: return remember_guest_language(sender_phone,text)
@@ -819,7 +772,9 @@ def fetch_sheet_data_sync():
         kitchen = sh.worksheet("Kitchen_Orders").get_all_values()
 
         with state_lock:
+            shared_store["room_headers"] = [str(x).strip() for x in (rooms[0] if rooms else [])]
             shared_store["rooms"] = rooms[1:] if len(rooms) > 1 else []
+            shared_store["kitchen_headers"] = [str(x).strip() for x in (kitchen[0] if kitchen else [])]
             shared_store["kitchen_orders"] = kitchen[1:] if len(kitchen) > 1 else []
             shared_store["last_synced"] = time.time()
 
@@ -1031,8 +986,8 @@ def room_is_available(room_number):
         if len(row) < 6:
             continue
         if clean_room(row[0]) == target:
-            status = _classify_guest_status(row[5])
-            return status == "CHECKED_OUT"
+            status = str(row[5]).upper()
+            return "OUT" in status and "IN" not in status
 
     return False
 
@@ -1050,12 +1005,12 @@ def find_available_room(preferred_category=""):
 
         room = clean_room(row[0])
         category = str(row[1]).strip().lower() if len(row) > 1 else ""
-        status = _classify_guest_status(row[5] if len(row) > 5 else "")
+        status = str(row[5]).upper() if len(row) > 5 else ""
 
         if not room:
             continue
 
-        available = status == "CHECKED_OUT"
+        available = "OUT" in status and "IN" not in status
         if available:
             candidates.append((room, category))
 
@@ -1102,6 +1057,17 @@ def get_guest_financials(room_number, sender_phone=""):
     with state_lock:
         kitchen_rows = list(shared_store.get("kitchen_orders", []))
         room_rows = list(shared_store.get("rooms", []))
+        room_headers = [str(x).strip().upper() for x in shared_store.get("room_headers", [])]
+
+    def header_index(*names):
+        for name in names:
+            target = str(name).strip().upper()
+            if target in room_headers:
+                return room_headers.index(target)
+        return -1
+
+    total_paid_col = header_index("TOTAL PAID", "TOTAL PAYMENT", "PAID TOTAL")
+    payment_status_col = header_index("PAYMENT STATUS", "BILL STATUS", "PAYMENT")
 
     for row in kitchen_rows:
         if len(row) < 6:
@@ -1127,6 +1093,8 @@ def get_guest_financials(room_number, sender_phone=""):
     nights = 1
     guest_name = "Guest"
     room_advance = 0
+    sheet_total_paid = 0
+    sheet_payment_status = ""
 
     for row in room_rows:
         if len(row) < 5:
@@ -1148,15 +1116,30 @@ def get_guest_financials(room_number, sender_phone=""):
         if len(row) > 6:
             nights = calculate_stay_nights(row[6])
 
-        # Optional advance-payment column if later added to the sheet.
+        # Existing J column remains the legacy advance/partial-payment field.
         if len(row) > 9:
             room_advance = safe_int(row[9])
+
+        # New payment fields are located by header name, so the existing sheet
+        # layout can remain untouched.
+        if total_paid_col >= 0 and len(row) > total_paid_col:
+            sheet_total_paid = safe_int(row[total_paid_col])
+        if payment_status_col >= 0 and len(row) > payment_status_col:
+            sheet_payment_status = str(row[payment_status_col]).strip().upper()
 
         break
 
     room_total = room_rate * nights
     grand_total = room_total + total_kitchen
-    total_paid = room_advance + paid_kitchen
+    calculated_paid = room_advance + paid_kitchen
+    # If reception has used the one-click full-payment action, TOTAL PAID is
+    # authoritative. This prevents staff from having to mark every food row.
+    if sheet_payment_status == "PAID":
+        total_paid = max(grand_total, sheet_total_paid)
+    elif sheet_total_paid > 0:
+        total_paid = max(calculated_paid, sheet_total_paid)
+    else:
+        total_paid = calculated_paid
     balance = max(0, grand_total - total_paid)
 
     return {
@@ -1173,6 +1156,8 @@ def get_guest_financials(room_number, sender_phone=""):
         "grand_total": grand_total,
         "total_paid": total_paid,
         "balance": balance,
+        "payment_status": sheet_payment_status,
+        "sheet_total_paid": sheet_total_paid,
     }
 
 
@@ -1214,32 +1199,58 @@ def send_whatsapp_message(to_number, text):
     return bool(res and res.status_code in (200, 201))
 
 
+def upload_image_to_whatsapp(image_url):
+    """Download a configured hotel photo and upload it to Meta first.
+    This is more reliable than asking Meta to fetch arbitrary image URLs.
+    """
+    if not image_url or not WHATSAPP_TOKEN or not PHONE_NUMBER_ID:
+        return None
+    try:
+        r = requests.get(image_url.strip(), timeout=15, headers={"User-Agent": "HotelGangaViewBot/1.0"})
+        r.raise_for_status()
+        content_type = (r.headers.get("content-type") or "").split(";", 1)[0].lower()
+        if not content_type.startswith("image/"):
+            print("PHOTO DOWNLOAD NOT IMAGE:", content_type, flush=True)
+            return None
+        if len(r.content) > 15 * 1024 * 1024:
+            print("PHOTO TOO LARGE", len(r.content), flush=True)
+            return None
+
+        url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{PHONE_NUMBER_ID}/media"
+        headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
+        files = {"file": ("hotel_photo", r.content, content_type)}
+        data = {"messaging_product": "whatsapp", "type": content_type}
+        res = requests.post(url, headers=headers, files=files, data=data, timeout=30)
+        if res.status_code in (200, 201):
+            return (res.json() or {}).get("id")
+        print("WHATSAPP MEDIA UPLOAD ERROR:", res.status_code, res.text[:500], flush=True)
+    except Exception as exc:
+        print("PHOTO UPLOAD ERROR:", exc, flush=True)
+    return None
+
+
 def send_whatsapp_image(to_number, image_url, caption=""):
     number = format_whatsapp_number(to_number)
     if not number or not image_url:
         return False
 
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": number,
-        "type": "image",
-        "image": {
-            "link": image_url.strip(),
-            "caption": str(caption)[:1024],
-        },
-    }
+    media_id = upload_image_to_whatsapp(image_url)
+    if media_id:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": number,
+            "type": "image",
+            "image": {
+                "id": media_id,
+                "caption": str(caption)[:1024],
+            },
+        }
+        res = whatsapp_request(payload)
+        if res and res.status_code in (200, 201):
+            return True
 
-    res = whatsapp_request(payload)
-
-    if res and res.status_code in (200, 201):
-        return True
-
-    # Safe fallback: send the URL as text.
-    send_whatsapp_message(
-        number,
-        f"{caption}\n\nImage link: {image_url}"
-    )
-    return False
+    # Safe fallback: at least give the guest the configured photo URL.
+    return send_whatsapp_message(number, f"{caption}\n\nPhoto link: {image_url}")
 
 
 def mark_message_as_read(message_id):
@@ -1453,59 +1464,12 @@ def build_guide_fallback(user_text, sender_phone=None):
     return "Ji, yahan kuch aur jagah hain jahan aap ghoom sakte hain:\n" + "\n".join(lines)
 
 
-def _ai_reply_matches_language(reply, language, user_text=""):
-    """Conservative output-language guard; prevents obvious wrong-language replies."""
-    text = str(reply or "").strip()
-    if not text:
-        return False
-    if language == "english":
-        # English output should not contain native Indian scripts or obvious
-        # Roman-Hindi/Hinglish markers.
-        native = len(re.findall(r'[\u0900-\u097F\u0A00-\u0AFF\u0980-\u09FF\u0A80-\u0AFF]', text))
-        if native:
-            return False
-        low = text.lower()
-        hindi_hints = {
-            "ji","hai","hain","mujhe","chahiye","aap","aapka","aapki",
-            "kahan","kaha","kaise","ghoomne","ghumne","niklu","nikalna",
-            "band","khula","khuli","chuka","chuki","hoga","hogi","nahi",
-            "nahin","batao","aur","mein","par","liye","safai","pani","khana"
-        }
-        return len(set(re.findall(r'[a-zA-Z]+', low)) & hindi_hints) < 2
-    if language in {"hindi", "marathi", "rajasthani", "garhwali", "kumaoni"}:
-        if guest_script(user_text) == "devanagari":
-            return bool(re.search(r'[\u0900-\u097F]', text))
-        # Roman regional/Hinglish output must contain at least one distinctive
-        # conversational marker; pure English sentences are rejected.
-        low = text.lower()
-        hints = {"ji","hai","hain","aap","mujhe","ke","ki","ka","ko","mein","me","batao","chahiye","ghoom","ghum","kahan","kaha","kar","hoga","hogi","nahi","nahin","aur","yeh","yahaan","yahan"}
-        return bool(set(re.findall(r'[a-zA-Z]+', low)) & hints)
-    if language == "punjabi":
-        return bool(re.search(r'[\u0A00-\u0A7F]', text)) if guest_script(user_text) == "gurmukhi" else bool(re.search(r'\b(tusi|tuhanu|tuhada|tuhadi|mainu|menu|chahida|chahidi|ji)\b', text.lower()))
-    if language == "bengali":
-        return bool(re.search(r'[\u0980-\u09FF]', text)) if guest_script(user_text) == "bengali" else bool(re.search(r'\b(ami|amake|amar|apni|apnar|ache|kothay|diben|ekta)\b', text.lower()))
-    # For other supported languages, native script is a reliable check; Roman
-    # output is accepted because transliterated text is harder to validate safely.
-    script_ranges = {
-        "gujarati": r'[\u0A80-\u0AFF]', "tamil": r'[\u0B80-\u0BFF]',
-        "telugu": r'[\u0C00-\u0C7F]', "kannada": r'[\u0C80-\u0CFF]',
-        "malayalam": r'[\u0D00-\u0D7F]', "odia": r'[\u0B00-\u0B7F]',
-        "urdu": r'[\u0600-\u06FF]',
-    }
-    if language in script_ranges and guest_script(user_text) not in {"roman"}:
-        return bool(re.search(script_ranges[language], text))
-    return True
-
-
 def ask_groq_chat(user_text, guest_info=None, sender_phone=None):
     model = get_active_groq_model()
     if not model:
         return None
 
-    # Preserve the guest's established language for short follow-ups such as
-    # "hello", "more options", "aur batao", etc. Explicit language preferences
-    # are still picked up by remember_guest_language().
-    language = get_guest_response_language(sender_phone, user_text) if sender_phone else guest_language(user_text)
+    language = guest_language(user_text)
     language_rule = language_instruction(language, user_text)
 
     guest_context = "NEW CUSTOMER"
@@ -1572,16 +1536,23 @@ Important:
 
 """
 
+    # Give the model real role-separated conversation turns, not only a
+    # transcript pasted into the system prompt. This is what lets it resolve
+    # short follow-ups such as "Masala", "haan", "aur batao", "wahi", etc.
+    messages = [{"role": "system", "content": system_prompt}]
+    for item in history[-CONVERSATION_MEMORY_LIMIT:]:
+        role = item.get("role", "user")
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": str(user_text)})
+
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-        ],
-
+        "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 260,
+        "max_tokens": 300,
     }
-    payload["messages"].append({"role": "user", "content": str(user_text)})
 
     try:
         url = "https://api.groq.com/openai/v1/chat/completions"
@@ -1598,31 +1569,25 @@ Important:
         )
 
         if res.status_code == 200:
-            reply = res.json()["choices"][0]["message"]["content"].strip()
-            # Model compliance check: if the guest language is clearly known and
-            # the first answer is in the wrong language/script, retry once with a
-            # strict correction rather than sending a poor guest-facing answer.
-            if not _ai_reply_matches_language(reply, language, user_text):
-                retry_payload = dict(payload)
-                retry_payload["temperature"] = 0.0
-                retry_payload["messages"] = [
-                    {"role": "system", "content": system_prompt + "\n\nFINAL LANGUAGE RULE: Your entire answer MUST be in the guest language above. Do not answer in English if the guest is Hindi/Hinglish. Do not answer in Hindi/Hinglish if the guest is English."},
-                    {"role": "user", "content": str(user_text)},
-                ]
-                retry = requests.post(url, json=retry_payload, headers=headers, timeout=20)
-                if retry.status_code == 200:
-                    candidate = retry.json()["choices"][0]["message"]["content"].strip()
-                    if _ai_reply_matches_language(candidate, language, user_text):
-                        reply = candidate
-            return reply
+            return res.json()["choices"][0]["message"]["content"].strip()
 
         print("GROQ CHAT ERROR:", res.status_code, res.text[:500], flush=True)
 
-        # Re-discover model once if the configured/fetched model became invalid.
+        # Re-discover the model and retry once if the selected model became invalid.
         if not GROQ_CHAT_MODEL:
             global ACTIVE_CHAT_MODEL
             ACTIVE_CHAT_MODEL = None
-            return None
+            retry_model = get_active_groq_model(force=True)
+            if retry_model and retry_model != model:
+                payload["model"] = retry_model
+                try:
+                    retry = requests.post(
+                        url, json=payload, headers=headers, timeout=20
+                    )
+                    if retry.status_code == 200:
+                        return retry.json()["choices"][0]["message"]["content"].strip()
+                except Exception as retry_exc:
+                    print("GROQ CHAT RETRY EXCEPTION:", retry_exc, flush=True)
 
     except Exception as exc:
         print("GROQ CHAT EXCEPTION:", exc, flush=True)
@@ -2200,7 +2165,66 @@ def process_and_reply(message, sender_phone, msg_type):
             return
 
     # ========================================================
-    # 2. ORDER CONFIRMATION STATE
+    # 2. CONTEXTUAL FOOD SELECTION
+    # If the bot just offered choices such as Cutting Chai / Masala Chai,
+    # a short reply like "Masala" is a selection, not a new conversation.
+    # This is generic for every menu group; it is not an item-by-item rule.
+    # ========================================================
+    with state_lock:
+        pending_selection = order_sessions.get(sender_phone)
+
+    if pending_selection and pending_selection.get("selection_pending"):
+        if is_inhouse:
+            generic = pending_selection.get("generic", "")
+            qty = max(1, int(pending_selection.get("qty", 1)))
+            choices = get_hotel_config().get("generic_menu", {}).get(generic, [])
+            normalized = normalize_text(user_text)
+
+            selected = None
+            for menu_name in choices:
+                key = normalize_text(menu_name)
+                if normalized == key or normalized in key or key in normalized:
+                    selected = menu_name
+                    break
+
+            # Also allow the guest to answer with the distinguishing word,
+            # e.g. "Masala" for "Masala Chai". Prefer the unique match.
+            if not selected:
+                candidates = [
+                    name for name in choices
+                    if normalized and normalized in normalize_text(name)
+                ]
+                if len(candidates) == 1:
+                    selected = candidates[0]
+
+            if selected:
+                menu = get_hotel_menu()
+                key = normalize_text(selected)
+                if key in menu:
+                    std_name, price = menu[key]
+                    amount = qty * price
+                    order_text = f"{qty} x {std_name}"
+                    with state_lock:
+                        order_sessions[sender_phone] = {
+                            "order": order_text,
+                            "total": amount,
+                            "created": time.time(),
+                        }
+                    reply = (
+                        f"Ji {guest_info['name']} ji, {order_text} Room {guest_info['room']} ke liye note kiya hai. Confirm kar dein?"
+                    )
+                    send_whatsapp_message(sender_phone, reply)
+                    remember_conversation(sender_phone, "user", user_text)
+                    remember_conversation(sender_phone, "assistant", reply)
+                    return
+
+            # If it is not a clear selection, let the AI understand it using
+            # the actual conversation context instead of forcing Haan/Nahi.
+            with state_lock:
+                order_sessions.pop(sender_phone, None)
+
+    # ========================================================
+    # 3. ORDER CONFIRMATION STATE
     # ========================================================
     with state_lock:
         pending_order = order_sessions.get(sender_phone)
@@ -2502,7 +2526,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 "Available room categories: " + ", ".join(names) + ". Aap dates aur kitne guests hain batayein."
             )
         else:
-            ai = ask_groq_chat(user_text, guest_info, sender_phone)
+            ai = ask_groq_chat(user_text, guest_info)
             send_whatsapp_message(sender_phone, ai or "Ji, main reception se room availability confirm karwa deta hoon.")
         return
 
@@ -2512,7 +2536,7 @@ def process_and_reply(message, sender_phone, msg_type):
             rates = ", ".join(f"{x['name']} Rs.{x['rate']} per night" for x in categories if x.get('rate'))
             send_whatsapp_message(sender_phone, rates + ".")
         else:
-            ai = ask_groq_chat(user_text, guest_info, sender_phone)
+            ai = ask_groq_chat(user_text, guest_info)
             send_whatsapp_message(sender_phone, ai or "Ji, main reception se current room rate confirm karwa deta hoon.")
         return
 
@@ -2683,11 +2707,22 @@ def process_and_reply(message, sender_phone, msg_type):
         parsed = find_menu_items(user_text)
 
         if parsed["generic"]:
-            choices = ", ".join(get_hotel_config().get("generic_menu", {}).get(parsed["generic"], []))
-            send_whatsapp_message(
-                sender_phone,
-                f"Ji, {parsed['generic']} me se kaunsa chahiye: {choices}?"
-            )
+            generic = parsed["generic"]
+            choices_list = get_hotel_config().get("generic_menu", {}).get(generic, [])
+            choices = ", ".join(choices_list)
+            qty_match = re.search(r"\b(\d+)\b", normalize_text(user_text))
+            qty = int(qty_match.group(1)) if qty_match else 1
+            with state_lock:
+                order_sessions[sender_phone] = {
+                    "selection_pending": True,
+                    "generic": generic,
+                    "qty": max(1, qty),
+                    "created": time.time(),
+                }
+            reply = f"Ji, {generic} me se kaunsa chahiye: {choices}?"
+            send_whatsapp_message(sender_phone, reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", reply)
             return
 
         if not parsed["items"]:
@@ -2789,6 +2824,68 @@ def handle_incoming_async(message, sender_phone, msg_type):
 
 
 # CORE LIFECYCLE — DO NOT MOVE INTO HOTEL DATA
+
+def build_full_bill_paid_message(name, room, fin, language):
+    total = int(fin.get("grand_total", 0))
+    if language == "english":
+        return (
+            f"✅ *Bill Paid Successfully*\n"
+            f"Thank you {name} ji! Your complete bill for Room {room} of "
+            f"*₹{total:,}* has been paid in full. 🙏\n"
+            f"💚 Your balance due is *₹0*."
+        )
+    return (
+        f"✅ *Bill Paid Successfully*\n"
+        f"Dhanyawad {name} ji! Room {room} ka aapka poora bill "
+        f"*₹{total:,}* successfully paid ho gaya hai. 🙏\n"
+        f"💚 Ab aapka balance due *₹0* hai."
+    )
+
+
+def process_full_bill_paid_notifications(rows):
+    """Notify only when the one-click sheet payment status becomes PAID."""
+    global full_bill_paid_initialized
+    current = {}
+    pending_notifications = []
+    with state_lock:
+        headers = [str(x).strip().upper() for x in shared_store.get("room_headers", [])]
+    status_col = -1
+    for candidate in ("PAYMENT STATUS", "BILL STATUS", "PAYMENT"):
+        if candidate in headers:
+            status_col = headers.index(candidate)
+            break
+
+    for row in rows:
+        if status_col < 0 or len(row) <= status_col:
+            continue
+        room = clean_room(row[0])
+        phone = clean_phone(row[4]) if len(row) > 4 else ""
+        status = str(row[status_col]).strip().upper()
+        if not room or not phone:
+            continue
+        key = f"{phone}_{room}"
+        is_paid = status == "PAID"
+        current[key] = is_paid
+        previous = full_bill_paid_state.get(key)
+        if full_bill_paid_initialized and is_paid and previous is not True:
+            pending_notifications.append((phone, room, str(row[3]).strip() or "Guest"))
+
+    with state_lock:
+        full_bill_paid_state.clear()
+        full_bill_paid_state.update(current)
+        full_bill_paid_initialized = True
+
+    for phone, room, name in pending_notifications:
+        fetch_sheet_data_sync()
+        info = get_guest_financials(room, phone)
+        if info.get("balance", 1) != 0:
+            continue
+        lang = get_guest_response_language(phone)
+        msg = build_full_bill_paid_message(name, room, info, lang)
+        if not send_whatsapp_message(phone, msg):
+            print(f"FULL BILL PAID SEND FAILED: {phone} {room}", flush=True)
+
+
 # ============================================================
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================
@@ -2799,7 +2896,8 @@ def monitor_guest_status_lifecycle():
     Important:
     - Existing IN/OUT records at startup are silently seeded.
     - Welcome/check-out messages are sent only on an actual status transition.
-    - Payment status changes NEVER send a proactive guest message.
+    - Individual kitchen payment changes do not send messages.
+    - A completed bill marked PAID by the one-click sheet action sends one full-bill confirmation.
     """
     initialized = False
 
@@ -2823,25 +2921,20 @@ def monitor_guest_status_lifecycle():
             with state_lock:
                 rows = list(shared_store.get("rooms", []))
 
-            # A guest/room can appear more than once in the sheet. Use only
-            # the latest matching row so old records cannot trigger duplicate
-            # welcome/checkout messages or override the current stay status.
-            latest_rows = {}
+            # Full-bill payment is now handled by one Google Sheet action.
+            # Keep the old per-kitchen payment notification path disabled.
+            process_full_bill_paid_notifications(rows)
+
             for row in rows:
                 if len(row) < 6:
                     continue
-                room_key = clean_room(row[0])
-                phone_key = clean_phone(row[4]) if len(row) > 4 else ""
-                if room_key and phone_key:
-                    latest_rows[f"{phone_key}_{room_key}"] = row
 
-            for row in latest_rows.values():
                 room = clean_room(row[0])
                 name = str(row[3]).strip() if len(row) > 3 else "Guest"
                 phone = clean_phone(row[4]) if len(row) > 4 else ""
-                status = _classify_guest_status(row[5] if len(row) > 5 else "")
+                status = str(row[5]).upper().strip()
 
-                if not room or not phone or not status:
+                if not room or not phone:
                     continue
 
                 room_phone_map[room] = phone
@@ -2849,8 +2942,8 @@ def monitor_guest_status_lifecycle():
                 key = f"{phone}_{room}"
                 current_status[key] = status
 
-                is_in = status == "CHECKED_IN"
-                is_out = status == "CHECKED_OUT"
+                is_in = "IN" in status and "OUT" not in status
+                is_out = "OUT" in status
 
                 previous = lifecycle_status_cache.get(key)
 
@@ -2874,11 +2967,11 @@ def monitor_guest_status_lifecycle():
                 # -----------------------------
                 # NEW CHECK-IN TRANSITION
                 # -----------------------------
-                if is_in and (previous is None or previous == "CHECKED_OUT"):
+                if is_in and (previous is None or "OUT" in previous):
                     lang = get_guest_response_language(phone)
                     if lang == "english":
                         welcome_text = (
-                            f"🌸 *Welcome to {get_hotel_name()}, {name} ji!*\n"
+                            f"🌸 *Welcome to Hotel Ganga View, {name} ji!*\n"
                             f"🏨 We are delighted to have you with us in Room {room}. "
                             f"Our team is here to make your stay comfortable and memorable.\n\n"
                             f"🍽️ Food | 🧹 Housekeeping | 🧴 Towel/Soap | 💧 Water | 📍 Local Guide\n"
@@ -2887,7 +2980,7 @@ def monitor_guest_status_lifecycle():
                     else:
                         welcome_text = (
                             f"🌸 *Namaste {name} ji!*\n"
-                            f"🏨 {get_hotel_name()} mein aapka *dil se swagat hai*. "
+                            f"🏨 Hotel Ganga View mein aapka *dil se swagat hai*. "
                             f"Room {room} mein aapki stay ko comfortable aur yaadgaar banane ki poori koshish rahegi.\n\n"
                             f"🍽️ Food | 🧹 Housekeeping | 🧴 Towel/Soap | 💧 Water | 📍 Local Guide\n"
                             f"Kisi bhi help ke liye bas yahin message karein. 🙏"
@@ -2999,22 +3092,13 @@ def monitor_guest_status_lifecycle():
                 # -----------------------------
                 # CHECK-OUT TRANSITION
                 # -----------------------------
-                elif is_out and (previous is None or previous == "CHECKED_IN"):
-                    lang = get_guest_response_language(phone)
-                    hotel_name = get_hotel_name()
-                    if lang == "english":
-                        checkout_text = (
-                            f"🙏 *Thank you, {name} ji!*\n"
-                            f"We hope you had a comfortable and memorable stay at {hotel_name}. 🏨✨\n\n"
-                            f"Whenever you visit Haridwar again, we would be delighted to welcome you. *Safe journey!* 🌸"
-                        )
-                    else:
-                        checkout_text = (
-                            f"🙏 *Dhanyawad, {name} ji!*\n"
-                            f"Umeed hai {hotel_name} mein aapka stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
-                            f"Jab bhi dobara Haridwar aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
-                        )
-                    send_whatsapp_message(phone, checkout_text)
+                elif is_out and (previous is None or ("IN" in previous and "OUT" not in previous)):
+                    send_whatsapp_message(
+                        phone,
+                        f"🙏 *Dhanyawad, {name} ji!*\n"
+                        f"Hotel Ganga View mein aapka stay humein bahut accha laga. Umeed hai aapka Haridwar stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
+                        f"Jab bhi dobara Haridwar aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
+                    )
                     checked_out_guests.add(f"{key}_out")
 
             # Commit current lifecycle snapshot.

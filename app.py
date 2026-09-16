@@ -1663,7 +1663,8 @@ Rules:
 - If the hotel data does not contain the answer, say reception can confirm it instead of inventing.
 - Transactional actions are performed by the existing backend. Do not claim an action happened unless the backend already confirmed it.
 - Room service, kitchen delivery, food delivery and housekeeping are ONLY available to in-house guests.
-- If a non-in-house guest asks for these, politely explain the restriction and offer check-in/reception.
+- A CHECKED-OUT guest is not an in-house guest. Never offer or suggest room service, kitchen ordering, housekeeping, pending stay options, or other in-house services to a checked-out guest.
+- If a non-in-house or CHECKED-OUT guest asks for these, politely explain that the stay is no longer active and offer only a new check-in/booking or reception contact.
 - If the guest asks about sightseeing, routes or places, use the local guide and add [[MAP:exact place/query]] for each place needing a Maps link.
 - Distinguish HISTORY, TRADITION and PAURANIK KATHA exactly as the hotel data labels them. Religious legends must not be presented as proven history.
 - For 'more options', 'aur batao', 'what else', 'same', 'haan', 'masala', 'tell me more', etc., use the immediately preceding conversation.
@@ -2170,6 +2171,15 @@ def format_kitchen_bill_message(fin, room, guest_name):
 # DETERMINISTIC MESSAGE ROUTER
 # ============================================================
 
+def clear_post_checkout_sessions(sender_phone):
+    """Clear pending in-house conversation state after checkout."""
+    with state_lock:
+        order_sessions.pop(sender_phone, None)
+        service_sessions.pop(sender_phone, None)
+        active_orders.pop(sender_phone, None)
+        checkin_sessions.pop(sender_phone, None)
+
+
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
 
@@ -2237,8 +2247,32 @@ def process_and_reply(message, sender_phone, msg_type):
         guest_info and guest_info.get("status") == "CHECKED_OUT"
     )
 
+    # After checkout, no pending in-house option/session remains active.
+    if is_checkout:
+        clear_post_checkout_sessions(sender_phone)
+
     # ========================================================
-    # 1. ACTIVE ORDER CANCELLATION
+    # 1. POST-CHECKOUT IN-HOUSE LOCK
+    # A checked-out guest may ask general questions or make a new booking,
+    # but cannot continue the previous stay's room-service/order/housekeeping flow.
+    if is_checkout and (
+        service_type(user_text)
+        or looks_like_food(user_text)
+        or ("cancel" in t and any(x in t for x in ["order", "khana", "food"]))
+    ):
+        send_whatsapp_message(
+            sender_phone,
+            bilingual_text(
+                sender_phone,
+                "Your stay has been checked out, so room service and housekeeping are no longer available for this stay. For a new stay, please contact reception or type 'check in'.",
+                "Aapka stay check-out ho chuka hai, isliye is stay ke liye room service aur housekeeping ab available nahi hai. Naye stay ke liye reception se contact karein ya 'check in' type karein.",
+                "Aapka stay check-out ho chuka hai, isliye is stay ke liye room service aur housekeeping ab available nahi hai. Naye stay ke liye reception se contact karein ya 'check in' type karein."
+            )
+        )
+        return
+
+    # ========================================================
+    # 2. ACTIVE ORDER CANCELLATION
     # ========================================================
     if "cancel" in t and any(x in t for x in ["order", "khana", "food"]):
         with state_lock:
@@ -2815,6 +2849,9 @@ def process_and_reply(message, sender_phone, msg_type):
     # ========================================================
     # 14. HOUSEKEEPING / SERVICE
     # ========================================================
+    # A checked-out guest must NEVER be allowed into an in-house service
+    # path, even if the message contains a menu item or room-service wording.
+    # This gate is intentionally before both service and food routing.
     svc = service_type(user_text)
     if svc:
         if not is_inhouse:
@@ -2843,7 +2880,7 @@ def process_and_reply(message, sender_phone, msg_type):
     # 15. FOOD ORDERING - DETERMINISTIC
     # ========================================================
     if looks_like_food(user_text):
-        if not is_inhouse:
+        if is_checkout or not is_inhouse:
             send_whatsapp_message(
                 sender_phone,
                 bilingual_text(
@@ -3102,18 +3139,16 @@ def monitor_guest_status_lifecycle():
                 # STARTUP SEED: never send old welcome/checkout messages.
                 # -----------------------------
                 if not initialized:
-                    # Seed the current status so old guests do not receive a
-                    # duplicate welcome/checkout message after a restart.
-                    # IMPORTANT: do NOT continue here. Existing in-house
-                    # guests must still be eligible for today's breakfast,
-                    # lunch, Aarti and dinner reminder if the service starts
-                    # during that reminder window.
+                    # The first poll after a restart is a BASELINE, not a
+                    # status transition. Do not send a welcome or checkout
+                    # message for an already-existing sheet row.
                     lifecycle_status_cache[key] = status
+                    previous = status
                     if is_in:
                         guest_first_seen.setdefault(key, time.time())
 
-                    # No welcome is sent for an already in-house guest at
-                    # startup. The normal reminder logic below must continue.
+                    # Existing in-house guests can still receive today's
+                    # breakfast/lunch/Aarti/dinner reminders below.
 
                 # -----------------------------
                 # NEW CHECK-IN TRANSITION

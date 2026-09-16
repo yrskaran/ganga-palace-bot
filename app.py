@@ -908,37 +908,64 @@ def upload_image_to_google_drive(image_bytes, file_name):
 # SHEET DATA / GUEST STATUS / BILLING
 # ============================================================
 
+def _classify_guest_status(value):
+    """Normalize common hotel-sheet status spellings without changing sheet format."""
+    raw = str(value or '').strip().upper()
+    compact = re.sub(r'[^A-Z]', '', raw)
+
+    # Explicit checkout forms first.
+    if compact in {
+        'OUT', 'OUTHOUSE', 'CHECKEDOUT', 'CHECKOUT', 'CHECKEDOUTGUEST'
+    }:
+        return 'CHECKED_OUT'
+
+    # Explicit in-house forms.
+    if compact in {
+        'IN', 'INHOUSE', 'INHOUSEGUEST', 'CHECKEDIN', 'CHECKIN', 'STAYING', 'OCCUPIED'
+    }:
+        return 'CHECKED_IN'
+
+    # Conservative fallback for values such as "IN - HOUSE" / "OUT - HOUSE".
+    if compact.startswith('OUT') and 'IN' not in compact:
+        return 'CHECKED_OUT'
+    if compact.startswith('IN') and 'OUT' not in compact:
+        return 'CHECKED_IN'
+    return ''
+
+
 def get_guest_stay_status(sender_phone):
     phone = clean_phone(sender_phone)
 
     with state_lock:
-        rows = list(shared_store.get("rooms", []))
+        rows = list(shared_store.get('rooms', []))
 
+    # Check the newest matching guest record first. This is important when the
+    # same WhatsApp number has older OUT records and a newer IN record.
     for row in reversed(rows):
         if len(row) < 6:
             continue
 
         room = clean_room(row[0])
-        name = str(row[3]).strip() if len(row) > 3 else "Guest"
-        row_phone = clean_phone(row[4]) if len(row) > 4 else ""
-        status = str(row[5]).upper() if len(row) > 5 else ""
+        name = str(row[3]).strip() if len(row) > 3 else 'Guest'
+        row_phone = clean_phone(row[4]) if len(row) > 4 else ''
+        status = _classify_guest_status(row[5] if len(row) > 5 else '')
 
         if phone and phone == row_phone:
-            if "OUT" in status and "IN" not in status:
+            if status == 'CHECKED_IN':
                 return {
-                    "is_inhouse": False,
-                    "status": "CHECKED_OUT",
-                    "room": room,
-                    "name": name or "Guest",
+                    'is_inhouse': True,
+                    'status': 'CHECKED_IN',
+                    'room': room,
+                    'name': name or 'Guest',
+                    'price': safe_int(row[2], 1800) if len(row) > 2 else 1800,
                 }
 
-            if "IN" in status and "OUT" not in status:
+            if status == 'CHECKED_OUT':
                 return {
-                    "is_inhouse": True,
-                    "status": "CHECKED_IN",
-                    "room": room,
-                    "name": name or "Guest",
-                    "price": safe_int(row[2], 1800) if len(row) > 2 else 1800,
+                    'is_inhouse': False,
+                    'status': 'CHECKED_OUT',
+                    'room': room,
+                    'name': name or 'Guest',
                 }
 
     return None

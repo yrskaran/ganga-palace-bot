@@ -117,6 +117,12 @@ LOCAL GUIDE BEHAVIOUR:
 ==================================================
 - After check-in: send a warm welcome with guest name and room number.
 - 30 minutes after check-in: ask whether everything is comfortable and offer towel, soap, cleaning or general help.
+
+# Lifecycle timing windows are hotel-configurable. Format: HH:MM-HH:MM
+Breakfast Reminder Window: 08:00-10:59
+Lunch Reminder Window: 13:00-15:59
+Ganga Aarti Reminder Window: 17:00-17:59
+Dinner Reminder Window: 19:00-21:59
 - Breakfast prompt: send between 8:00 AM and 10:00 AM.
 - Lunch prompt: send between 1:00 PM and 3:00 PM.
 - Ganga Aarti reminder: send between 5:00 PM and 6:00 PM.
@@ -300,15 +306,6 @@ AI GUIDE BEHAVIOUR
 - Use the configured Maps URL when directions/location are requested.
 - Never invent timings, distances, prices or historical facts.
 - If a detail is missing, say reception can confirm it.
-
-==================================================
-PROACTIVE LIFECYCLE TIMINGS
-==================================================
-# These windows control proactive guest reminders. Change them here without changing Python.
-Breakfast Reminder Window: 08:00-10:59
-Lunch Reminder Window: 13:00-15:59
-Ganga Aarti Reminder Window: 17:00-17:59
-Dinner Reminder Window: 19:00-21:59
 
 ==================================================
 PHOTOS & MEDIA

@@ -70,6 +70,8 @@ shared_store = {
     "room_headers": [],
     "kitchen_orders": [],
     "kitchen_headers": [],
+    "staff_roster": [],
+    "staff_headers": [],
     "last_synced": 0,
 }
 
@@ -789,17 +791,147 @@ def fetch_sheet_data_sync():
         rooms = sh.get_worksheet(0).get_all_values()
         kitchen = sh.worksheet("Kitchen_Orders").get_all_values()
 
+        # Staff_Roster is optional. If it does not exist yet, the hotel keeps
+        # working with the legacy environment-variable fallback numbers.
+        staff = []
+        try:
+            staff = sh.worksheet("Staff_Roster").get_all_values()
+        except Exception:
+            staff = []
+
         with state_lock:
             shared_store["room_headers"] = [str(x).strip() for x in (rooms[0] if rooms else [])]
             shared_store["rooms"] = rooms[1:] if len(rooms) > 1 else []
             shared_store["kitchen_headers"] = [str(x).strip() for x in (kitchen[0] if kitchen else [])]
             shared_store["kitchen_orders"] = kitchen[1:] if len(kitchen) > 1 else []
+            shared_store["staff_headers"] = [str(x).strip() for x in (staff[0] if staff else [])]
+            shared_store["staff_roster"] = staff[1:] if len(staff) > 1 else []
             shared_store["last_synced"] = time.time()
 
         return True
     except Exception as exc:
         print("SHEET SYNC ERROR:", exc, flush=True)
         return False
+
+
+def _staff_header_map():
+    with state_lock:
+        headers = list(shared_store.get("staff_headers", []))
+    return {normalize_text(h).replace(" ", "_"): i for i, h in enumerate(headers) if str(h).strip()}
+
+
+def _staff_value(row, header_map, *names):
+    for name in names:
+        idx = header_map.get(normalize_text(name).replace(" ", "_"))
+        if idx is not None and idx < len(row):
+            return str(row[idx]).strip()
+    return ""
+
+
+def _staff_is_on_duty(value):
+    return normalize_text(value) in {
+        "on", "on duty", "onduty", "active", "yes", "available", "working", "duty"
+    }
+
+
+def _staff_date_matches(value, today):
+    value = str(value or "").strip()
+    if not value or normalize_text(value) in {"daily", "all", "every day", "everyday"}:
+        return True
+    for fmt in ("%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d", "%d-%b-%Y", "%d-%b-%y"):
+        try:
+            return datetime.strptime(value, fmt).date() == today
+        except ValueError:
+            continue
+    # Google Sheets may return a timestamp/date string. Match today's
+    # ISO/date prefix where possible; otherwise do not trust the row.
+    return today.strftime("%Y-%m-%d") in value or today.strftime("%d-%m-%Y") in value
+
+
+def _room_in_assignment(room, assigned_rooms):
+    room = clean_room(room)
+    raw = normalize_text(assigned_rooms)
+    if not room or not raw:
+        return False
+    if raw in {"all", "all rooms", "*", "any", "all_room", "all_rooms"}:
+        return True
+    # Accept comma, slash, semicolon, space-separated room assignments and ranges.
+    tokens = [x.strip() for x in re.split(r"[,;/|]+", assigned_rooms) if x.strip()]
+    for token in tokens:
+        if clean_room(token) == room:
+            return True
+        m = re.fullmatch(r"([a-z]+)?\s*(\d+)\s*[-to]+\s*([a-z]+)?\s*(\d+)", normalize_text(token))
+        if m:
+            try:
+                start = int(m.group(2)); end = int(m.group(4)); target = int(re.sub(r"\D", "", room))
+                if start <= target <= end:
+                    return True
+            except Exception:
+                pass
+    return room in {clean_room(x) for x in re.split(r"\s+", assigned_rooms) if x.strip()}
+
+
+def find_on_duty_staff(room, role):
+    """Return one live on-duty staff member for a room/role from Staff_Roster.
+
+    Priority: exact room assignment -> role-wide on-duty backup -> None.
+    A room-assigned row wins, so the message goes only to that staff member.
+    """
+    target_role = normalize_text(role)
+    today = now_ist().date()
+    with state_lock:
+        headers = list(shared_store.get("staff_headers", []))
+        rows = list(shared_store.get("staff_roster", []))
+    if not headers or not rows:
+        return None
+
+    h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
+    candidates = []
+    for row in rows:
+        row_role = _staff_value(row, h, "Role", "Department", "Service")
+        status = _staff_value(row, h, "Status", "Duty Status", "On Duty")
+        date_value = _staff_value(row, h, "Duty Date", "Date")
+        phone = _staff_value(row, h, "WhatsApp", "WhatsApp Number", "Phone", "Phone Number", "Mobile")
+        name = _staff_value(row, h, "Staff Name", "Name", "Employee")
+        assigned = _staff_value(row, h, "Assigned Rooms", "Rooms", "Room Assignment", "Room")
+        if not name or not phone or not _staff_is_on_duty(status):
+            continue
+        if not _staff_date_matches(date_value, today):
+            continue
+        if target_role and target_role not in normalize_text(row_role) and normalize_text(row_role) not in target_role:
+            continue
+        room_match = _room_in_assignment(room, assigned)
+        candidates.append((room_match, name, phone))
+
+    # Exact room assignment is authoritative. Only if there is no assignment
+    # do we use a role-wide on-duty person as backup.
+    for room_match, name, phone in candidates:
+        if room_match:
+            return {"name": name, "phone": format_whatsapp_number(phone), "source": "room"}
+    if candidates:
+        name, phone = candidates[0][1], candidates[0][2]
+        return {"name": name, "phone": format_whatsapp_number(phone), "source": "role"}
+    return None
+
+
+def send_staff_alert(room, role, message, fallback_phone=None):
+    """Route an internal alert through today's Staff_Roster.
+
+    If a room is explicitly assigned, only that staff member receives the alert.
+    If no roster match exists, fall back to the legacy role phone number.
+    """
+    staff = find_on_duty_staff(room, role)
+    target = staff["phone"] if staff and staff.get("phone") else fallback_phone
+    if not target:
+        print(f"STAFF ROUTING: no on-duty recipient for role={role} room={room}", flush=True)
+        return False
+    ok = send_whatsapp_message(target, message)
+    print(
+        f"STAFF ROUTING: role={role} room={room} recipient={staff.get('name') if staff else 'legacy'} "
+        f"source={staff.get('source') if staff else 'fallback'} sent={ok}",
+        flush=True,
+    )
+    return ok
 
 
 def sync_sheets_in_background():
@@ -1887,10 +2019,14 @@ def start_checkin(sender_phone):
             "id_link": None,
         }
 
-    send_whatsapp_message(
-        STAFF_PHONE,
-        f"स्वयं चेक-इन अनुरोध\nPhone: +{sender_phone}\nOTP: {otp}\n"
-        f"कृपया अतिथि को यह OTP बताकर पुष्टि करें।"
+    send_staff_alert(
+        room="",
+        role="Reception",
+        message=(
+            f"स्वयं चेक-इन अनुरोध\nPhone: +{sender_phone}\nOTP: {otp}\n"
+            f"कृपया अतिथि को यह OTP बताकर पुष्टि करें।"
+        ),
+        fallback_phone=STAFF_PHONE,
     )
 
     send_whatsapp_message(
@@ -1936,14 +2072,18 @@ def complete_checkin_with_id(sender_phone, message):
 
     # IMPORTANT: No fake automated identity verification.
     # Staff/reception must verify the document before check-in is recorded.
-    send_whatsapp_message(
-        STAFF_PHONE,
-        "आईडी सत्यापन आवश्यक\n"
-        f"Name: {session.get('name','Guest')}\n"
-        f"Phone: +{sender_phone}\n"
-        f"Address: {session.get('address','')}\n"
-        f"ID Link: {link or 'Upload failed'}\n\n"
-        "कृपया मूल/दस्तावेज़ आईडी की मैन्युअल जाँच करके रूम आवंटन की पुष्टि करें।"
+    send_staff_alert(
+        room="",
+        role="Reception",
+        message=(
+            "आईडी सत्यापन आवश्यक\n"
+            f"Name: {session.get('name','Guest')}\n"
+            f"Phone: +{sender_phone}\n"
+            f"Address: {session.get('address','')}\n"
+            f"ID Link: {link or 'Upload failed'}\n\n"
+            "कृपया मूल/दस्तावेज़ आईडी की मैन्युअल जाँच करके रूम आवंटन की पुष्टि करें।"
+        ),
+        fallback_phone=STAFF_PHONE,
     )
 
     send_whatsapp_message(
@@ -2167,10 +2307,14 @@ def process_and_reply(message, sender_phone, msg_type):
             )
 
             if ok:
-                send_whatsapp_message(
-                    KITCHEN_PHONE,
-                    f"ऑर्डर रद्द\nRoom: {guest_info['room']} ({guest_info['name']})\n"
-                    f"Order: {active['order']}"
+                send_staff_alert(
+                    room=guest_info['room'],
+                    role="Kitchen",
+                    message=(
+                        f"ऑर्डर रद्द\nRoom: {guest_info['room']} ({guest_info['name']})\n"
+                        f"Order: {active['order']}"
+                    ),
+                    fallback_phone=KITCHEN_PHONE,
                 )
                 send_whatsapp_message(
                     sender_phone,
@@ -2273,13 +2417,17 @@ def process_and_reply(message, sender_phone, msg_type):
             )
 
             if ok:
-                send_whatsapp_message(
-                    KITCHEN_PHONE,
-                    f"नया रूम सर्विस ऑर्डर\n"
-                    f"Room: {guest_info['room']} ({guest_info['name']})\n"
-                    f"Order: {order_text}\n"
-                    f"Amount: Rs.{total}\n"
-                    f"Phone: +{sender_phone}"
+                send_staff_alert(
+                    room=guest_info['room'],
+                    role="Kitchen",
+                    message=(
+                        f"नया रूम सर्विस ऑर्डर\n"
+                        f"Room: {guest_info['room']} ({guest_info['name']})\n"
+                        f"Order: {order_text}\n"
+                        f"Amount: Rs.{total}\n"
+                        f"Phone: +{sender_phone}"
+                    ),
+                    fallback_phone=KITCHEN_PHONE,
                 )
 
                 send_whatsapp_message(
@@ -2677,9 +2825,15 @@ def process_and_reply(message, sender_phone, msg_type):
         room = guest_info["room"] if is_inhouse else extract_room_number(user_text)
 
         if room:
-            send_whatsapp_message(
-                STAFF_PHONE,
-                f"स्टाफ अलर्ट - शिकायत\nRoom: {room}\nGuest: {guest_info.get('name','Guest') if guest_info else 'Guest'}\nDetails: {user_text}\nPhone: +{sender_phone}"
+            send_staff_alert(
+                room=room,
+                role="Housekeeping",
+                message=(
+                    f"स्टाफ अलर्ट - शिकायत\nRoom: {room}\n"
+                    f"Guest: {guest_info.get('name','Guest') if guest_info else 'Guest'}\n"
+                    f"Details: {user_text}\nPhone: +{sender_phone}"
+                ),
+                fallback_phone=STAFF_PHONE,
             )
             send_whatsapp_message(
                 sender_phone,
@@ -2709,9 +2863,14 @@ def process_and_reply(message, sender_phone, msg_type):
             )
             return
 
-        send_whatsapp_message(
-            STAFF_PHONE,
-            f"स्टाफ अलर्ट\nRoom: {guest_info['room']}\nGuest: {guest_info['name']}\nTask: {svc}\nDetails: {user_text}\nPhone: +{sender_phone}"
+        send_staff_alert(
+            room=guest_info['room'],
+            role="Housekeeping" if svc != "Room Service Assistance" else "Room Service",
+            message=(
+                f"स्टाफ अलर्ट\nRoom: {guest_info['room']}\nGuest: {guest_info['name']}\n"
+                f"Task: {svc}\nDetails: {user_text}\nPhone: +{sender_phone}"
+            ),
+            fallback_phone=STAFF_PHONE,
         )
         send_whatsapp_message(
             sender_phone,
@@ -2912,21 +3071,94 @@ def process_full_bill_paid_notifications(rows):
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================
 
+def _room_header_index(header_names):
+    """Return the 0-based column index for the first matching room-sheet header."""
+    with state_lock:
+        headers = [str(x).strip() for x in shared_store.get("room_headers", [])]
+    wanted = {normalize_text(x).replace(" ", "_") for x in header_names}
+    for i, h in enumerate(headers):
+        if normalize_text(h).replace(" ", "_") in wanted:
+            return i
+    return -1
+
+
+def _parse_sheet_datetime(value):
+    """Parse common Google Sheets date/time strings as IST-aware datetimes."""
+    if not value:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    formats = (
+        "%d-%b-%Y %I:%M %p", "%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M",
+        "%d/%m/%Y %I:%M:%S %p", "%d/%m/%Y %I:%M %p", "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+        "%d-%m-%Y %I:%M:%S %p", "%d-%m-%Y %I:%M %p", "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+    )
+    for fmt in formats:
+        try:
+            return IST.localize(datetime.strptime(s, fmt)) if hasattr(IST, "localize") else datetime.strptime(s, fmt).replace(tzinfo=IST)
+        except ValueError:
+            continue
+    try:
+        d = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return d.astimezone(IST) if d.tzinfo else d.replace(tzinfo=IST)
+    except Exception:
+        return None
+
+
+def _room_lifecycle_columns():
+    """Resolve lifecycle columns without assuming fixed positions."""
+    return {
+        "status": _room_header_index(("Status", "Guest Status", "Booking Status")),
+        "check_in": _room_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
+        "check_out": _room_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
+        "welcome_sent": _room_header_index(("WELCOME SENT",)),
+        "thirty_sent": _room_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
+        "breakfast_sent": _room_header_index(("BREAKFAST SENT",)),
+        "lunch_sent": _room_header_index(("LUNCH SENT",)),
+        "aarti_sent": _room_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),
+        "dinner_sent": _room_header_index(("DINNER SENT",)),
+        "checkout_sent": _room_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
+    }
+
+
+def _mark_room_lifecycle_cell(row_number, col_index, value):
+    """Persist a lifecycle marker in Google Sheets. row_number is 1-based."""
+    if col_index < 0:
+        return False
+    try:
+        client = get_gspread_client()
+        if not client:
+            return False
+        sh = client.open_by_key(SHEET_ID)
+        sheet = sh.get_worksheet(0)
+        sheet.update_cell(row_number, col_index + 1, value)
+        return True
+    except Exception as exc:
+        print(f"LIFECYCLE SHEET WRITE ERROR: row={row_number} col={col_index + 1}: {exc}", flush=True)
+        return False
+
+
+def _lifecycle_sent(row, idx):
+    return idx >= 0 and len(row) > idx and str(row[idx]).strip() != ""
+
+
 def monitor_guest_status_lifecycle():
     """
-    Guest lifecycle automation.
-    Important:
-    - Existing IN/OUT records at startup are silently seeded.
-    - Welcome/check-out messages are sent only on an actual status transition.
-    - Individual kitchen payment changes do not send messages.
-    - A completed bill marked PAID by the one-click sheet action sends one full-bill confirmation.
-    """
-    initialized = False
+    Guest lifecycle automation whose source of truth is the Google Sheet.
 
+    IMPORTANT:
+    - Check-in/check-out timestamps are read from the sheet, not process memory.
+    - Restarting Render does not reset the 30-minute timer.
+    - Lifecycle sent markers are persisted in the sheet to prevent duplicates.
+    - Hotel content remains configurable through hotel_data.txt.
+    - Existing welcome, 30-min, meal, Aarti, checkout and payment behaviour is retained.
+    """
     while True:
         try:
             fetch_sheet_data_sync()
-
             current = now_ist()
             today = current.strftime("%Y-%m-%d")
             hour = current.hour
@@ -2936,196 +3168,154 @@ def monitor_guest_status_lifecycle():
             aarti_window = 17 <= hour < 18
             dinner_window = 19 <= hour <= 21
 
-            room_phone_map = {}
-            room_name_map = {}
-            current_status = {}
-
             with state_lock:
                 rows = list(shared_store.get("rooms", []))
+                headers = list(shared_store.get("room_headers", []))
 
-            # Full-bill payment is now handled by one Google Sheet action.
-            # Keep the old per-kitchen payment notification path disabled.
+            # Keep full-bill payment notification behaviour intact.
             process_full_bill_paid_notifications(rows)
+            cols = _room_lifecycle_columns()
 
-            for row in rows:
-                if len(row) < 6:
+            # If the Google Sheet has not yet been given lifecycle columns, do not
+            # fall back to volatile memory. The Apps Script setup creates them.
+            required = ("status", "check_in", "check_out", "welcome_sent", "thirty_sent", "checkout_sent")
+            if any(cols[x] < 0 for x in required):
+                print("LIFECYCLE WAITING FOR SHEET COLUMNS: run setupLifecycleColumns() in Apps Script", flush=True)
+                time.sleep(30)
+                continue
+
+            for row_index, row in enumerate(rows, start=2):
+                if len(row) <= max(cols.values()):
                     continue
 
                 room = clean_room(row[0])
                 name = str(row[3]).strip() if len(row) > 3 else "Guest"
                 phone = clean_phone(row[4]) if len(row) > 4 else ""
-                status = str(row[5]).upper().strip()
-
+                status = str(row[cols["status"]]).upper().strip()
                 if not room or not phone:
                     continue
-
-                room_phone_map[room] = phone
-                room_name_map[room] = name or "Guest"
-                key = f"{phone}_{room}"
-                current_status[key] = status
 
                 is_in = "IN" in status and "OUT" not in status
                 is_out = "OUT" in status
 
-                previous = lifecycle_status_cache.get(key)
+                check_in_at = _parse_sheet_datetime(row[cols["check_in"]])
+                check_out_at = _parse_sheet_datetime(row[cols["check_out"]])
 
                 # -----------------------------
-                # STARTUP SEED: never send old welcome/checkout messages.
-                # -----------------------------
-                if not initialized:
-                    # Seed the current status so old guests do not receive a
-                    # duplicate welcome/checkout message after a restart.
-                    # IMPORTANT: do NOT continue here. Existing in-house
-                    # guests must still be eligible for today's breakfast,
-                    # lunch, Aarti and dinner reminder if the service starts
-                    # during that reminder window.
-                    lifecycle_status_cache[key] = status
-                    if is_in:
-                        guest_first_seen.setdefault(key, time.time())
-
-                    # No welcome is sent for an already in-house guest at
-                    # startup. The normal reminder logic below must continue.
-
-                # -----------------------------
-                # NEW CHECK-IN TRANSITION
-                # -----------------------------
-                if is_in and (previous is None or "OUT" in previous):
-                    lang = get_guest_response_language(phone)
-                    if lang == "english":
-                        welcome_text = (
-                            f"🌸 *Welcome to {get_hotel_name()}, {name} ji!*\n"
-                            f"🏨 We are delighted to have you with us in Room {room}. "
-                            f"Our team is here to make your stay comfortable and memorable.\n\n"
-                            f"🍽️ Food | 🧹 Housekeeping | 🧴 Guest Services | 📍 Local Guide\n"
-                            f"For any assistance, simply message us here. 🙏"
-                        )
-                    else:
-                        welcome_text = (
-                            f"🌸 *Namaste {name} ji!*\n"
-                            f"🏨 {get_hotel_name()} mein aapka *dil se swagat hai*. "
-                            f"Room {room} mein aapki stay ko comfortable aur yaadgaar banane ki poori koshish rahegi.\n\n"
-                            f"🍽️ Food | 🧹 Housekeeping | 🧴 Guest Services | 📍 Local Guide\n"
-                            f"Kisi bhi help ke liye bas yahin message karein. 🙏"
-                        )
-                    send_whatsapp_message(phone, welcome_text)
-
-                    welcomed_guests.add(key)
-                    guest_first_seen[key] = time.time()
-
-                # -----------------------------
-                # 30-MINUTE CHECK
+                # IN-HOUSE LIFECYCLE
                 # -----------------------------
                 if is_in:
-                    guest_first_seen.setdefault(key, time.time())
-
-                    if (
-                        key in guest_first_seen
-                        and key not in notified_30min
-                        and time.time() - guest_first_seen[key] >= 1800
-                    ):
+                    # Welcome is tied to the Sheet's current IN record.
+                    if not _lifecycle_sent(row, cols["welcome_sent"]):
                         lang = get_guest_response_language(phone)
                         if lang == "english":
-                            thirty_text = (
-                                f"🌸 *{name} ji, we hope you are comfortably settled in.*\n"
-                                f"For towel, soap, water, room cleaning, or any other assistance, simply message us here. "
-                                f"We can also help with the local guide and nearby attractions. 🙏"
+                            welcome_text = (
+                                f"🌸 *Welcome to {get_hotel_name()}, {name} ji!*\n"
+                                f"🏨 We are delighted to have you with us in Room {room}. "
+                                f"Our team is here to make your stay comfortable and memorable.\n\n"
+                                f"🍽️ Food | 🧹 Housekeeping | 🧴 Guest Services | 📍 Local Guide\n"
+                                f"For any assistance, simply message us here. 🙏"
                             )
                         else:
-                            thirty_text = (
-                                f"🌸 *{name} ji, umeed hai aap achhi tarah settle ho gaye honge.*\n"
-                                f"Room mein towel, soap, water, cleaning ya kisi aur assistance ki zarurat ho to bas message karein. "
-                                f"Local guide aur nearby attractions ke liye bhi hum help kar denge. 🙏"
+                            welcome_text = (
+                                f"🌸 *Namaste {name} ji!*\n"
+                                f"🏨 {get_hotel_name()} mein aapka *dil se swagat hai*. "
+                                f"Room {room} mein aapki stay ko comfortable aur yaadgaar banane ki poori koshish rahegi.\n\n"
+                                f"🍽️ Food | 🧹 Housekeeping | 🧴 Guest Services | 📍 Local Guide\n"
+                                f"Kisi bhi help ke liye bas yahin message karein. 🙏"
                             )
-                        send_whatsapp_message(phone, thirty_text)
-                        notified_30min.add(key)
+                        if send_whatsapp_message(phone, welcome_text):
+                            _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                    # -----------------------------
-                    # BREAKFAST
-                    # -----------------------------
-                    if breakfast_window:
-                        bk = f"{key}_{today}_breakfast"
-                        if bk not in breakfast_prompted:
+                    # 30-minute message uses the actual Sheet IN TIME.
+                    if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
+                        if current >= check_in_at + timedelta(minutes=30):
                             lang = get_guest_response_language(phone)
-                            breakfast_text = (
-                                f"☀️ *Good Morning {name} ji!*\nBreakfast time hai. Fresh breakfast ke liye *menu* type karein; order room mein serve kar denge. 🍽️"
-                                if lang != "english"
-                                else
-                                f"☀️ *Good Morning {name} ji!*\nIt is breakfast time. Type *menu* to see breakfast options; we can serve the order in your room. 🍽️"
-                            )
-                            if send_whatsapp_message(phone, breakfast_text):
-                                breakfast_prompted.add(bk)
+                            if lang == "english":
+                                thirty_text = (
+                                    f"🌸 *{name} ji, we hope you are comfortably settled in.*\n"
+                                    f"For towel, soap, water, room cleaning, or any other assistance, simply message us here. "
+                                    f"We can also help with the local guide and nearby attractions. 🙏"
+                                )
                             else:
-                                print(f"BREAKFAST SEND FAILED: {phone} {bk}", flush=True)
+                                thirty_text = (
+                                    f"🌸 *{name} ji, umeed hai aap achhi tarah settle ho gaye honge.*\n"
+                                    f"Room mein towel, soap, water, cleaning ya kisi aur assistance ki zarurat ho to bas message karein. "
+                                    f"Local guide aur nearby attractions ke liye bhi hum help kar denge. 🙏"
+                                )
+                            if send_whatsapp_message(phone, thirty_text):
+                                _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                    # -----------------------------
-                    # LUNCH
-                    # -----------------------------
-                    if lunch_window:
-                        lk = f"{key}_{today}_lunch"
-                        if lk not in lunch_prompted:
-                            lang = get_guest_response_language(phone)
-                            lunch_text = (
-                                f"🍛 *Good Afternoon {name} ji!*\nLunch ke liye *menu* type karein. Garma-garam food room mein serve kar denge. 🙏"
-                                if lang != "english"
-                                else
-                                f"🍛 *Good Afternoon {name} ji!*\nFor lunch, type *menu* to see the available options. We can serve it in your room. 🙏"
-                            )
-                            if send_whatsapp_message(phone, lunch_text):
-                                lunch_prompted.add(lk)
-                            else:
-                                print(f"LUNCH SEND FAILED: {phone} {lk}", flush=True)
+                    # Meal reminders remain time-window based and persist their sent date.
+                    if breakfast_window and not _lifecycle_sent(row, cols["breakfast_sent"]):
+                        lang = get_guest_response_language(phone)
+                        text = (
+                            f"☀️ *Good Morning {name} ji!*\nBreakfast time hai. Fresh breakfast ke liye *menu* type karein; order room mein serve kar denge. 🍽️"
+                            if lang != "english" else
+                            f"☀️ *Good Morning {name} ji!*\nIt is breakfast time. Type *menu* to see breakfast options; we can serve the order in your room. 🍽️"
+                        )
+                        if send_whatsapp_message(phone, text):
+                            _mark_room_lifecycle_cell(row_index, cols["breakfast_sent"], today)
 
-                    # -----------------------------
-                    # OPTIONAL SPECIAL-EVENT REMINDER
-                    # Hotel-specific event text/time lives in hotel_data.txt.
-                    if aarti_window:
+                    if lunch_window and not _lifecycle_sent(row, cols["lunch_sent"]):
+                        lang = get_guest_response_language(phone)
+                        text = (
+                            f"🍛 *Good Afternoon {name} ji!*\nLunch ke liye *menu* type karein. Garma-garam food room mein serve kar denge. 🙏"
+                            if lang != "english" else
+                            f"🍛 *Good Afternoon {name} ji!*\nFor lunch, type *menu* to see the available options. We can serve it in your room. 🙏"
+                        )
+                        if send_whatsapp_message(phone, text):
+                            _mark_room_lifecycle_cell(row_index, cols["lunch_sent"], today)
+
+                    if aarti_window and not _lifecycle_sent(row, cols["aarti_sent"]):
                         event_text = get_hotel_value("Special Evening Reminder", "")
-                        ak = f"{key}_{today}_special_evening"
-                        if event_text and ak not in aarti_prompted:
-                            if send_whatsapp_message(phone, event_text.format(name=name, room=room)):
-                                aarti_prompted.add(ak)
+                        if event_text:
+                            try:
+                                event_text = event_text.format(name=name, room=room)
+                            except Exception:
+                                pass
+                            if send_whatsapp_message(phone, event_text):
+                                _mark_room_lifecycle_cell(row_index, cols["aarti_sent"], today)
 
-                    # DINNER
-                    # -----------------------------
-                    if dinner_window:
-                        dk = f"{key}_{today}_dinner"
-                        if dk not in dinner_prompted:
-                            lang = get_guest_response_language(phone)
-                            dinner_text = (
-                                f"🌙 *Good Evening {name} ji!*\nDinner ke liye kuch mangwana ho to *menu* type karein. 🍽️"
-                                if lang != "english"
-                                else
-                                f"🌙 *Good Evening {name} ji!*\nFor dinner, type *menu* to see the available options. We can serve your order in the room. 🍽️"
+                    if dinner_window and not _lifecycle_sent(row, cols["dinner_sent"]):
+                        lang = get_guest_response_language(phone)
+                        text = (
+                            f"🌙 *Good Evening {name} ji!*\nDinner ke liye kuch mangwana ho to *menu* type karein. 🍽️"
+                            if lang != "english" else
+                            f"🌙 *Good Evening {name} ji!*\nFor dinner, type *menu* to see the available options. We can serve your order in the room. 🍽️"
+                        )
+                        if send_whatsapp_message(phone, text):
+                            _mark_room_lifecycle_cell(row_index, cols["dinner_sent"], today)
+
+                # -----------------------------
+                # CHECK-OUT LIFECYCLE
+                # -----------------------------
+                elif is_out:
+                    # OUT TIME is the authoritative checkout event timestamp.
+                    # If an old OUT row has already been acknowledged, no duplicate.
+                    if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
+                        lang = get_guest_response_language(phone)
+                        if lang == "english":
+                            checkout_text = (
+                                f"🙏 *Thank you, {name} ji!*\n"
+                                f"We hope your stay at {get_hotel_name()} was comfortable and memorable. 🏨✨\n\n"
+                                f"Wishing you a safe journey. We look forward to welcoming you again! 🌸"
                             )
-                            if send_whatsapp_message(phone, dinner_text):
-                                dinner_prompted.add(dk)
-                            else:
-                                print(f"DINNER SEND FAILED: {phone} {dk}", flush=True)
+                        else:
+                            checkout_text = (
+                                f"🙏 *Dhanyawad, {name} ji!*\n"
+                                f"{get_hotel_name()} mein aapka stay humein bahut accha laga. Umeed hai aapka stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
+                                f"Jab bhi dobara aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
+                            )
+                        if send_whatsapp_message(phone, checkout_text):
+                            _mark_room_lifecycle_cell(row_index, cols["checkout_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                # -----------------------------
-                # CHECK-OUT TRANSITION
-                # -----------------------------
-                elif is_out and (previous is None or ("IN" in previous and "OUT" not in previous)):
-                    send_whatsapp_message(
-                        phone,
-                        f"🙏 *Dhanyawad, {name} ji!*\n"
-                        f"{get_hotel_name()} mein aapka stay humein bahut accha laga. Umeed hai aapka stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
-                        f"Jab bhi dobara aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
-                    )
-                    checked_out_guests.add(f"{key}_out")
-
-            # Commit current lifecycle snapshot.
-            with state_lock:
-                lifecycle_status_cache.clear()
-                lifecycle_status_cache.update(current_status)
-
-            initialized = True
-
+            # Give Sheets time to propagate before the next 30-second cycle.
         except Exception as exc:
             print("LIFECYCLE ERROR:", exc, flush=True)
+            traceback.print_exc()
 
         time.sleep(30)
-
 
 
 # ============================================================

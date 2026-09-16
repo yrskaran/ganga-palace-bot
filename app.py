@@ -38,7 +38,16 @@ APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
 # Gemini is the primary conversational brain. Groq variables are retained only
 # as an optional fallback so the existing deployment does not lose functionality.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+# Ordered failover pool. Keep the configured model first, then use stable
+# Flash fallbacks when the primary is temporarily overloaded/unavailable.
+GEMINI_FALLBACK_MODELS = [
+    GEMINI_MODEL,
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+]
+GEMINI_MAX_RETRIES_PER_MODEL = 2
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -1513,8 +1522,117 @@ def build_guide_fallback(user_text, sender_phone=None):
     return "Ji, yahan kuch aur jagah hain jahan aap ghoom sakte hain:\n" + "\n".join(lines)
 
 
+def _gemini_models():
+    """Return a de-duplicated Gemini failover pool, configured model first."""
+    seen = set()
+    models = []
+    for model in GEMINI_FALLBACK_MODELS:
+        model = str(model or "").strip()
+        if model and model not in seen:
+            seen.add(model)
+            models.append(model)
+    return models
+
+
+def _gemini_post(payload, timeout=35, purpose="chat"):
+    """Call Gemini with retry/backoff and automatic model failover.
+
+    503/429/408/5xx are treated as transient. 404/400/403 are not retried
+    on the same model; 404 advances to the next configured model so an old or
+    unavailable model ID cannot make the receptionist go silent.
+    """
+    if not GEMINI_API_KEY:
+        return None
+
+    import random as _random
+
+    for model_index, model in enumerate(_gemini_models()):
+        url = f"{GEMINI_API_BASE}/{model}:generateContent"
+        last_status = None
+        for attempt in range(GEMINI_MAX_RETRIES_PER_MODEL + 1):
+            try:
+                res = requests.post(
+                    url,
+                    params={"key": GEMINI_API_KEY},
+                    json=payload,
+                    timeout=timeout,
+                )
+                last_status = res.status_code
+
+                if res.status_code == 200:
+                    return res.json(), model
+
+                # Invalid/retired model: immediately try the next model.
+                if res.status_code == 404:
+                    print(
+                        f"GEMINI {purpose}: model {model} returned 404; trying next fallback.",
+                        flush=True,
+                    )
+                    break
+
+                # Auth/request errors should not be hammered.
+                if res.status_code in {400, 401, 403}:
+                    print(
+                        f"GEMINI {purpose} ERROR {res.status_code}: {res.text[:500]}",
+                        flush=True,
+                    )
+                    return None
+
+                # Transient overload/rate-limit/server errors.
+                if res.status_code in {408, 429, 500, 502, 503, 504}:
+                    if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
+                        delay = min(8, 1.5 * (2 ** attempt)) + _random.uniform(0, 0.7)
+                        print(
+                            f"GEMINI {purpose}: {model} returned {res.status_code}; "
+                            f"retry {attempt + 1}/{GEMINI_MAX_RETRIES_PER_MODEL} in {delay:.1f}s",
+                            flush=True,
+                        )
+                        time.sleep(delay)
+                        continue
+                    print(
+                        f"GEMINI {purpose}: {model} exhausted retries with {res.status_code}; "
+                        "trying next fallback.",
+                        flush=True,
+                    )
+                    break
+
+                print(
+                    f"GEMINI {purpose} ERROR {res.status_code}: {res.text[:700]}",
+                    flush=True,
+                )
+                break
+
+            except requests.RequestException as exc:
+                if attempt < GEMINI_MAX_RETRIES_PER_MODEL:
+                    delay = min(8, 1.5 * (2 ** attempt)) + _random.uniform(0, 0.7)
+                    print(
+                        f"GEMINI {purpose}: network error on {model}; "
+                        f"retry {attempt + 1}/{GEMINI_MAX_RETRIES_PER_MODEL} in {delay:.1f}s: {exc}",
+                        flush=True,
+                    )
+                    time.sleep(delay)
+                    continue
+                print(
+                    f"GEMINI {purpose}: network retries exhausted on {model}: {exc}",
+                    flush=True,
+                )
+                break
+            except Exception as exc:
+                print(f"GEMINI {purpose} EXCEPTION on {model}: {exc}", flush=True)
+                break
+
+        # Continue to next model after transient exhaustion / invalid model.
+        if model_index < len(_gemini_models()) - 1:
+            print(
+                f"GEMINI {purpose}: switching {model} -> {_gemini_models()[model_index + 1]}",
+                flush=True,
+            )
+
+    return None
+
+
 def _gemini_generate(system_prompt, history, user_text):
-    """Call Gemini 2.5 Flash using role-separated conversation turns."""
+    """Call Gemini with real conversation turns, retry and model failover."""
     if not GEMINI_API_KEY:
         return None
 
@@ -1531,33 +1649,26 @@ def _gemini_generate(system_prompt, history, user_text):
     contents.append({"role": "user", "parts": [{"text": str(user_text)}]})
 
     payload = {
-        "system_instruction": {
-            "parts": [{"text": system_prompt}]
-        },
+        "system_instruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
         "generationConfig": {
             "temperature": 0.2,
             "maxOutputTokens": 400,
         },
     }
-    url = f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent"
-    try:
-        res = requests.post(
-            url,
-            params={"key": GEMINI_API_KEY},
-            json=payload,
-            timeout=35,
-        )
-        if res.status_code == 200:
-            data = res.json()
-            candidates = data.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                text = "".join(str(p.get("text", "")) for p in parts).strip()
-                return text or None
-        print("GEMINI CHAT ERROR:", res.status_code, res.text[:700], flush=True)
-    except Exception as exc:
-        print("GEMINI CHAT EXCEPTION:", exc, flush=True)
+    result = _gemini_post(payload, timeout=35, purpose="CHAT")
+    if not result:
+        return None
+
+    data, model = result
+    candidates = data.get("candidates", [])
+    if candidates:
+        parts = candidates[0].get("content", {}).get("parts", [])
+        text = "".join(str(p.get("text", "")) for p in parts).strip()
+        if text:
+            print(f"GEMINI CHAT OK: {model}", flush=True)
+            return text
+    print(f"GEMINI CHAT EMPTY RESPONSE: {model}", flush=True)
     return None
 
 
@@ -1702,23 +1813,16 @@ Latest message: {user_text}
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0, "maxOutputTokens": 8},
     }
-    try:
-        res = requests.post(
-            f"{GEMINI_API_BASE}/{GEMINI_MODEL}:generateContent",
-            params={"key": GEMINI_API_KEY},
-            json=payload,
-            timeout=12,
-        )
-        if res.status_code == 200:
-            candidates = res.json().get("candidates", [])
-            if candidates:
-                text = "".join(
-                    p.get("text", "") for p in candidates[0].get("content", {}).get("parts", [])
-                ).strip().upper()
-                if text in {"CANCEL", "OTHER", "CONTINUE"}:
-                    return text
-    except Exception as exc:
-        print("GEMINI CHECKIN CLASSIFIER ERROR:", exc, flush=True)
+    result = _gemini_post(payload, timeout=15, purpose="CHECKIN")
+    if result:
+        data, model = result
+        candidates = data.get("candidates", [])
+        if candidates:
+            text = "".join(
+                p.get("text", "") for p in candidates[0].get("content", {}).get("parts", [])
+            ).strip().upper()
+            if text in {"CANCEL", "OTHER", "CONTINUE"}:
+                return text
     return "CONTINUE"
 
 

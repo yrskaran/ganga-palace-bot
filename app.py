@@ -1289,13 +1289,7 @@ def ask_groq_chat(user_text, guest_info=None):
         return None
 
     language = guest_language(user_text)
-    language_rule = (
-        "Answer in Hindi using Devanagari."
-        if language == "hindi"
-        else "Answer in concise Hinglish using Latin/Roman script."
-        if language == "hinglish"
-        else "Answer in crisp English."
-    )
+    language_rule = language_instruction(language, user_text)
 
     guest_context = "NEW CUSTOMER"
     if guest_info:
@@ -1662,8 +1656,8 @@ def start_checkin(sender_phone):
 
     send_whatsapp_message(
         STAFF_PHONE,
-        f"SELF CHECK-IN REQUEST\nPhone: +{sender_phone}\nOTP: {otp}\n"
-        f"Please provide/confirm this OTP to the guest."
+        f"स्वयं चेक-इन अनुरोध\nPhone: +{sender_phone}\nOTP: {otp}\n"
+        f"कृपया अतिथि को यह OTP बताकर पुष्टि करें।"
     )
 
     send_whatsapp_message(
@@ -1711,12 +1705,12 @@ def complete_checkin_with_id(sender_phone, message):
     # Staff/reception must verify the document before check-in is recorded.
     send_whatsapp_message(
         STAFF_PHONE,
-        "ID VERIFICATION REQUIRED\n"
+        "आईडी सत्यापन आवश्यक\n"
         f"Name: {session.get('name','Guest')}\n"
         f"Phone: +{sender_phone}\n"
         f"Address: {session.get('address','')}\n"
         f"ID Link: {link or 'Upload failed'}\n\n"
-        "Please manually verify the original/document and confirm the room allocation."
+        "कृपया मूल/दस्तावेज़ आईडी की मैन्युअल जाँच करके रूम आवंटन की पुष्टि करें।"
     )
 
     send_whatsapp_message(
@@ -1884,10 +1878,18 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     else:
+        send_whatsapp_message(
+            sender_phone,
+            "Ji, aapka message receive hua. Kripya text, voice note ya photo ke roop mein bhejein; main aapki madad karta hoon."
+        )
         return
 
     user_text = str(user_text).strip()
     if not user_text:
+        send_whatsapp_message(
+            sender_phone,
+            "Ji, message receive hua. Kripya apna sawaal text ya voice note mein bhej dein."
+        )
         return
 
     # Remember language for both typed messages and voice transcriptions.
@@ -1934,7 +1936,7 @@ def process_and_reply(message, sender_phone, msg_type):
             if ok:
                 send_whatsapp_message(
                     KITCHEN_PHONE,
-                    f"ORDER CANCELLED\nRoom: {guest_info['room']} ({guest_info['name']})\n"
+                    f"ऑर्डर रद्द\nRoom: {guest_info['room']} ({guest_info['name']})\n"
                     f"Order: {active['order']}"
                 )
                 send_whatsapp_message(
@@ -1981,7 +1983,7 @@ def process_and_reply(message, sender_phone, msg_type):
             if ok:
                 send_whatsapp_message(
                     KITCHEN_PHONE,
-                    f"NEW ROOM SERVICE ORDER\n"
+                    f"नया रूम सर्विस ऑर्डर\n"
                     f"Room: {guest_info['room']} ({guest_info['name']})\n"
                     f"Order: {order_text}\n"
                     f"Amount: Rs.{total}\n"
@@ -2372,7 +2374,7 @@ def process_and_reply(message, sender_phone, msg_type):
         if room:
             send_whatsapp_message(
                 STAFF_PHONE,
-                f"STAFF ALERT - COMPLAINT\nRoom: {room}\nGuest: {guest_info.get('name','Guest') if guest_info else 'Guest'}\nDetails: {user_text}\nPhone: +{sender_phone}"
+                f"स्टाफ अलर्ट - शिकायत\nRoom: {room}\nGuest: {guest_info.get('name','Guest') if guest_info else 'Guest'}\nDetails: {user_text}\nPhone: +{sender_phone}"
             )
             send_whatsapp_message(
                 sender_phone,
@@ -2404,7 +2406,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
         send_whatsapp_message(
             STAFF_PHONE,
-            f"STAFF ALERT\nRoom: {guest_info['room']}\nGuest: {guest_info['name']}\nTask: {svc}\nDetails: {user_text}\nPhone: +{sender_phone}"
+            f"स्टाफ अलर्ट\nRoom: {guest_info['room']}\nGuest: {guest_info['name']}\nTask: {svc}\nDetails: {user_text}\nPhone: +{sender_phone}"
         )
         send_whatsapp_message(
             sender_phone,
@@ -2520,6 +2522,13 @@ def handle_incoming_async(message, sender_phone, msg_type):
     except Exception as exc:
         print("PROCESS ERROR:", exc, flush=True)
         traceback.print_exc()
+        try:
+            send_whatsapp_message(
+                sender_phone,
+                "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; main reception se confirm karwa deta hoon. 🙏"
+            )
+        except Exception as reply_exc:
+            print("SAFETY REPLY ERROR:", reply_exc, flush=True)
 
 
 # CORE LIFECYCLE — DO NOT MOVE INTO HOTEL DATA
@@ -2744,6 +2753,7 @@ def monitor_guest_status_lifecycle():
             print("LIFECYCLE ERROR:", exc, flush=True)
 
         time.sleep(30)
+
 
 
 # ============================================================

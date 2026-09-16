@@ -1,18 +1,6 @@
 HOTEL DATA — HOTEL GANGA VIEW
 
 ==================================================
-LANGUAGE CONFIGURATION — GUEST REPLIES
-==================================================
-- Supported guest languages: English, Hindi, Hinglish, Punjabi, Rajasthani, Bengali, Gujarati, Marathi, Tamil, Telugu, Kannada, Malayalam, Odia, Urdu, Garhwali, Kumaoni.
-- Match the guest language on every reply, including voice-note replies after transcription.
-- If the guest changes language during the conversation, switch immediately to the new language.
-- Script rule: match the guest's script whenever possible. Roman Punjabi -> Roman Punjabi; Gurmukhi Punjabi -> Gurmukhi. Roman Bengali -> Roman Bengali; Bengali script -> Bengali script. Apply the same principle to Gujarati, Marathi, Tamil, Telugu, Kannada, Malayalam, Odia, Urdu, Rajasthani, Garhwali and Kumaoni.
-- Hindi in Devanagari -> Hindi Devanagari. Hindi/Hinglish in Roman script -> Roman Hinglish.
-- Staff/internal notifications are ALWAYS in Hindi, regardless of guest language.
-- Keep guest-facing replies short, warm and professional. Do not translate hotel names, menu item names or proper place names unnecessarily.
-- Language detection is handled by the generic engine; these are the hotel-level supported-language and style preferences.
-
-==================================================
 1. HOTEL IDENTITY & BASIC INFORMATION
 ==================================================
 - Name: Hotel Ganga View
@@ -104,15 +92,6 @@ Use these places for recommendations. When a guest asks where to go, what to vis
 - Har Ki Pauri | Category: Ganga Ghat / Spiritual | Distance: Approx. 1.5 km | Best time: Evening, especially before Sandhya Aarti | Maps: Har Ki Pauri Haridwar
 - Mansa Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Ropeway opens at 7:00 AM | Maps: Mansa Devi Temple Haridwar
 - Chandi Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Ropeway opens at 7:00 AM | Maps: Chandi Devi Temple Haridwar
-- Kankhal | Category: Heritage / Pilgrimage | Best time: Morning or evening | Maps: Kankhal Haridwar
-- Daksha Mahadev Temple | Category: Temple / Pilgrimage | Best time: Morning | Maps: Daksha Mahadev Temple Kankhal Haridwar
-- Maya Devi Temple | Category: Temple / Pilgrimage | Best time: Morning | Maps: Maya Devi Temple Haridwar
-- Sapt Rishi Ashram | Category: Ashram / Spiritual | Best time: Morning | Maps: Sapt Rishi Ashram Haridwar
-- Bilwa Tirtha | Category: Spiritual / Temple Area | Best time: Morning | Maps: Bilwa Tirtha Haridwar
-- Neel Dhara Pakshi Vihar | Category: Nature / Bird Watching | Best time: Morning | Maps: Neel Dhara Pakshi Vihar Haridwar
-- Bilkeshwar Mahadev | Category: Temple / Spiritual | Best time: Morning or evening | Maps: Bilkeshwar Mahadev Haridwar
-- Neeleshwar Mahadev | Category: Temple / Spiritual | Best time: Morning or evening | Maps: Neeleshwar Mahadev Haridwar
-- Neel Parvat | Category: Hills / Pilgrimage Area | Best time: Morning | Maps: Neel Parvat Haridwar
 - Mohan Ji Puri Wale | Category: Local Food | Maps: Mohan Ji Puri Wale Haridwar
 - Pandit Sevaram Doodh Jalebi | Category: Local Food / Sweet | Maps: Pandit Sevaram Doodh Jalebi Haridwar
 
@@ -125,55 +104,6 @@ LOCAL GUIDE BEHAVIOUR:
 - If requested information is not in this data, tell the guest reception can confirm it rather than inventing it.
 
 ==================================================
-==================================================
-4A. HARIDWAR STORY CARDS
-==================================================
-PLACES
-Place: Har Ki Pauri
-Type: HISTORY + TRADITION
-Short note: A major Haridwar ghat associated with the Ganga and evening Sandhya Aarti.
-
-Place: Mansa Devi Temple
-Type: TRADITION
-Short note: A prominent hill temple associated with local pilgrimage tradition and the Mansa Devi ropeway.
-
-Place: Chandi Devi Temple
-Type: TRADITION
-Short note: A prominent hill temple associated with Chandi Devi worship and the Chandi Devi ropeway.
-
-Place: Kankhal
-Type: HISTORY + TRADITION
-Short note: An important Haridwar pilgrimage area with traditions connected with Daksha Mahadev and Sati.
-
-STORY CARDS
-Story: Bhagirath and Maa Ganga
-Type: PAURANIK KATHA
-Short note: Hindu tradition tells of King Bhagirath's devotion and penance to bring Maa Ganga to Earth for the liberation of his ancestors.
-
-Story: Har Ki Pauri
-Type: HISTORY + TRADITION
-Short note: A major Ganga ghat in Haridwar strongly associated with the evening Sandhya Aarti. Keep historical and traditional claims distinct.
-
-Story: Daksha and Sati
-Type: PAURANIK KATHA
-Short note: The traditional story of Daksha's yajna, Sati and Lord Shiva is closely associated with the Kankhal pilgrimage tradition.
-
-Story: Kumbh in Haridwar
-Type: HISTORY + TRADITION
-Short note: Haridwar is one of the four traditional Kumbh pilgrimage locations. Explain historical records and religious tradition separately.
-
-AI GUIDE BEHAVIOUR
-- Recommend 2-4 relevant places instead of dumping the whole guide.
-- For 2-hour or 3-hour requests, make a simple itinerary using only places in this file.
-- For family requests, choose generally suitable places without inventing unsupported details.
-- For location/how-to-reach requests, provide a Google Maps search link.
-- When naturally relevant, offer one short story card and label PAURANIK KATHA versus HISTORY + TRADITION.
-- Do not present a religious legend as proven historical fact.
-
-PROACTIVE DISCOVERY MESSAGE
-- When discussing Har Ki Pauri, Ganga Aarti, temples, pilgrimage or sightseeing, naturally offer one relevant guide suggestion or short story.
-- Keep proactive discovery to one short sentence.
-
 5. GANGA AARTI
 ==================================================
 - Har Ki Pauri Sandhya Aarti: guest should reach by 5:15 PM.
@@ -235,6 +165,138 @@ PROACTIVE DISCOVERY MESSAGE
 ==================================================
 The bot may generate Google Maps search links from the "Maps:" query for a place in the Local Guide section. Do not claim a precise street address unless it is explicitly provided in this file.
 
+
+==================================================
+HARIDWAR VERIFIED GUIDE & STORIES
+==================================================
+# HISTORY = documented/officially sourced information
+# TRADITION / PAURANIK KATHA = religious/traditional account
+# Never present a traditional belief as proven history.
+
+PLACES
+
+Place: Har Ki Pauri
+Type: Ghat / Pilgrimage
+Category: Ganga
+Description: Famous Haridwar pilgrimage ghat and principal site associated with the evening Ganga Aarti.
+Aarti Guidance: Reach around 5:15 PM.
+Maps: https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Mansa Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Famous hilltop pilgrimage temple associated with Bilwa Tirtha tradition.
+Maps: https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+Story Label: TRADITION
+
+Place: Chandi Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Famous temple on Neel Parvat and an important Haridwar pilgrimage destination.
+Maps: https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+Story Label: TRADITION
+
+Place: Bilwa Tirtha
+Type: Tirtha
+Category: Pilgrimage
+Description: Traditional sacred area associated with Mansa Devi.
+Maps: https://www.google.com/maps/search/?api=1&query=Bilwa+Tirtha+Haridwar
+Story Label: TRADITION
+
+Place: Neel Parvat
+Type: Sacred Hill
+Category: Pilgrimage
+Description: Sacred hill associated with Chandi Devi Temple.
+Maps: https://www.google.com/maps/search/?api=1&query=Neel+Parvat+Haridwar
+Story Label: TRADITION
+
+Place: Kankhal
+Type: Pilgrimage Area
+Category: History + Tradition
+Description: Important Haridwar religious area associated with Daksha Mahadev Temple.
+Maps: https://www.google.com/maps/search/?api=1&query=Kankhal+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Daksha Mahadev Temple
+Type: Temple
+Category: Shiva / Pauranik
+Description: Kankhal temple associated with the traditional Daksha Yajna and Sati story.
+Maps: https://www.google.com/maps/search/?api=1&query=Daksha+Mahadev+Temple+Kankhal+Haridwar
+Story Label: PAURANIK KATHA
+
+Place: Maya Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Important ancient religious site of Haridwar.
+Maps: https://www.google.com/maps/search/?api=1&query=Maya+Devi+Temple+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Sapt Rishi Ashram
+Type: Ashram
+Category: Spiritual
+Description: Spiritual site associated with the traditional story of the seven rishis.
+Maps: https://www.google.com/maps/search/?api=1&query=Sapt+Rishi+Ashram+Haridwar
+Story Label: TRADITION
+
+Place: Neel Dhara Pakshi Vihar
+Type: Nature
+Category: Birdwatching / Riverside
+Description: Riverside nature spot in the Haridwar area.
+Maps: https://www.google.com/maps/search/?api=1&query=Neel+Dhara+Pakshi+Vihar+Haridwar
+Story Label: GENERAL
+
+Place: Bilkeshwar Mahadev
+Type: Temple
+Category: Shiva
+Description: Local Haridwar Shiva temple; use as a local religious destination unless stronger verified history is added.
+Maps: https://www.google.com/maps/search/?api=1&query=Bilkeshwar+Mahadev+Haridwar
+Story Label: LOCAL TRADITION
+
+Place: Neeleshwar Mahadev
+Type: Temple
+Category: Shiva
+Description: Local Haridwar Shiva temple; use as a local religious destination unless stronger verified history is added.
+Maps: https://www.google.com/maps/search/?api=1&query=Neeleshwar+Mahadev+Haridwar
+Story Label: LOCAL TRADITION
+
+STORY CARDS
+
+Story: Bhagirath and Maa Ganga
+Type: PAURANIK KATHA
+Opening: In Hindu tradition, King Bhagirath is remembered for his penance to bring the sacred Ganga to earth.
+Rule: Present this as a traditional religious story, not proven history.
+Style: Short, respectful, family-friendly.
+
+Story: Har Ki Pauri
+Type: HISTORY + TRADITION
+Opening: Har Ki Pauri is one of Haridwar's most famous ghats and the focus of the evening Ganga Aarti.
+Rule: Describe Raja Vikramaditya as a traditional/local association when mentioned.
+Style: Short, respectful.
+
+Story: Daksha and Sati
+Type: PAURANIK KATHA
+Opening: Kankhal is linked in Hindu tradition with the story of Daksha Yajna and Sati.
+Rule: Present as a pauranik/traditional story.
+Style: Short, respectful.
+
+Story: Kumbh in Haridwar
+Type: HISTORY + TRADITION
+Opening: Haridwar is one of the major Kumbh Mela pilgrimage locations in India.
+Rule: Separate documented festival history from religious belief.
+Style: Short, informative.
+
+AI GUIDE BEHAVIOUR
+- Do not wait for the guest to ask for a story.
+- When conversation touches Ganga Aarti, Har Ki Pauri, Maa Ganga, Mansa Devi, Chandi Devi, Shiva temples, pilgrimage or sightseeing, naturally add one relevant short fact/story or offer one.
+- Keep proactive discovery to one short sentence unless the guest asks for the full story.
+- When the guest asks what else to visit, recommend 2-4 suitable places using this file.
+- When the guest gives available time, build a practical mini-itinerary using only configured places and timings.
+- Use the configured Maps URL when directions/location are requested.
+- Never invent timings, distances, prices or historical facts.
+- If a detail is missing, say reception can confirm it.
+
+==================================================
 PHOTOS & MEDIA
 ==================================================
 # Replace these public HTTPS URLs when hotel photos change.

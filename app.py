@@ -69,7 +69,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "GANGA-V14-GEMINI"
+APP_VERSION = "GANGA-V15-GEMINI-CONTEXT"
 ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
 
 # -----------------------------
@@ -237,7 +237,7 @@ def guest_language(text):
 
     words = set(re.findall(r'[a-zA-Z]+', raw.lower()))
     sets = {
-        'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao'},
+        'hinglish': {'hai','hain','hu','hoon','hun','mujhe','mujhko','chahiye','chahta','chahti','karo','karna','karni','kar','kiya','kiye','ki','chuka','chuki','chuke','gaya','gayi','gaye','liya','liye','raha','rahi','rahe','bhejo','bhej','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao','bata','hai na','yaar','sir','madad','chuka hu','kar chuka'},
         'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','meni','saanu','thoda','kar deo','bhejdo','chaahidi'},
         'rajasthani': {'mhane','mharo','mhari','thare','tharo','thari','mhare','koni','ghano','ghani','khamma','padharo','chokho','chhoro','chhori','kai','mhane','thareko','baisa','sa'},
         'bengali': {'ami','amake','amar','apni','apnar','ache','achi','kothay','koto','chai','diben','den','bhalo','khabar','ghor','ekhane','amar','lagbe','din','ekta'},
@@ -255,6 +255,17 @@ def guest_language(text):
     }
     scores = {k: len(words & v) for k, v in sets.items()}
     low = raw.lower()
+
+    # Common Roman-Hindi constructions that often appear in natural chat.
+    # These prevent messages such as 'check in kar chuka hu' from being
+    # mistaken for English just because they contain the words 'check'/'in'.
+    hindi_phrases = {
+        'kar chuka hu', 'kar chuki hu', 'kar chuke hain', 'kar liya hai',
+        'kar liya', 'ho gaya', 'ho gayi', 'ho gaye', 'main hu', 'mai hu',
+        'mujhe chahiye', 'mujhe batao', 'kaha gaya', 'kahan hai',
+        'batao na', 'bhej do', 'bhej dena', 'de do', 'dikha do',
+    }
+    scores['hinglish'] += sum(3 for phrase in hindi_phrases if phrase in low)
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
@@ -602,6 +613,25 @@ def get_hotel_photo(kind):
         if k in name or name in k:
             return url
     return None
+
+
+def get_room_photo_categories():
+    """Return configured room-category photos only; never treat individual rooms as categories."""
+    media = get_hotel_media().get("photos", {})
+    category_names = list(get_room_categories().keys())
+    photos = []
+    for category in category_names:
+        url = get_hotel_photo(category)
+        if url:
+            photos.append((category, url))
+
+    # Backward-compatible fallback for the standard categories in hotel_data.txt.
+    if not photos:
+        for category in ["Deluxe Room", "Super Deluxe Room", "Executive Ganga View Room", "Family Suite"]:
+            url = get_hotel_photo(category)
+            if url and (category, url) not in photos:
+                photos.append((category, url))
+    return photos
 
 
 
@@ -2076,7 +2106,7 @@ def start_checkin(sender_phone):
             sender_phone,
             "Please type the 4-digit OTP given by reception to continue self check-in.",
             "Self check-in ke liye reception se mila 4-digit OTP yahan type karein.",
-            "Self check-in ke liye reception se mila 4-digit OTP yahan type karein."
+            "सेल्फ चेक-इन जारी रखने के लिए रिसेप्शन से मिला 4 अंकों का OTP यहाँ भेजें।"
         )
     )
 
@@ -2694,10 +2724,27 @@ def process_and_reply(message, sender_phone, msg_type):
         )
         return
 
-    if any(x in t for x in [
+    # CHECK-IN INTENT: do not start a new OTP flow when the guest is merely
+    # saying that check-in has already happened. The AI should be allowed to
+    # handle conversational statements such as "check in kar chuka hu",
+    # "already checked in", etc. Only explicit new-stay/check-in requests
+    # enter the deterministic OTP state machine.
+    checkin_start_intent = any(x in t for x in [
         "check in", "checkin", "self checkin",
         "room book", "book room", "booking karna"
-    ]):
+    ])
+    already_checked_in_statement = any(x in t for x in [
+        "check in kar chuka", "checkin kar chuka",
+        "check in ho chuka", "checkin ho chuka",
+        "already checked in", "already check in",
+        "already checked-in", "pehle hi check in",
+        "pehle se check in", "check in complete",
+        "check-in complete", "checked in hu", "checked-in hu",
+        "check in kar liya", "checkin kar liya",
+        "check in kar liya hai", "checkin kar liya hai"
+    ])
+
+    if checkin_start_intent and not already_checked_in_statement:
         if is_inhouse:
             send_whatsapp_message(
                 sender_phone,
@@ -2705,6 +2752,35 @@ def process_and_reply(message, sender_phone, msg_type):
             )
         else:
             start_checkin(sender_phone)
+        return
+
+    if already_checked_in_statement:
+        # Do not launch self check-in for a statement about a completed check-in.
+        # Backend status remains authoritative: if the sheet says in-house,
+        # confirm the active room; otherwise let the AI explain the discrepancy
+        # without inventing a room/status.
+        if is_inhouse and guest_info:
+            reply = (
+                f"Ji {guest_info.get('name', 'Guest')} ji, aapka check-in Room "
+                f"{guest_info.get('room')} mein already active hai. OTP ki zarurat nahi hai."
+            )
+            send_whatsapp_message(sender_phone, reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", reply)
+            return
+
+        ai = ask_groq_chat(user_text, guest_info, sender_phone)
+        if ai:
+            ai = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", ai).strip()
+            ai = attach_google_maps_links(ai).strip()
+            send_whatsapp_message(sender_phone, ai)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", ai)
+        else:
+            send_whatsapp_message(
+                sender_phone,
+                "Ji, main aapka current stay status verify karke bata raha hoon. Agar check-in already complete hai, dobara OTP dene ki zarurat nahi hai."
+            )
         return
 
     # ========================================================
@@ -2726,32 +2802,78 @@ def process_and_reply(message, sender_phone, msg_type):
     if any(x in t for x in [
         "room photo", "room photos", "room dikhao",
         "photos", "photo", "room pic", "room ki photo",
-        "family room", "deluxe room", "super deluxe"
+        "family room", "deluxe room", "super deluxe", "executive ganga view"
     ]):
-        requested_photo = "exterior"
+        # Photo policy: the hotel front/exterior is the common cover photo.
+        # It is attached with every room-category photo, but we never dump
+        # individual room photos merely because the hotel has many rooms.
+        front_url = get_hotel_photo("exterior")
+        requested_photo = None
         if "family" in t:
             requested_photo = "family suite"
         elif "super deluxe" in t:
             requested_photo = "super deluxe room"
+        elif "executive" in t or "ganga view" in t:
+            requested_photo = "executive ganga view room"
         elif "deluxe" in t:
             requested_photo = "deluxe room"
-        elif any(x in t for x in ["hotel", "outside", "bahar"]):
+        elif any(x in t for x in ["hotel", "outside", "bahar", "front"]):
             requested_photo = "exterior"
 
-        photo_url = get_hotel_photo(requested_photo)
-        if photo_url:
-            caption = requested_photo.title()
-            send_whatsapp_image(sender_phone, photo_url, f"🏨 {caption}")
-        else:
-            send_whatsapp_message(
-                sender_phone,
-                bilingual_text(
+        if requested_photo:
+            # Specific category: front + only the requested category.
+            photo_pairs = []
+            if front_url:
+                photo_pairs.append(("Hotel Front", front_url))
+            room_url = get_hotel_photo(requested_photo)
+            if room_url and room_url != front_url:
+                photo_pairs.append((requested_photo.title(), room_url))
+
+            if photo_pairs:
+                for caption, url in photo_pairs:
+                    send_whatsapp_image(sender_phone, url, f"🏨 {caption}")
+            else:
+                send_whatsapp_message(
                     sender_phone,
-                    "Sorry, that photo is not configured yet. Reception can share it with you.",
-                    "Ji, is room ki photo abhi configured nahi hai. Reception se share karwa deta hoon.",
-                    "जी, इस कमरे की फोटो अभी configured नहीं है। Reception से share करवा देता हूँ।"
+                    bilingual_text(
+                        sender_phone,
+                        "Sorry, that photo is not configured yet. Reception can share it with you.",
+                        "Ji, is room ki photo abhi configured nahi hai. Reception se share karwa deta hoon.",
+                        "जी, इस कमरे की फोटो अभी configured नहीं है। Reception से share करवा देता हूँ।"
+                    )
                 )
-            )
+        else:
+            # Generic room-photo request: front + configured ROOM CATEGORIES only.
+            # Never send one photo per physical room.
+            photo_pairs = []
+            if front_url:
+                photo_pairs.append(("Hotel Front", front_url))
+            for category, url in get_room_photo_categories():
+                if url != front_url:
+                    photo_pairs.append((category, url))
+
+            if photo_pairs:
+                send_whatsapp_message(
+                    sender_phone,
+                    bilingual_text(
+                        sender_phone,
+                        "Here are our hotel front and available room categories:",
+                        "Ji, ye hotel front aur available room categories ki photos hain:",
+                        "जी, ये होटल फ्रंट और उपलब्ध room categories की photos हैं:"
+                    )
+                )
+                for caption, url in photo_pairs:
+                    send_whatsapp_image(sender_phone, url, f"🏨 {caption}")
+            else:
+                send_whatsapp_message(
+                    sender_phone,
+                    bilingual_text(
+                        sender_phone,
+                        "Sorry, hotel photos are not configured yet. Reception can share them with you.",
+                        "Ji, hotel photos abhi configured nahi hain. Reception se share karwa deta hoon.",
+                        "जी, होटल photos अभी configured नहीं हैं। Reception से share करवा देता हूँ।"
+                    )
+                )
         return
 
     # ========================================================

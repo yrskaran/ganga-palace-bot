@@ -3626,11 +3626,13 @@ def monitor_guest_status_lifecycle():
             process_full_bill_paid_notifications(rows)
             cols = _room_lifecycle_columns()
 
-            # If the Google Sheet has not yet been given lifecycle columns, do not
-            # fall back to volatile memory. The Apps Script setup creates them.
-            required = ("status", "check_in", "check_out", "welcome_sent", "thirty_sent", "checkout_sent")
+            # Event messages must NEVER depend on audit timestamps.
+            # CHECKED_IN -> welcome and CHECKED_OUT -> farewell are event-driven.
+            # Timestamp columns are used only for the 30-minute timer/audit trail.
+            # Therefore missing CHECK IN/OUT TIME columns must not block lifecycle messages.
+            required = ("status", "welcome_sent", "checkout_sent")
             if any(cols[x] < 0 for x in required):
-                print("LIFECYCLE WAITING FOR SHEET COLUMNS: run setupLifecycleColumns() in Apps Script", flush=True)
+                print("LIFECYCLE WAITING FOR CORE SHEET COLUMNS: Status/WELCOME SENT/CHECKOUT SENT", flush=True)
                 time.sleep(30)
                 continue
 
@@ -3674,8 +3676,8 @@ def monitor_guest_status_lifecycle():
                         print(f"LIFECYCLE AUTO TIMESTAMP ERROR room={room}: {exc}", flush=True)
                 lifecycle_status_cache[lifecycle_key] = status
 
-                check_in_at = _parse_sheet_datetime(row[cols["check_in"]])
-                check_out_at = _parse_sheet_datetime(row[cols["check_out"]])
+                check_in_at = _parse_sheet_datetime(row[cols["check_in"]]) if cols["check_in"] >= 0 and cols["check_in"] < len(row) else None
+                check_out_at = _parse_sheet_datetime(row[cols["check_out"]]) if cols["check_out"] >= 0 and cols["check_out"] < len(row) else None
 
                 # Self-heal the exact active checkout event when Apps Script did not run.
                 # We only do this on a detected status transition, never for pre-existing old OUT rows.
@@ -3737,12 +3739,12 @@ def monitor_guest_status_lifecycle():
                 # CHECK-OUT LIFECYCLE
                 # -----------------------------
                 elif is_out:
-                    # Checkout is an EVENT, not a timer. A missing Sheet timestamp
-                    # must never suppress the guest farewell. If this process sees the
-                    # status transition, send immediately; a timestamp is only an
-                    # audit field. An existing checkout timestamp also allows recovery
-                    # after a short restart without requiring the event to be repeated.
-                    if (status_changed or check_out_at) and not _lifecycle_sent(row, cols["checkout_sent"]):
+                    # Checkout is an EVENT, not a timer. The farewell is intentionally
+                    # independent of CHECK OUT TIME and independent of process-memory
+                    # status_changed detection. If CHECKOUT SENT is blank for an OUT
+                    # guest, send the message. This also recovers cleanly after Render
+                    # restarts and when Status was changed by Google Sheets/gspread/API.
+                    if not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)
                         checkout_text = get_notification_message("CHECKOUT", lang, name=name, room=room)
                         if checkout_text and send_whatsapp_message(phone, checkout_text):

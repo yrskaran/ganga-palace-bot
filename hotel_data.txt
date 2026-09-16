@@ -9,6 +9,9 @@ HOTEL DATA — HOTEL GANGA VIEW
 - Check-out: 11:00 AM
 - Reception / Front Desk: 24/7
 - Amenities: Free on-site parking, complimentary Wi-Fi in all rooms
+- Cuisine: Pure Vegetarian
+- Wi-Fi Name: Ganga@2026
+- Wi-Fi Password: Ganga@2026
 - Distance to Har Ki Pauri: Approx. 1.5 km
 
 ==================================================
@@ -117,6 +120,8 @@ LOCAL GUIDE BEHAVIOUR:
 - Breakfast prompt: send between 8:00 AM and 10:00 AM.
 - Lunch prompt: send between 1:00 PM and 3:00 PM.
 - Ganga Aarti reminder: send between 5:00 PM and 6:00 PM.
+- Special Evening Reminder: 🙏 *Har Har Gange, {name} ji!*
+Aaj Har Ki Pauri Sandhya Ganga Aarti hai. 5:15 PM tak nikalna convenient rahega. Location chahiye ho to *guide* likhein. 🌺
 - Dinner prompt: send between 7:00 PM and 9:00 PM.
 - After check-out: send a thank-you / safe-journey message.
 - Do not send the same lifecycle reminder more than once for the same guest, room and date.
@@ -146,10 +151,6 @@ LOCAL GUIDE BEHAVIOUR:
 - Paid kitchen entries are deducted from the amount due.
 - Do not invent or assume an advance payment unless it exists in the hotel record.
 - Payment confirmations should be based on the actual sheet status.
-- Reception can use the Google Sheets one-click "Mark Selected Guest Bill PAID" action.
-- That action marks the complete guest bill paid in one step; staff should not have to mark each food order individually.
-- When PAYMENT STATUS becomes PAID and the calculated balance is Rs.0, the bot sends one complete-bill-paid WhatsApp confirmation to the guest.
-- Individual food-order payment changes do not trigger separate guest payment messages.
 
 ==================================================
 10. AI RECEPTIONIST BEHAVIOUR
@@ -304,8 +305,6 @@ AI GUIDE BEHAVIOUR
 PHOTOS & MEDIA
 ==================================================
 # Replace these public HTTPS URLs when hotel photos change.
-# URLs must be direct public image URLs (JPEG/PNG/WebP), not a webpage URL.
-# The bot downloads the image and uploads it to WhatsApp before sending.
 # Do not change Python code just to change a photo.
 
 Exterior:
@@ -319,6 +318,14 @@ https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.j
 
 Family Suite:
 https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
+
+==================================================
+PHOTO BEHAVIOUR
+==================================================
+- "Room photos" or a broad room-photo request: show only the configured room-category options, not individual physical rooms.
+- When a guest selects a room category: send the configured hotel Exterior photo first, then the selected category photo.
+- When a guest asks for the hotel front/exterior: send only the Exterior photo.
+- Add or replace photo URLs here without changing Python code.
 
 ==================================================
 GOOGLE MAPS

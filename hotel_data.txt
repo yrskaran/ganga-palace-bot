@@ -104,6 +104,15 @@ Use these places for recommendations. When a guest asks where to go, what to vis
 - Har Ki Pauri | Category: Ganga Ghat / Spiritual | Distance: Approx. 1.5 km | Best time: Evening, especially before Sandhya Aarti | Maps: Har Ki Pauri Haridwar
 - Mansa Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Ropeway opens at 7:00 AM | Maps: Mansa Devi Temple Haridwar
 - Chandi Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Ropeway opens at 7:00 AM | Maps: Chandi Devi Temple Haridwar
+- Kankhal | Category: Heritage / Pilgrimage | Best time: Morning or evening | Maps: Kankhal Haridwar
+- Daksha Mahadev Temple | Category: Temple / Pilgrimage | Best time: Morning | Maps: Daksha Mahadev Temple Kankhal Haridwar
+- Maya Devi Temple | Category: Temple / Pilgrimage | Best time: Morning | Maps: Maya Devi Temple Haridwar
+- Sapt Rishi Ashram | Category: Ashram / Spiritual | Best time: Morning | Maps: Sapt Rishi Ashram Haridwar
+- Bilwa Tirtha | Category: Spiritual / Temple Area | Best time: Morning | Maps: Bilwa Tirtha Haridwar
+- Neel Dhara Pakshi Vihar | Category: Nature / Bird Watching | Best time: Morning | Maps: Neel Dhara Pakshi Vihar Haridwar
+- Bilkeshwar Mahadev | Category: Temple / Spiritual | Best time: Morning or evening | Maps: Bilkeshwar Mahadev Haridwar
+- Neeleshwar Mahadev | Category: Temple / Spiritual | Best time: Morning or evening | Maps: Neeleshwar Mahadev Haridwar
+- Neel Parvat | Category: Hills / Pilgrimage Area | Best time: Morning | Maps: Neel Parvat Haridwar
 - Mohan Ji Puri Wale | Category: Local Food | Maps: Mohan Ji Puri Wale Haridwar
 - Pandit Sevaram Doodh Jalebi | Category: Local Food / Sweet | Maps: Pandit Sevaram Doodh Jalebi Haridwar
 
@@ -116,6 +125,55 @@ LOCAL GUIDE BEHAVIOUR:
 - If requested information is not in this data, tell the guest reception can confirm it rather than inventing it.
 
 ==================================================
+==================================================
+4A. HARIDWAR STORY CARDS
+==================================================
+PLACES
+Place: Har Ki Pauri
+Type: HISTORY + TRADITION
+Short note: A major Haridwar ghat associated with the Ganga and evening Sandhya Aarti.
+
+Place: Mansa Devi Temple
+Type: TRADITION
+Short note: A prominent hill temple associated with local pilgrimage tradition and the Mansa Devi ropeway.
+
+Place: Chandi Devi Temple
+Type: TRADITION
+Short note: A prominent hill temple associated with Chandi Devi worship and the Chandi Devi ropeway.
+
+Place: Kankhal
+Type: HISTORY + TRADITION
+Short note: An important Haridwar pilgrimage area with traditions connected with Daksha Mahadev and Sati.
+
+STORY CARDS
+Story: Bhagirath and Maa Ganga
+Type: PAURANIK KATHA
+Short note: Hindu tradition tells of King Bhagirath's devotion and penance to bring Maa Ganga to Earth for the liberation of his ancestors.
+
+Story: Har Ki Pauri
+Type: HISTORY + TRADITION
+Short note: A major Ganga ghat in Haridwar strongly associated with the evening Sandhya Aarti. Keep historical and traditional claims distinct.
+
+Story: Daksha and Sati
+Type: PAURANIK KATHA
+Short note: The traditional story of Daksha's yajna, Sati and Lord Shiva is closely associated with the Kankhal pilgrimage tradition.
+
+Story: Kumbh in Haridwar
+Type: HISTORY + TRADITION
+Short note: Haridwar is one of the four traditional Kumbh pilgrimage locations. Explain historical records and religious tradition separately.
+
+AI GUIDE BEHAVIOUR
+- Recommend 2-4 relevant places instead of dumping the whole guide.
+- For 2-hour or 3-hour requests, make a simple itinerary using only places in this file.
+- For family requests, choose generally suitable places without inventing unsupported details.
+- For location/how-to-reach requests, provide a Google Maps search link.
+- When naturally relevant, offer one short story card and label PAURANIK KATHA versus HISTORY + TRADITION.
+- Do not present a religious legend as proven historical fact.
+
+PROACTIVE DISCOVERY MESSAGE
+- When discussing Har Ki Pauri, Ganga Aarti, temples, pilgrimage or sightseeing, naturally offer one relevant guide suggestion or short story.
+- Keep proactive discovery to one short sentence.
+
 5. GANGA AARTI
 ==================================================
 - Har Ki Pauri Sandhya Aarti: guest should reach by 5:15 PM.
@@ -176,3 +234,44 @@ LOCAL GUIDE BEHAVIOUR:
 11. GOOGLE MAPS LINK BEHAVIOUR
 ==================================================
 The bot may generate Google Maps search links from the "Maps:" query for a place in the Local Guide section. Do not claim a precise street address unless it is explicitly provided in this file.
+
+PHOTOS & MEDIA
+==================================================
+# Replace these public HTTPS URLs when hotel photos change.
+# Do not change Python code just to change a photo.
+
+Exterior:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
+
+Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
+
+Super Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
+
+Family Suite:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
+
+==================================================
+GOOGLE MAPS
+==================================================
+Hotel:
+https://maps.google.com/?q=29.9530,78.1700
+
+Har Ki Pauri:
+https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+
+Mansa Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+
+Chandi Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+
+==================================================
+LOCAL GUIDE RULES
+==================================================
+- Use this file as the source for local places, timings, descriptions and Google Maps links.
+- Recommend the most relevant place instead of dumping the whole guide.
+- When the guest asks how to go or asks for a location, provide the matching Maps link.
+- When the guest asks for an itinerary, use the time and preferences stated by the guest plus this guide.
+- Never invent a price, timing, distance or attraction detail that is not present here.

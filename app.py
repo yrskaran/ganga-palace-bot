@@ -185,7 +185,19 @@ def guest_language(text):
     if not raw:
         return 'english'
 
-    # Explicit language-name requests are unambiguous.
+    # Language-preference statements take priority over bare language names.
+    # Example: "English nahi aati mujhe" means the guest does NOT want English.
+    low_raw = raw.lower()
+    english_not_understood = [
+        r'\benglish\s+(?:nahi|nahin)\s+(?:aati|ati|samajh|samajhti|samajhta)\b',
+        r'\benglish\s+(?:nahi|nahin)\s+(?:aati|ati)\b',
+        r'\bmujhe\s+english\s+(?:nahi|nahin)\s+(?:aati|ati|samajh)\b',
+        r'\benglish\s+samajh\s+(?:nahi|nahin)\s+aati\b',
+    ]
+    if any(re.search(pattern, low_raw) for pattern in english_not_understood):
+        return 'hinglish'
+
+    # Explicit language-name requests are otherwise unambiguous.
     explicit = [
         ('rajasthani', r'\brajasthani\b|राजस्थानी'), ('bengali', r'\bbengali\b|বাংলা|বাঙালি'),
         ('punjabi', r'\bpunjabi\b|ਪੰਜਾਬੀ'), ('gujarati', r'\bgujarati\b|ગુજરાતી'),
@@ -216,7 +228,16 @@ def guest_language(text):
 
     words = set(re.findall(r'[a-zA-Z]+', raw.lower()))
     sets = {
-        'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao'},
+        'hinglish': {
+            'hai','hain','ho','hoga','hogi','honge','tha','thi','the','mujhe','chahiye',
+            'karo','karna','karni','kare','kar','bhejo','bhej','kitna','kitne','kahan','kahaan',
+            'kaha','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','aapki','ji','kab',
+            'abhi','kal','aaj','subah','shaam','raat','khana','pani','kamra','saaf','safai',
+            'batao','bataiye','dikhao','ghoomne','ghumne','ghoomna','ghumna','niklu','nikalun',
+            'nikalna','jana','jaana','jaun','jau','jaaye','jaye','ja sakte','sakta','sakti','sakte',
+            'band','khula','khuli','khule','chuka','chuki','chuke','raha','rahi','rahe','wala',
+            'wali','waale'
+        },
         'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','meni','saanu','thoda','kar deo','bhejdo','chaahidi'},
         'rajasthani': {'mhane','mharo','mhari','thare','tharo','thari','mhare','koni','ghano','ghani','khamma','padharo','chokho','chhoro','chhori','kai','mhane','thareko','baisa','sa'},
         'bengali': {'ami','amake','amar','apni','apnar','ache','achi','kothay','koto','chai','diben','den','bhalo','khabar','ghor','ekhane','amar','lagbe','din','ekta'},
@@ -234,6 +255,18 @@ def guest_language(text):
     }
     scores = {k: len(words & v) for k, v in sets.items()}
     low = raw.lower()
+
+    # Distinctive Roman-Hindi/Hinglish phrases. These are intentionally
+    # separated from common English words so ordinary English stays English.
+    roman_hindi_phrases = {
+        'ghoomne', 'ghumne', 'kaha niklu', 'kahan niklu', 'kaha ghoomu',
+        'kahan ghoomu', 'kya karu', 'kya karoon', 'kaise jaaun', 'kaise jaun',
+        'kitne baje', 'abhi band', 'band ho', 'khula hai',
+        'khuli hai', 'chuka hoga', 'nahi aati', 'nahi pata', 'batao',
+        'aur batao', 'aur jagah', 'ghoomne ki', 'ja sakte hain', 'jana hai',
+        'kaha jana', 'kahan jana', 'kya milega', 'kya available hai'
+    }
+    scores['hinglish'] += sum(2 for phrase in roman_hindi_phrases if phrase in low)
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
@@ -294,9 +327,27 @@ def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
 
 
 def remember_guest_language(sender_phone,text):
-    lang=guest_language(text)
-    with state_lock: guest_language_cache[sender_phone]=lang
-    return lang
+    """Remember meaningful language choices without letting generic greetings
+    such as 'hello' erase an established Hindi/Hinglish preference.
+    """
+    text = str(text or '').strip()
+    detected = guest_language(text)
+    normalized = normalize_text(text)
+    generic_only = normalized in {
+        'hi', 'hello', 'hlo', 'namaste', 'hey', 'good morning',
+        'good evening', 'good afternoon', 'sat sri akal',
+        'more', 'more options', 'more places', 'other options',
+        'anything else', 'what else', 'what other places', 'other places',
+        'tell me more', 'more suggestions', 'more sightseeing',
+        'any other options', 'anything more', 'story', 'a story',
+        'tell me a story', 'history', 'historical story'
+    }
+    with state_lock:
+        previous = guest_language_cache.get(sender_phone)
+        if generic_only and previous and previous != 'english':
+            return previous
+        guest_language_cache[sender_phone] = detected
+    return detected
 
 def get_guest_response_language(sender_phone,text=None):
     if text is not None: return remember_guest_language(sender_phone,text)
@@ -980,8 +1031,8 @@ def room_is_available(room_number):
         if len(row) < 6:
             continue
         if clean_room(row[0]) == target:
-            status = str(row[5]).upper()
-            return "OUT" in status and "IN" not in status
+            status = _classify_guest_status(row[5])
+            return status == "CHECKED_OUT"
 
     return False
 
@@ -999,12 +1050,12 @@ def find_available_room(preferred_category=""):
 
         room = clean_room(row[0])
         category = str(row[1]).strip().lower() if len(row) > 1 else ""
-        status = str(row[5]).upper() if len(row) > 5 else ""
+        status = _classify_guest_status(row[5] if len(row) > 5 else "")
 
         if not room:
             continue
 
-        available = "OUT" in status and "IN" not in status
+        available = status == "CHECKED_OUT"
         if available:
             candidates.append((room, category))
 
@@ -1402,12 +1453,59 @@ def build_guide_fallback(user_text, sender_phone=None):
     return "Ji, yahan kuch aur jagah hain jahan aap ghoom sakte hain:\n" + "\n".join(lines)
 
 
+def _ai_reply_matches_language(reply, language, user_text=""):
+    """Conservative output-language guard; prevents obvious wrong-language replies."""
+    text = str(reply or "").strip()
+    if not text:
+        return False
+    if language == "english":
+        # English output should not contain native Indian scripts or obvious
+        # Roman-Hindi/Hinglish markers.
+        native = len(re.findall(r'[\u0900-\u097F\u0A00-\u0AFF\u0980-\u09FF\u0A80-\u0AFF]', text))
+        if native:
+            return False
+        low = text.lower()
+        hindi_hints = {
+            "ji","hai","hain","mujhe","chahiye","aap","aapka","aapki",
+            "kahan","kaha","kaise","ghoomne","ghumne","niklu","nikalna",
+            "band","khula","khuli","chuka","chuki","hoga","hogi","nahi",
+            "nahin","batao","aur","mein","par","liye","safai","pani","khana"
+        }
+        return len(set(re.findall(r'[a-zA-Z]+', low)) & hindi_hints) < 2
+    if language in {"hindi", "marathi", "rajasthani", "garhwali", "kumaoni"}:
+        if guest_script(user_text) == "devanagari":
+            return bool(re.search(r'[\u0900-\u097F]', text))
+        # Roman regional/Hinglish output must contain at least one distinctive
+        # conversational marker; pure English sentences are rejected.
+        low = text.lower()
+        hints = {"ji","hai","hain","aap","mujhe","ke","ki","ka","ko","mein","me","batao","chahiye","ghoom","ghum","kahan","kaha","kar","hoga","hogi","nahi","nahin","aur","yeh","yahaan","yahan"}
+        return bool(set(re.findall(r'[a-zA-Z]+', low)) & hints)
+    if language == "punjabi":
+        return bool(re.search(r'[\u0A00-\u0A7F]', text)) if guest_script(user_text) == "gurmukhi" else bool(re.search(r'\b(tusi|tuhanu|tuhada|tuhadi|mainu|menu|chahida|chahidi|ji)\b', text.lower()))
+    if language == "bengali":
+        return bool(re.search(r'[\u0980-\u09FF]', text)) if guest_script(user_text) == "bengali" else bool(re.search(r'\b(ami|amake|amar|apni|apnar|ache|kothay|diben|ekta)\b', text.lower()))
+    # For other supported languages, native script is a reliable check; Roman
+    # output is accepted because transliterated text is harder to validate safely.
+    script_ranges = {
+        "gujarati": r'[\u0A80-\u0AFF]', "tamil": r'[\u0B80-\u0BFF]',
+        "telugu": r'[\u0C00-\u0C7F]', "kannada": r'[\u0C80-\u0CFF]',
+        "malayalam": r'[\u0D00-\u0D7F]', "odia": r'[\u0B00-\u0B7F]',
+        "urdu": r'[\u0600-\u06FF]',
+    }
+    if language in script_ranges and guest_script(user_text) not in {"roman"}:
+        return bool(re.search(script_ranges[language], text))
+    return True
+
+
 def ask_groq_chat(user_text, guest_info=None, sender_phone=None):
     model = get_active_groq_model()
     if not model:
         return None
 
-    language = guest_language(user_text)
+    # Preserve the guest's established language for short follow-ups such as
+    # "hello", "more options", "aur batao", etc. Explicit language preferences
+    # are still picked up by remember_guest_language().
+    language = get_guest_response_language(sender_phone, user_text) if sender_phone else guest_language(user_text)
     language_rule = language_instruction(language, user_text)
 
     guest_context = "NEW CUSTOMER"
@@ -1500,7 +1598,23 @@ Important:
         )
 
         if res.status_code == 200:
-            return res.json()["choices"][0]["message"]["content"].strip()
+            reply = res.json()["choices"][0]["message"]["content"].strip()
+            # Model compliance check: if the guest language is clearly known and
+            # the first answer is in the wrong language/script, retry once with a
+            # strict correction rather than sending a poor guest-facing answer.
+            if not _ai_reply_matches_language(reply, language, user_text):
+                retry_payload = dict(payload)
+                retry_payload["temperature"] = 0.0
+                retry_payload["messages"] = [
+                    {"role": "system", "content": system_prompt + "\n\nFINAL LANGUAGE RULE: Your entire answer MUST be in the guest language above. Do not answer in English if the guest is Hindi/Hinglish. Do not answer in Hindi/Hinglish if the guest is English."},
+                    {"role": "user", "content": str(user_text)},
+                ]
+                retry = requests.post(url, json=retry_payload, headers=headers, timeout=20)
+                if retry.status_code == 200:
+                    candidate = retry.json()["choices"][0]["message"]["content"].strip()
+                    if _ai_reply_matches_language(candidate, language, user_text):
+                        reply = candidate
+            return reply
 
         print("GROQ CHAT ERROR:", res.status_code, res.text[:500], flush=True)
 
@@ -2388,7 +2502,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 "Available room categories: " + ", ".join(names) + ". Aap dates aur kitne guests hain batayein."
             )
         else:
-            ai = ask_groq_chat(user_text, guest_info)
+            ai = ask_groq_chat(user_text, guest_info, sender_phone)
             send_whatsapp_message(sender_phone, ai or "Ji, main reception se room availability confirm karwa deta hoon.")
         return
 
@@ -2398,7 +2512,7 @@ def process_and_reply(message, sender_phone, msg_type):
             rates = ", ".join(f"{x['name']} Rs.{x['rate']} per night" for x in categories if x.get('rate'))
             send_whatsapp_message(sender_phone, rates + ".")
         else:
-            ai = ask_groq_chat(user_text, guest_info)
+            ai = ask_groq_chat(user_text, guest_info, sender_phone)
             send_whatsapp_message(sender_phone, ai or "Ji, main reception se current room rate confirm karwa deta hoon.")
         return
 
@@ -2709,16 +2823,25 @@ def monitor_guest_status_lifecycle():
             with state_lock:
                 rows = list(shared_store.get("rooms", []))
 
+            # A guest/room can appear more than once in the sheet. Use only
+            # the latest matching row so old records cannot trigger duplicate
+            # welcome/checkout messages or override the current stay status.
+            latest_rows = {}
             for row in rows:
                 if len(row) < 6:
                     continue
+                room_key = clean_room(row[0])
+                phone_key = clean_phone(row[4]) if len(row) > 4 else ""
+                if room_key and phone_key:
+                    latest_rows[f"{phone_key}_{room_key}"] = row
 
+            for row in latest_rows.values():
                 room = clean_room(row[0])
                 name = str(row[3]).strip() if len(row) > 3 else "Guest"
                 phone = clean_phone(row[4]) if len(row) > 4 else ""
-                status = str(row[5]).upper().strip()
+                status = _classify_guest_status(row[5] if len(row) > 5 else "")
 
-                if not room or not phone:
+                if not room or not phone or not status:
                     continue
 
                 room_phone_map[room] = phone
@@ -2726,8 +2849,8 @@ def monitor_guest_status_lifecycle():
                 key = f"{phone}_{room}"
                 current_status[key] = status
 
-                is_in = "IN" in status and "OUT" not in status
-                is_out = "OUT" in status
+                is_in = status == "CHECKED_IN"
+                is_out = status == "CHECKED_OUT"
 
                 previous = lifecycle_status_cache.get(key)
 
@@ -2751,11 +2874,11 @@ def monitor_guest_status_lifecycle():
                 # -----------------------------
                 # NEW CHECK-IN TRANSITION
                 # -----------------------------
-                if is_in and (previous is None or "OUT" in previous):
+                if is_in and (previous is None or previous == "CHECKED_OUT"):
                     lang = get_guest_response_language(phone)
                     if lang == "english":
                         welcome_text = (
-                            f"🌸 *Welcome to Hotel Ganga View, {name} ji!*\n"
+                            f"🌸 *Welcome to {get_hotel_name()}, {name} ji!*\n"
                             f"🏨 We are delighted to have you with us in Room {room}. "
                             f"Our team is here to make your stay comfortable and memorable.\n\n"
                             f"🍽️ Food | 🧹 Housekeeping | 🧴 Towel/Soap | 💧 Water | 📍 Local Guide\n"
@@ -2764,7 +2887,7 @@ def monitor_guest_status_lifecycle():
                     else:
                         welcome_text = (
                             f"🌸 *Namaste {name} ji!*\n"
-                            f"🏨 Hotel Ganga View mein aapka *dil se swagat hai*. "
+                            f"🏨 {get_hotel_name()} mein aapka *dil se swagat hai*. "
                             f"Room {room} mein aapki stay ko comfortable aur yaadgaar banane ki poori koshish rahegi.\n\n"
                             f"🍽️ Food | 🧹 Housekeeping | 🧴 Towel/Soap | 💧 Water | 📍 Local Guide\n"
                             f"Kisi bhi help ke liye bas yahin message karein. 🙏"
@@ -2876,13 +2999,22 @@ def monitor_guest_status_lifecycle():
                 # -----------------------------
                 # CHECK-OUT TRANSITION
                 # -----------------------------
-                elif is_out and (previous is None or ("IN" in previous and "OUT" not in previous)):
-                    send_whatsapp_message(
-                        phone,
-                        f"🙏 *Dhanyawad, {name} ji!*\n"
-                        f"Hotel Ganga View mein aapka stay humein bahut accha laga. Umeed hai aapka Haridwar stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
-                        f"Jab bhi dobara Haridwar aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
-                    )
+                elif is_out and (previous is None or previous == "CHECKED_IN"):
+                    lang = get_guest_response_language(phone)
+                    hotel_name = get_hotel_name()
+                    if lang == "english":
+                        checkout_text = (
+                            f"🙏 *Thank you, {name} ji!*\n"
+                            f"We hope you had a comfortable and memorable stay at {hotel_name}. 🏨✨\n\n"
+                            f"Whenever you visit Haridwar again, we would be delighted to welcome you. *Safe journey!* 🌸"
+                        )
+                    else:
+                        checkout_text = (
+                            f"🙏 *Dhanyawad, {name} ji!*\n"
+                            f"Umeed hai {hotel_name} mein aapka stay comfortable aur yaadgaar raha hoga. 🏨✨\n\n"
+                            f"Jab bhi dobara Haridwar aayein, humein zaroor yaad kijiye. *Shubh Yatra!* 🌸"
+                        )
+                    send_whatsapp_message(phone, checkout_text)
                     checked_out_guests.add(f"{key}_out")
 
             # Commit current lifecycle snapshot.

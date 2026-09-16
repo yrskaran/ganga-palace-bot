@@ -858,6 +858,20 @@ _NOTIFICATION_LANGUAGE_ALIASES = {
     "hinglish": "Hinglish",
 }
 
+# Safety-net wording: the receptionist can edit Notification_Messages, but
+# lifecycle messages must never become silent if that tab is missing, empty,
+# temporarily unavailable, or has no matching row.
+_NOTIFICATION_FALLBACKS = {
+    "WELCOME": "Welcome to {hotel}, {name} ji! Your room is {room}. How may I assist you?",
+    "30_MINUTE": "Hi {name} ji, we hope you are comfortable in room {room}. Please let us know if you need anything.",
+    "BREAKFAST": "Good morning {name} ji! Breakfast is available from 8:00 AM to 10:00 AM. Please let us know if you need any assistance.",
+    "LUNCH": "Hello {name} ji! Lunch service is available. Please let us know if you would like to order.",
+    "GANGA_AARTI": "{name} ji, Ganga Aarti is scheduled this evening. Please contact reception for details.",
+    "DINNER": "Hello {name} ji! Dinner service is available. Please let us know if you would like to order.",
+    "CHECKOUT": "Thank you for staying with {hotel}, {name} ji. We wish you a safe and pleasant journey!",
+    "FULL_BILL_PAID": "Thank you {name} ji. Your full hotel bill has been paid successfully. Have a pleasant stay!",
+}
+
 
 def _notification_header_map():
     with state_lock:
@@ -3638,7 +3652,8 @@ def monitor_guest_status_lifecycle():
                 # Apps Script handles human edits; this generic engine handles programmatic edits.
                 lifecycle_key = f"{phone}:{room}"
                 previous_status = lifecycle_status_cache.get(lifecycle_key)
-                if previous_status is not None and previous_status != status:
+                status_changed = previous_status is not None and previous_status != status
+                if status_changed:
                     client = get_gspread_client()
                     try:
                         if is_in and cols["check_in"] >= 0 and not str(row[cols["check_in"]]).strip():
@@ -3722,9 +3737,12 @@ def monitor_guest_status_lifecycle():
                 # CHECK-OUT LIFECYCLE
                 # -----------------------------
                 elif is_out:
-                    # OUT TIME is the authoritative checkout event timestamp.
-                    # If an old OUT row has already been acknowledged, no duplicate.
-                    if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
+                    # Checkout is an EVENT, not a timer. A missing Sheet timestamp
+                    # must never suppress the guest farewell. If this process sees the
+                    # status transition, send immediately; a timestamp is only an
+                    # audit field. An existing checkout timestamp also allows recovery
+                    # after a short restart without requiring the event to be repeated.
+                    if (status_changed or check_out_at) and not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)
                         checkout_text = get_notification_message("CHECKOUT", lang, name=name, room=room)
                         if checkout_text and send_whatsapp_message(phone, checkout_text):

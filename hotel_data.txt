@@ -167,6 +167,49 @@ The bot may generate Google Maps search links from the "Maps:" query for a place
 
 
 ==================================================
+PHOTOS & MEDIA
+==================================================
+# Replace these public HTTPS URLs when hotel photos change.
+# Do not change Python code just to change a photo.
+
+Exterior:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
+
+Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
+
+Super Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
+
+Family Suite:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
+
+==================================================
+GOOGLE MAPS
+==================================================
+Hotel:
+https://maps.google.com/?q=29.9530,78.1700
+
+Har Ki Pauri:
+https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+
+Mansa Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+
+Chandi Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+
+==================================================
+LOCAL GUIDE RULES
+==================================================
+- Use this file as the source for local places, timings, descriptions and Google Maps links.
+- Recommend the most relevant place instead of dumping the whole guide.
+- When the guest asks how to go or asks for a location, provide the matching Maps link.
+- When the guest asks for an itinerary, use the time and preferences stated by the guest plus this guide.
+- Never invent a price, timing, distance or attraction detail that is not present here.
+
+
+==================================================
 HARIDWAR VERIFIED GUIDE & STORIES
 ==================================================
 # HISTORY = documented/officially sourced information
@@ -295,45 +338,3 @@ AI GUIDE BEHAVIOUR
 - Use the configured Maps URL when directions/location are requested.
 - Never invent timings, distances, prices or historical facts.
 - If a detail is missing, say reception can confirm it.
-
-==================================================
-PHOTOS & MEDIA
-==================================================
-# Replace these public HTTPS URLs when hotel photos change.
-# Do not change Python code just to change a photo.
-
-Exterior:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
-
-Deluxe Room:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
-
-Super Deluxe Room:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
-
-Family Suite:
-https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
-
-==================================================
-GOOGLE MAPS
-==================================================
-Hotel:
-https://maps.google.com/?q=29.9530,78.1700
-
-Har Ki Pauri:
-https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
-
-Mansa Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
-
-Chandi Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
-
-==================================================
-LOCAL GUIDE RULES
-==================================================
-- Use this file as the source for local places, timings, descriptions and Google Maps links.
-- Recommend the most relevant place instead of dumping the whole guide.
-- When the guest asks how to go or asks for a location, provide the matching Maps link.
-- When the guest asks for an itinerary, use the time and preferences stated by the guest plus this guide.
-- Never invent a price, timing, distance or attraction detail that is not present here.

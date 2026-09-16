@@ -302,22 +302,31 @@ AI GUIDE BEHAVIOUR
 - If a detail is missing, say reception can confirm it.
 
 ==================================================
+PROACTIVE LIFECYCLE TIMINGS
+==================================================
+# These windows control proactive guest reminders. Change them here without changing Python.
+Breakfast Reminder Window: 08:00-10:59
+Lunch Reminder Window: 13:00-15:59
+Ganga Aarti Reminder Window: 17:00-17:59
+Dinner Reminder Window: 19:00-21:59
+
+==================================================
 PHOTOS & MEDIA
 ==================================================
 # Replace these public HTTPS URLs when hotel photos change.
 # Do not change Python code just to change a photo.
 
-Exterior:  https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
+Exterior:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
 
+Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
 
-Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
+Super Deluxe Room:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
 
-
-Super Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
-
-
-Family Suite: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
- 
+Family Suite:
+https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
 
 ==================================================
 PHOTO BEHAVIOUR

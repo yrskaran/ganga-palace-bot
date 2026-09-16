@@ -52,7 +52,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "GANGA-V12"
+APP_VERSION = "GANGA-V13-STABLE"
 ENABLE_PAYMENT_NOTIFICATIONS = False  # permanently disabled; use bill on request
 
 # -----------------------------
@@ -87,6 +87,9 @@ guest_language_cache = {}
 welcomed_guests = set()
 guest_first_seen = {}
 notified_30min = set()
+payment_status_cache = {}
+payment_monitor_initialized = False
+notified_paid_orders = set()
 breakfast_prompted = set()
 lunch_prompted = set()
 aarti_prompted = set()
@@ -178,26 +181,18 @@ def guest_language(text):
         return 'english'
 
     # Explicit language-name requests are unambiguous.
-    low_raw = raw.lower()
-    explicit_languages = [
-        ('rajasthani', r'\\brajasthani\\b|राजस्थानी'),
-        ('bengali', r'\\bbengali\\b|বাংলা|বাঙালি'),
-        ('punjabi', r'\\bpunjabi\\b|ਪੰਜਾਬੀ'),
-        ('gujarati', r'\\bgujarati\\b|ગુજરાતી'),
-        ('marathi', r'\\bmarathi\\b|मराठी'),
-        ('tamil', r'\\btamil\\b|தமிழ்'),
-        ('telugu', r'\\btelugu\\b|తెలుగు'),
-        ('kannada', r'\\bkannada\\b|ಕನ್ನಡ'),
-        ('malayalam', r'\\bmalayalam\\b|മലയാളം'),
-        ('odia', r'\\bodia\\b|ଓଡ଼ିଆ'),
-        ('urdu', r'\\burdu\\b|اردو'),
-        ('garhwali', r'\\bgarhwali\\b|गढ़वाली'),
-        ('kumaoni', r'\\bkumaoni\\b|कुमाऊँनी|कुमाऊनी'),
-        ('hindi', r'\\bhindi\\b|हिंदी'),
-        ('english', r'\\benglish\\b'),
+    explicit = [
+        ('rajasthani', r'\brajasthani\b|राजस्थानी'), ('bengali', r'\bbengali\b|বাংলা|বাঙালি'),
+        ('punjabi', r'\bpunjabi\b|ਪੰਜਾਬੀ'), ('gujarati', r'\bgujarati\b|ગુજરાતી'),
+        ('marathi', r'\bmarathi\b|मराठी'), ('tamil', r'\btamil\b|தமிழ்'),
+        ('telugu', r'\btelugu\b|తెలుగు'), ('kannada', r'\bkannada\b|ಕನ್ನಡ'),
+        ('malayalam', r'\bmalayalam\b|മലയാളം'), ('odia', r'\bodia\b|ଓଡ଼ିଆ'),
+        ('urdu', r'\burdu\b|اردو'), ('garhwali', r'\bgarhwali\b|गढ़वाली'),
+        ('kumaoni', r'\bkumaoni\b|कुमाऊँनी|कुमाऊनी'), ('hindi', r'\bhindi\b|हिंदी'),
+        ('english', r'\benglish\b'),
     ]
-    for lang_name, pattern in explicit_languages:
-        if __import__('re').search(pattern, low_raw, __import__('re').IGNORECASE):
+    for lang_name, pattern in explicit:
+        if re.search(pattern, raw, re.IGNORECASE):
             return lang_name
 
     # Native-script detection. Devanagari is shared by Hindi/Marathi/Garhwali/
@@ -217,7 +212,7 @@ def guest_language(text):
     words = set(re.findall(r'[a-zA-Z]+', raw.lower()))
     sets = {
         'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao'},
-        'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','saanu','thoda','kar deo','bhejdo','chaahidi'},
+        'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','meni','saanu','thoda','kar deo','bhejdo','chaahidi'},
         'rajasthani': {'mhane','mharo','mhari','thare','tharo','thari','mhare','koni','ghano','ghani','khamma','padharo','chokho','chhoro','chhori','kai','mhane','thareko','baisa','sa'},
         'bengali': {'ami','amake','amar','apni','apnar','ache','achi','kothay','koto','chai','diben','den','bhalo','khabar','ghor','ekhane','amar','lagbe','din','ekta'},
         'marathi': {'mala','majha','majhi','tumhi','tumhala','kuthे','kuthe','kiti','pahije','havay','dya','deva','ahe','aahe','nahi','kay','bara','jevan','paani','room'},
@@ -282,6 +277,16 @@ def language_instruction(language, text=None):
         'kumaoni': 'Reply naturally in Kumaoni. Use Devanagari if the guest used Devanagari; otherwise use Roman Kumaoni.',
     }
     return instructions.get(language, 'Reply naturally and politely in English.')
+
+def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
+    """Select a deterministic guest-facing template from remembered language."""
+    lang = get_guest_response_language(sender_phone) if 'get_guest_response_language' in globals() else 'english'
+    if lang == 'english':
+        return english_text
+    if lang == 'hindi':
+        return hindi_text
+    return hinglish_text
+
 
 def remember_guest_language(sender_phone,text):
     lang=guest_language(text)
@@ -1284,7 +1289,13 @@ def ask_groq_chat(user_text, guest_info=None):
         return None
 
     language = guest_language(user_text)
-    language_rule = language_instruction(language, user_text)
+    language_rule = (
+        "Answer in Hindi using Devanagari."
+        if language == "hindi"
+        else "Answer in concise Hinglish using Latin/Roman script."
+        if language == "hinglish"
+        else "Answer in crisp English."
+    )
 
     guest_context = "NEW CUSTOMER"
     if guest_info:
@@ -1335,8 +1346,6 @@ Important:
 - Relevant Haridwar guide data is available in the hotel knowledge file. When the topic is local sightseeing, Ganga, Aarti or temples, use that data and naturally offer one relevant short story/fact.
 - When the conversation naturally touches Haridwar, Ganga Aarti, temples, pilgrimage or sightseeing, proactively offer one relevant short story/fact; do not wait for the guest to ask.
 - Keep such proactive discovery to one short sentence so it feels like a helpful receptionist, not an advertisement.
-- If the guest explicitly names a language (for example "Rajasthani", "Bengali", or "Punjabi"), switch to that language immediately.
-- For Roman-script regional languages, use natural Roman-script wording unless the guest used native script.
 
 """
 
@@ -1380,6 +1389,109 @@ Important:
 
     return None
 
+
+
+
+def kitchen_order_fingerprint(row):
+    """Stable ID based on sheet content, not row number."""
+    fields = [str(x).strip() for x in list(row[:5])]
+    return "|".join(fields)
+
+
+
+def build_paid_payment_message(name, room, orders):
+    total = sum(x["amount"] for x in orders)
+    if len(orders) == 1:
+        detail = orders[0]["item"]
+        return (
+            f"✅ *Payment Received*\n"
+            f"Namaste {name} ji! Room {room} ke *{detail}* ka payment "
+            f"₹{orders[0]['amount']:,} receive ho gaya hai. 🙏"
+        )
+
+    details = "\n".join(
+        f"• {x['item']} — ₹{x['amount']:,}" for x in orders
+    )
+    return (
+        f"✅ *Payments Received*\n"
+        f"Namaste {name} ji! Room {room} ke payments receive ho gaye hain:\n"
+        f"{details}\n"
+        f"💰 *Total Received: ₹{total:,}*"
+    )
+
+
+
+def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
+    """
+    Only notify on a real status transition to PAID.
+    Historical PAID rows present before the bot starts are silently seeded.
+    Multiple newly-paid rows for the same room are grouped into one message.
+    """
+    global payment_monitor_initialized
+
+    current_status = {}
+    newly_paid = {}
+
+    for row in kitchen_rows:
+        if len(row) < 6:
+            continue
+
+        fingerprint = kitchen_order_fingerprint(row)
+        status = str(row[5]).strip().upper()
+        current_status[fingerprint] = status
+
+        # Never notify cancelled/zero amount rows.
+        amount = safe_int(row[4])
+        if amount <= 0 or "PAID" not in status:
+            continue
+
+        previous = payment_status_cache.get(fingerprint)
+
+        # On first cycle, seed historical paid records without notifying.
+        if not payment_monitor_initialized:
+            continue
+
+        # Only PENDING -> PAID (or any non-paid -> PAID) is a new payment.
+        if previous and "PAID" not in previous:
+            room = clean_room(row[1])
+            phone = room_phone_map.get(room)
+            if phone:
+                newly_paid.setdefault(room, []).append({
+                    "item": str(row[3]).strip() or "Kitchen Order",
+                    "amount": amount,
+                    "phone": phone,
+                })
+
+    # Commit current snapshot before sending, so a repeated cycle cannot requeue it.
+    with state_lock:
+        payment_status_cache.clear()
+        payment_status_cache.update(current_status)
+        payment_monitor_initialized = True
+
+    for room, orders in newly_paid.items():
+        phone = orders[0]["phone"]
+        # Mark fingerprints as handled too; useful protection during fast repeats.
+        for row in kitchen_rows:
+            if len(row) >= 6:
+                fp = kitchen_order_fingerprint(row)
+                if (
+                    fp in current_status
+                    and "PAID" in current_status[fp]
+                    and any(
+                        clean_room(row[1]) == room
+                        and safe_int(row[4]) == o["amount"]
+                        and str(row[3]).strip() == o["item"]
+                        for o in orders
+                    )
+                ):
+                    notified_paid_orders.add(fp)
+
+        # One WhatsApp notification per room per polling cycle.
+        name = "Guest"
+        send_whatsapp_message(
+            phone,
+            build_paid_payment_message(name, room, orders)
+        )
 
 # ============================================================
 # FOOD ORDER PARSER
@@ -2002,17 +2114,29 @@ def process_and_reply(message, sender_phone, msg_type):
     # ========================================================
     # 4. GREETINGS
     # ========================================================
-    if t in {"hi", "hello", "hlo", "namaste", "hey", "good morning", "good evening"}:
-        if is_inhouse:
-            send_whatsapp_message(
-                sender_phone,
-                f"Namaste {guest_info['name']} ji! Hotel Ganga View me aapka swagat hai."
-            )
-        else:
-            send_whatsapp_message(
-                sender_phone,
-                "Namaste! Hotel Ganga View, Haridwar me aapka swagat hai."
-            )
+    if t in {"hi", "hello", "hlo", "namaste", "hey", "sat sri akal", "good morning", "good evening"}:
+        lang = get_guest_response_language(sender_phone, user_text)
+        name = guest_info.get("name", "Guest") if guest_info else "Guest"
+        hotel = get_hotel_name()
+        greetings = {
+            "english": f"Welcome to {hotel}, {name} ji! How may I assist you?",
+            "hindi": f"Namaste {name} ji! {hotel} mein aapka hardik swagat hai. Main aapki kya sahayata kar sakta hoon?",
+            "hinglish": f"Namaste {name} ji! {hotel} mein aapka swagat hai. Main aapki kaise help kar sakta hoon?",
+            "punjabi": f"Sat Sri Akal {name} ji! {hotel} vich tuhadda ji aayan nu. Main tuhadi ki madad kar sakda haan?",
+            "rajasthani": f"Khamma Ghani {name} ji! {hotel} mein tharo hardik swagat hai. Main thari kai madad kar sakun?",
+            "bengali": f"Nomoskar {name} ji! {hotel}-e apnake antorik swagat. Ami apnake kibhabe sahajjo korte pari?",
+            "gujarati": f"Namaste {name} ji! {hotel} ma aapnu hardik swagat chhe. Hu tamari shu madad kari shaku?",
+            "marathi": f"Namaskar {name} ji! {hotel} madhye aaple hardik swagat aahe. Mi aapli kashi madat karu shakto?",
+            "tamil": f"Vanakkam {name} ji! {hotel}-kku ungalai anbudan varaverkirom. Ungalukku eppadi udhava mudiyum?",
+            "telugu": f"Namaskaram {name} ji! {hotel} ki swagatham. Meeku ela sahayam cheyagalanu?",
+            "kannada": f"Namaskara {name} ji! {hotel} ge nimge swagata. Naanu nimge hege sahaya maadali?",
+            "malayalam": f"Namaskaram {name} ji! {hotel}-ilekku swagatham. Njan engane sahayikkam?",
+            "odia": f"Namaskar {name} ji! {hotel} ku apananku hardik swagat. Mu apananku kemiti sahajya kariparibi?",
+            "urdu": f"Assalamualaikum {name} ji! {hotel} mein aapka khairmaqdam hai. Main aapki kya madad kar sakta hoon?",
+            "garhwali": f"Namaskar {name} ji! {hotel} ma aapku hardik swagat chha. Main aapki kaisi madad karun?",
+            "kumaoni": f"Namaskar {name} ji! {hotel} ma aapuk hardik swagat chha. Main aapki kaisi madad karun?",
+        }
+        send_whatsapp_message(sender_phone, greetings.get(lang, greetings["english"]))
         return
 
     # ========================================================
@@ -2227,23 +2351,10 @@ def process_and_reply(message, sender_phone, msg_type):
             return
 
         if is_checkout:
-            checkout_room = guest_info.get("room") if guest_info else None
-            if checkout_room:
-                fetch_sheet_data_sync()
-                fin = get_guest_financials(checkout_room, sender_phone)
-                send_whatsapp_message(
-                    sender_phone,
-                    format_bill_message(
-                        fin,
-                        checkout_room,
-                        guest_info.get("name", "Guest")
-                    )
-                )
-            else:
-                send_whatsapp_message(
-                    sender_phone,
-                    f"Namaste {guest_info.get('name','Guest')} ji! Aapka final bill reception se share karwa deta hoon."
-                )
+            send_whatsapp_message(
+                sender_phone,
+                f"Namaste {guest_info['name']} ji! Purani payment details ke liye reception se sampark karein."
+            )
             return
 
         send_whatsapp_message(
@@ -2472,12 +2583,18 @@ def monitor_guest_status_lifecycle():
                 # STARTUP SEED: never send old welcome/checkout messages.
                 # -----------------------------
                 if not initialized:
+                    # Seed the current status so old guests do not receive a
+                    # duplicate welcome/checkout message after a restart.
+                    # IMPORTANT: do NOT continue here. Existing in-house
+                    # guests must still be eligible for today's breakfast,
+                    # lunch, Aarti and dinner reminder if the service starts
+                    # during that reminder window.
                     lifecycle_status_cache[key] = status
                     if is_in:
-                        # Timer starts from the moment this running instance
-                        # first sees the guest. No welcome is sent on startup.
                         guest_first_seen.setdefault(key, time.time())
-                    continue
+
+                    # No welcome is sent for an already in-house guest at
+                    # startup. The normal reminder logic below must continue.
 
                 # -----------------------------
                 # NEW CHECK-IN TRANSITION
@@ -2545,8 +2662,10 @@ def monitor_guest_status_lifecycle():
                                 else
                                 f"☀️ *Good Morning {name} ji!*\nIt is breakfast time. Type *menu* to see breakfast options; we can serve the order in your room. 🍽️"
                             )
-                            send_whatsapp_message(phone, breakfast_text)
-                            breakfast_prompted.add(bk)
+                            if send_whatsapp_message(phone, breakfast_text):
+                                breakfast_prompted.add(bk)
+                            else:
+                                print(f"BREAKFAST SEND FAILED: {phone} {bk}", flush=True)
 
                     # -----------------------------
                     # LUNCH
@@ -2561,8 +2680,10 @@ def monitor_guest_status_lifecycle():
                                 else
                                 f"🍛 *Good Afternoon {name} ji!*\nFor lunch, type *menu* to see the available options. We can serve it in your room. 🙏"
                             )
-                            send_whatsapp_message(phone, lunch_text)
-                            lunch_prompted.add(lk)
+                            if send_whatsapp_message(phone, lunch_text):
+                                lunch_prompted.add(lk)
+                            else:
+                                print(f"LUNCH SEND FAILED: {phone} {lk}", flush=True)
 
                     # -----------------------------
                     # GANGA AARTI
@@ -2577,8 +2698,10 @@ def monitor_guest_status_lifecycle():
                                 else
                                 f"🙏 *Har Har Gange, {name} ji!*\nToday is the evening Ganga Aarti at Har Ki Pauri. Leaving by 5:15 PM should be convenient. Type *guide* for the location. 🌺"
                             )
-                            send_whatsapp_message(phone, aarti_text)
-                            aarti_prompted.add(ak)
+                            if send_whatsapp_message(phone, aarti_text):
+                                aarti_prompted.add(ak)
+                            else:
+                                print(f"AARTI SEND FAILED: {phone} {ak}", flush=True)
 
                     # -----------------------------
                     # DINNER
@@ -2593,8 +2716,10 @@ def monitor_guest_status_lifecycle():
                                 else
                                 f"🌙 *Good Evening {name} ji!*\nFor dinner, type *menu* to see the available options. We can serve your order in the room. 🍽️"
                             )
-                            send_whatsapp_message(phone, dinner_text)
-                            dinner_prompted.add(dk)
+                            if send_whatsapp_message(phone, dinner_text):
+                                dinner_prompted.add(dk)
+                            else:
+                                print(f"DINNER SEND FAILED: {phone} {dk}", flush=True)
 
                 # -----------------------------
                 # CHECK-OUT TRANSITION

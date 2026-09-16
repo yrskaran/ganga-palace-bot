@@ -536,9 +536,11 @@ def get_hotel_menu():
 
 
 def _parse_media_sections(raw):
+    """Parse media URLs from hotel_data.txt in both inline and two-line formats."""
     photos = {}
     maps = {}
     section = ""
+    pending_key = None
 
     for raw_line in str(raw or "").splitlines():
         line = raw_line.strip()
@@ -546,32 +548,42 @@ def _parse_media_sections(raw):
             continue
 
         upper = line.upper()
-
         if upper.startswith("PHOTOS & MEDIA"):
-            section = "photos"
-            continue
+            section = "photos"; pending_key = None; continue
         if upper.startswith("GOOGLE MAPS"):
-            section = "maps"
-            continue
-        if upper.startswith("LOCAL GUIDE RULES") or upper.startswith("=================================================="):
-            # Separator lines do not necessarily mean a new section.
+            section = "maps"; pending_key = None; continue
+        if (upper.startswith("LOCAL GUIDE RULES") or
+            upper.startswith("PHOTO BEHAVIOUR") or
+            upper.startswith("AI GUIDE BEHAVIOUR") or
+            upper.startswith("==================================================")):
             if upper != "==================================================":
                 section = ""
+            pending_key = None
             continue
 
+        # Supported formats:
+        # Exterior: https://...
+        # Exterior:
+        # https://...
         m = re.match(r"^([^:]{2,80})\s*:\s*(https?://\S+)\s*$", line)
-        if not m:
+        if m:
+            key = re.sub(r"\s+", " ", m.group(1).strip().lower())
+            url = m.group(2).strip().rstrip(",")
+            if section == "photos": photos[key] = url
+            elif section == "maps": maps[key] = url
+            pending_key = None
             continue
 
-        key = re.sub(r"\s+", " ", m.group(1).strip().lower())
-        url = m.group(2).strip().rstrip(",")
-        if section == "photos":
-            photos[key] = url
-        elif section == "maps":
-            maps[key] = url
+        if section in {"photos", "maps"} and re.match(r"^[^:]{2,80}:\s*$", line):
+            pending_key = re.sub(r"\s+", " ", line[:-1].strip().lower())
+            continue
+
+        if pending_key and re.match(r"^https?://\S+$", line):
+            if section == "photos": photos[pending_key] = line.rstrip(",")
+            elif section == "maps": maps[pending_key] = line.rstrip(",")
+            pending_key = None
 
     return {"photos": photos, "maps": maps}
-
 
 def get_hotel_media():
     # Live-read media values so a hotel admin can change URLs without code edits.
@@ -1481,7 +1493,25 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         if res and res.status_code in (200, 201):
             return True
 
-    # Safe fallback: at least give the guest the configured photo URL.
+    # Second path: let Meta fetch the public HTTPS image directly. This preserves
+    # actual WhatsApp image delivery when our server-side media upload fails.
+    direct_payload = {
+        "messaging_product": "whatsapp",
+        "to": number,
+        "type": "image",
+        "image": {
+            "link": str(image_url).strip(),
+            "caption": str(caption)[:1024],
+        },
+    }
+    try:
+        res = whatsapp_request(direct_payload)
+        if res and res.status_code in (200, 201):
+            return True
+    except Exception as exc:
+        print("DIRECT PHOTO SEND ERROR:", exc, flush=True)
+
+    # Safe final fallback: at least give the guest the configured photo URL.
     return send_whatsapp_message(number, f"{caption}\n\nPhoto link: {image_url}")
 
 
@@ -1601,6 +1631,7 @@ Important:
 - If the guest asks for more sightseeing options, give several DIFFERENT relevant places from the guide (normally 3-5).
 - If the guest asks for a story/history, give a short relevant story or fact from the guide and label it HISTORY, TRADITION or PAURANIK KATHA as applicable.
 - If the guest asks generally what they can do locally, reason over the configured guide and suggest a useful mini-plan based on time/preferences mentioned in the conversation.
+- If you tell the guest that reception will confirm, arrange, share, approve, or otherwise handle a specific request, append exactly one private marker [[RECEPTION_NOTIFY:brief reason]] at the end. Do not use this marker for merely giving reception hours or telling the guest how to contact reception.
 """
 
     contents = _gemini_contents_from_history(history, user_text)
@@ -2544,6 +2575,32 @@ def format_kitchen_bill_message(fin, room, guest_name):
 # DETERMINISTIC MESSAGE ROUTER
 # ============================================================
 
+def send_reception_fallback(sender_phone, guest_info, guest_message, request_text, source="reception_fallback"):
+    """Send the guest fallback text AND notify reception; never promise an alert silently."""
+    sent_guest = send_whatsapp_message(sender_phone, guest_message)
+    notified = notify_reception_request(sender_phone, guest_info, request_text, source)
+    print(f"RECEPTION FALLBACK: guest_sent={sent_guest} reception_notified={notified} source={source}", flush=True)
+    return sent_guest
+
+
+def notify_reception_request(sender_phone, guest_info, request_text, source="bot_fallback"):
+    """Notify reception whenever the bot tells the guest reception will handle something."""
+    try:
+        room = (guest_info or {}).get("room", "") if guest_info else ""
+        name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
+        status = (guest_info or {}).get("status", "") if guest_info else ""
+        message = (
+            "RECEPTION REQUEST\n"
+            f"Guest: {name}\nPhone: +{sender_phone}\n"
+            f"Room: {room or 'Not assigned'}\nStatus: {status or 'Unknown'}\n"
+            f"Request: {str(request_text or '').strip()[:1000]}"
+        )
+        return send_staff_alert(room=room, role="Reception", message=message, fallback_phone=STAFF_PHONE)
+    except Exception as exc:
+        print("RECEPTION NOTIFY ERROR:", exc, flush=True)
+        return False
+
+
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
 
@@ -2929,8 +2986,13 @@ def process_and_reply(message, sender_phone, msg_type):
                 wifi_text += f" | Password: {wifi_password}"
             send_whatsapp_message(sender_phone, wifi_text)
         else:
-            ai = ask_groq_chat(user_text, guest_info, sender_phone)
-            send_whatsapp_message(sender_phone, ai or "Ji, Wi-Fi details reception se confirm karwa deta hoon.")
+            ai = ask_ai_chat(user_text, guest_info, sender_phone)
+            if ai:
+                send_whatsapp_message(sender_phone, ai)
+                if any(x in normalize_text(ai) for x in ["reception se confirm", "reception se karwa", "reception can confirm", "reception will confirm"]):
+                    notify_reception_request(sender_phone, guest_info, user_text, "wifi_reception_action")
+            else:
+                send_reception_fallback(sender_phone, guest_info, "Ji, Wi-Fi details reception se confirm karwa deta hoon.", user_text, "wifi_fallback")
         return
 
     # ========================================================
@@ -2967,10 +3029,16 @@ def process_and_reply(message, sender_phone, msg_type):
         "check out", "checkout", "check-in time",
         "check in time", "opening", "reception", "front desk"
     ]):
-        send_whatsapp_message(
-            sender_phone,
-            bilingual_text(sender_phone, "Reception is open 24/7. Check-in is at 12:00 PM and check-out is at 11:00 AM.", "Reception 24/7 open hai. Check-in 12:00 PM aur check-out 11:00 AM hai.", "Reception 24/7 open hai. Check-in 12:00 PM aur check-out 11:00 AM hai.")
+        reception_hours = get_hotel_value("Reception / Front Desk", "24/7")
+        checkin_time = get_hotel_value("Check-in", "12:00 PM")
+        checkout_time = get_hotel_value("Check-out", "11:00 AM")
+        msg = (
+            f"Reception is open {reception_hours}. Check-in is at {checkin_time} and check-out is at {checkout_time}."
         )
+        msg_hinglish = (
+            f"Reception {reception_hours} open hai. Check-in {checkin_time} aur check-out {checkout_time} hai."
+        )
+        send_whatsapp_message(sender_phone, bilingual_text(sender_phone, msg, msg_hinglish, msg_hinglish))
         return
 
     # ========================================================
@@ -2988,7 +3056,8 @@ def process_and_reply(message, sender_phone, msg_type):
                 if photo_url:
                     send_whatsapp_image(sender_phone, photo_url, f"🏨 {requested.title()}")
                 else:
-                    send_whatsapp_message(sender_phone, "Ji, hotel front/exterior photo abhi configured nahi hai.")
+                    reply = "Ji, hotel front/exterior photo abhi configured nahi hai. Main reception se share karwa deta hoon."
+                    send_reception_fallback(sender_phone, guest_info, reply, "Hotel front/exterior photo requested but configured photo was unavailable.", "photo_fallback")
                 return
 
             # For every room-category photo, attach the hotel front first.
@@ -2998,7 +3067,8 @@ def process_and_reply(message, sender_phone, msg_type):
             if photo_url:
                 send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
             else:
-                send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi configured nahi hai.")
+                reply = "Ji, is room category ki photo abhi configured nahi hai. Main reception se share karwa deta hoon."
+                send_reception_fallback(sender_phone, guest_info, reply, f"Photo requested for room category '{requested}' but configured photo was unavailable.", "photo_fallback")
             return
 
         categories = get_room_photo_categories()
@@ -3007,7 +3077,8 @@ def process_and_reply(message, sender_phone, msg_type):
             lines.extend(f"• {name.title()}" for name, _ in categories)
             send_whatsapp_message(sender_phone, "\n".join(lines))
         else:
-            send_whatsapp_message(sender_phone, "Ji, room photos abhi configure nahi ki gayi hain. Reception se share karwa deta hoon.")
+            reply = "Ji, room photos abhi configure nahi ki gayi hain. Main reception se share karwa deta hoon."
+            send_reception_fallback(sender_phone, guest_info, reply, "Guest requested room photos but no configured photo categories were available.", "photo_fallback")
         return
 
     # ========================================================
@@ -3041,8 +3112,13 @@ def process_and_reply(message, sender_phone, msg_type):
                 "Available room categories: " + ", ".join(names) + ". Aap dates aur kitne guests hain batayein."
             )
         else:
-            ai = ask_ai_chat(user_text, guest_info)
-            send_whatsapp_message(sender_phone, ai or "Ji, main reception se room availability confirm karwa deta hoon.")
+            ai = ask_ai_chat(user_text, guest_info, sender_phone)
+            if ai:
+                send_whatsapp_message(sender_phone, ai)
+                if any(x in normalize_text(ai) for x in ["reception se confirm", "reception se karwa", "reception can confirm", "reception will confirm"]):
+                    notify_reception_request(sender_phone, guest_info, user_text, "availability_reception_action")
+            else:
+                send_reception_fallback(sender_phone, guest_info, "Ji, main reception se room availability confirm karwa deta hoon.", user_text, "availability_fallback")
         return
 
     if any(x in t for x in rate_words):
@@ -3051,8 +3127,13 @@ def process_and_reply(message, sender_phone, msg_type):
             rates = ", ".join(f"{x['name']} Rs.{x['rate']} per night" for x in categories if x.get('rate'))
             send_whatsapp_message(sender_phone, rates + ".")
         else:
-            ai = ask_ai_chat(user_text, guest_info)
-            send_whatsapp_message(sender_phone, ai or "Ji, main reception se current room rate confirm karwa deta hoon.")
+            ai = ask_ai_chat(user_text, guest_info, sender_phone)
+            if ai:
+                send_whatsapp_message(sender_phone, ai)
+                if any(x in normalize_text(ai) for x in ["reception se confirm", "reception se karwa", "reception can confirm", "reception will confirm"]):
+                    notify_reception_request(sender_phone, guest_info, user_text, "rate_reception_action")
+            else:
+                send_reception_fallback(sender_phone, guest_info, "Ji, main reception se current room rate confirm karwa deta hoon.", user_text, "rate_fallback")
         return
 
     # ========================================================
@@ -3300,7 +3381,21 @@ def process_and_reply(message, sender_phone, msg_type):
         ai_reply = attach_google_maps_links(ai_reply).strip()
 
         if ai_reply:
+            # AI may explicitly request a reception handoff with a private marker.
+            reception_marker = re.search(r"\[\[RECEPTION_NOTIFY\s*:\s*(.*?)\s*\]\]", ai_reply, re.I | re.S)
+            marker_reason = reception_marker.group(1).strip() if reception_marker else ""
+            if reception_marker:
+                ai_reply = re.sub(r"\[\[RECEPTION_NOTIFY\s*:\s*.*?\s*\]\]", "", ai_reply, flags=re.I | re.S).strip()
+
             send_whatsapp_message(sender_phone, ai_reply)
+            low_ai = normalize_text(ai_reply)
+            reception_action = bool(marker_reason) or any(x in low_ai for x in [
+                "reception se confirm", "reception se share", "reception se karwa",
+                "reception can confirm", "reception will confirm", "i’ll have reception",
+                "i'll have reception", "reception ko bata", "reception ko bol"
+            ])
+            if reception_action:
+                notify_reception_request(sender_phone, guest_info, marker_reason or user_text, "ai_reception_action")
             remember_conversation(sender_phone, "user", user_text)
             remember_conversation(sender_phone, "assistant", ai_reply)
             return
@@ -3323,6 +3418,7 @@ def process_and_reply(message, sender_phone, msg_type):
             "Ji, main reception se confirm karwa deta hoon. Kripya thoda samay dein."
         )
     send_whatsapp_message(sender_phone, fallback_in)
+    notify_reception_request(sender_phone, guest_info, user_text, "reception_safety_net")
 
 
 def handle_incoming_async(message, sender_phone, msg_type):
@@ -3538,8 +3634,36 @@ def monitor_guest_status_lifecycle():
                 is_in = "IN" in status and "OUT" not in status
                 is_out = "OUT" in status
 
+                # Detect status changes made through gspread/API as well as manual Sheet edits.
+                # Apps Script handles human edits; this generic engine handles programmatic edits.
+                lifecycle_key = f"{phone}:{room}"
+                previous_status = lifecycle_status_cache.get(lifecycle_key)
+                if previous_status is not None and previous_status != status:
+                    client = get_gspread_client()
+                    try:
+                        if is_in and cols["check_in"] >= 0 and not str(row[cols["check_in"]]).strip():
+                            timestamp = current.strftime("%d-%b-%Y %I:%M %p")
+                            sheet = client.open_by_key(SHEET_ID).get_worksheet(0) if client else None
+                            if sheet:
+                                sheet.update_cell(row_index, cols["check_in"] + 1, timestamp)
+                                row[cols["check_in"]] = timestamp
+                                print(f"LIFECYCLE AUTO TIMESTAMP: CHECK IN room={room} phone={phone}", flush=True)
+                        elif is_out and cols["check_out"] >= 0 and not str(row[cols["check_out"]]).strip():
+                            timestamp = current.strftime("%d-%b-%Y %I:%M %p")
+                            sheet = client.open_by_key(SHEET_ID).get_worksheet(0) if client else None
+                            if sheet:
+                                sheet.update_cell(row_index, cols["check_out"] + 1, timestamp)
+                                row[cols["check_out"]] = timestamp
+                                print(f"LIFECYCLE AUTO TIMESTAMP: CHECK OUT room={room} phone={phone}", flush=True)
+                    except Exception as exc:
+                        print(f"LIFECYCLE AUTO TIMESTAMP ERROR room={room}: {exc}", flush=True)
+                lifecycle_status_cache[lifecycle_key] = status
+
                 check_in_at = _parse_sheet_datetime(row[cols["check_in"]])
                 check_out_at = _parse_sheet_datetime(row[cols["check_out"]])
+
+                # Self-heal the exact active checkout event when Apps Script did not run.
+                # We only do this on a detected status transition, never for pre-existing old OUT rows.
 
                 # -----------------------------
                 # IN-HOUSE LIFECYCLE

@@ -42,6 +42,12 @@ GEMINI_FALLBACK_MODELS = [
     x.strip() for x in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.6-flash,gemini-3.5-flash").split(",") if x.strip()
 ]
 
+# Gemini failure/quota circuit breaker. A daily quota 429 must not cause
+# repeated retries against every configured model; fall through to Groq instead.
+GEMINI_UNAVAILABLE_UNTIL = 0.0
+GEMINI_UNAVAILABLE_REASON = ""
+GEMINI_LOCK = threading.RLock()
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "").strip()
 
@@ -59,7 +65,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V2-GEMINI"
+APP_VERSION = "HOTEL-AI-GENERIC-V4-FINAL"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 
 # -----------------------------
@@ -621,6 +627,18 @@ def resolve_requested_photo(user_text):
     photos = get_hotel_media().get("photos", {})
     if any(x in t for x in ["hotel front", "hotel photo", "outside", "exterior", "bahar", "front photo"]):
         return "exterior"
+
+    # Semantic category aliases prevent generic word overlap such as "room"
+    # from selecting the wrong configured category. Hotel-specific names still
+    # come from hotel_data.txt; these are generic language patterns only.
+    for aliases, configured in [
+        (("family suite", "family room", "family wala room", "family"), "family suite"),
+        (("super deluxe", "super-deluxe"), "super deluxe room"),
+        (("deluxe room", "deluxe"), "deluxe room"),
+    ]:
+        if any(alias in t for alias in aliases) and configured in photos:
+            return configured
+
     candidates = []
     for name in photos:
         if name == "exterior":
@@ -1583,9 +1601,52 @@ def _gemini_contents_from_history(history, user_text):
     return contents
 
 
+def _gemini_set_circuit_breaker(seconds, reason):
+    global GEMINI_UNAVAILABLE_UNTIL, GEMINI_UNAVAILABLE_REASON
+    with GEMINI_LOCK:
+        GEMINI_UNAVAILABLE_UNTIL = max(GEMINI_UNAVAILABLE_UNTIL, time.time() + max(1, int(seconds)))
+        GEMINI_UNAVAILABLE_REASON = str(reason or "temporary Gemini failure")[:300]
+    print(f"GEMINI CIRCUIT OPEN: {GEMINI_UNAVAILABLE_REASON} for ~{int(seconds)}s", flush=True)
+
+
+def _gemini_circuit_open():
+    with GEMINI_LOCK:
+        return time.time() < GEMINI_UNAVAILABLE_UNTIL
+
+
+def _gemini_429_is_daily_quota(message):
+    text = normalize_text(message)
+    markers = (
+        "generate_content_free_tier_requests",
+        "perday",
+        "requestsperday",
+        "quota exceeded",
+        "quotaexceeded",
+        "daily quota",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _gemini_daily_reset_cooldown_seconds():
+    # Google documents RPD reset at midnight Pacific. Use ZoneInfo when available;
+    # otherwise use a conservative 6-hour circuit so Groq handles traffic meanwhile.
+    try:
+        from zoneinfo import ZoneInfo
+        pacific = datetime.now(ZoneInfo("America/Los_Angeles"))
+        tomorrow = (pacific + timedelta(days=1)).date()
+        reset = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=ZoneInfo("America/Los_Angeles"))
+        return max(3600, int((reset - pacific).total_seconds()) + 60)
+    except Exception:
+        return 6 * 3600
+
+
 def ask_gemini_chat(user_text, guest_info=None, sender_phone=None):
-    """Primary conversational AI using Gemini REST; model retries and Groq fallback are generic."""
-    if not GEMINI_API_KEY:
+    """Primary conversational AI using Gemini REST with quota-aware fallback.
+
+    Daily-quota 429s are not retried across every Gemini model. Gemini is put on
+    a circuit breaker and the generic Groq gateway gets the request immediately.
+    """
+    if not GEMINI_API_KEY or _gemini_circuit_open():
         return None
 
     language = guest_language(user_text)
@@ -1626,7 +1687,6 @@ Important:
 - Use the hotel knowledge file as the primary source of hotel facts.
 - Understand natural language; do not require a keyword for every question.
 - Use common sense and conversation context to infer what the guest is asking.
-- You may reason, clarify, recommend, compare, explain, and answer follow-up questions from the hotel data.
 - ALWAYS provide a useful reply. Never stay silent.
 - When the answer is not available in the hotel data, do not invent facts; politely say reception can confirm it.
 - Transactional actions such as placing food orders, changing payment status, assigning rooms, or approving ID verification are handled by the backend.
@@ -1658,36 +1718,52 @@ Important:
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 300},
     }
 
-    transient = {429, 500, 502, 503, 504}
+    transient = {500, 502, 503, 504}
     for model in models:
-        for attempt in range(2):
-            try:
-                res = requests.post(
-                    f"{url_base}/{model}:generateContent",
-                    json=payload,
-                    headers=headers,
-                    timeout=25,
-                )
-                if res.status_code == 200:
-                    data = res.json()
-                    parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-                    text = "".join(str(x.get("text", "")) for x in parts if x.get("text"))
-                    if text.strip():
-                        return text.strip()
-                    print(f"GEMINI EMPTY RESPONSE: {model}", flush=True)
-                    break
+        try:
+            res = requests.post(
+                f"{url_base}/{model}:generateContent",
+                json=payload,
+                headers=headers,
+                timeout=18,
+            )
+            if res.status_code == 200:
+                data = res.json()
+                parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+                text = "".join(str(x.get("text", "")) for x in parts if x.get("text"))
+                if text.strip():
+                    return text.strip()
+                print(f"GEMINI EMPTY RESPONSE: {model}", flush=True)
+                continue
 
-                print(f"GEMINI CHAT ERROR: model={model} status={res.status_code} {res.text[:500]}", flush=True)
-                if res.status_code in transient and attempt == 0:
-                    time.sleep(1.5)
-                    continue
-                break
-            except Exception as exc:
-                print(f"GEMINI CHAT EXCEPTION: model={model} attempt={attempt+1}: {exc}", flush=True)
-                if attempt == 0:
-                    time.sleep(1.0)
-                    continue
-                break
+            body = res.text[:1500]
+            print(f"GEMINI CHAT ERROR: model={model} status={res.status_code} {body}", flush=True)
+
+            if res.status_code == 429:
+                if _gemini_429_is_daily_quota(body):
+                    cooldown = _gemini_daily_reset_cooldown_seconds()
+                    _gemini_set_circuit_breaker(cooldown, "Gemini daily/free-tier quota exhausted")
+                else:
+                    _gemini_set_circuit_breaker(60, "Gemini rate limit exceeded")
+                return None
+
+            if res.status_code in transient:
+                # One short wait, then move to the next configured model.
+                time.sleep(1.0)
+                continue
+
+            # 400/401/403/404 etc. are not transient; do not hammer the API.
+            if res.status_code in {400, 401, 403, 404}:
+                _gemini_set_circuit_breaker(300, f"Gemini HTTP {res.status_code}")
+                return None
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            print(f"GEMINI CHAT NETWORK ERROR: model={model}: {exc}", flush=True)
+            _gemini_set_circuit_breaker(30, "Gemini network timeout/connection failure")
+            # Do not wait through another 25s attempt; Groq should answer the guest.
+            return None
+        except Exception as exc:
+            print(f"GEMINI CHAT EXCEPTION: model={model}: {exc}", flush=True)
+            continue
     return None
 
 
@@ -1697,11 +1773,21 @@ def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
     if reply:
         return reply
     return ask_groq_chat(user_text, guest_info, sender_phone)
+def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
+    """Generic AI gateway: Gemini primary, Groq fallback, never hotel-specific."""
+    reply = ask_gemini_chat(user_text, guest_info, sender_phone)
+    if reply:
+        return reply
+    return ask_groq_chat(user_text, guest_info, sender_phone)
 
 
 def transcribe_audio_gemini(audio_bytes):
-    """Primary voice transcription through Gemini; Groq remains the fallback."""
-    if not GEMINI_API_KEY or not audio_bytes:
+    """Primary voice transcription through Gemini; Groq remains the fallback.
+
+    Quota/network failures open the same circuit breaker used by chat so a
+    voice note cannot burn the remaining free-tier quota across every model.
+    """
+    if not GEMINI_API_KEY or not audio_bytes or _gemini_circuit_open():
         return None
     models = []
     for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
@@ -1730,7 +1816,21 @@ def transcribe_audio_gemini(audio_bytes):
                 if text:
                     return text
             else:
-                print(f"GEMINI STT ERROR: model={model} status={res.status_code} {res.text[:300]}", flush=True)
+                body = res.text[:1000]
+                print(f"GEMINI STT ERROR: model={model} status={res.status_code} {body}", flush=True)
+                if res.status_code == 429:
+                    if _gemini_429_is_daily_quota(body):
+                        _gemini_set_circuit_breaker(_gemini_daily_reset_cooldown_seconds(), "Gemini daily/free-tier quota exhausted (STT)")
+                    else:
+                        _gemini_set_circuit_breaker(60, "Gemini STT rate limit exceeded")
+                    return None
+                if res.status_code in {400, 401, 403, 404}:
+                    _gemini_set_circuit_breaker(300, f"Gemini STT HTTP {res.status_code}")
+                    return None
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            print(f"GEMINI STT NETWORK ERROR: model={model}: {exc}", flush=True)
+            _gemini_set_circuit_breaker(30, "Gemini STT network timeout/connection failure")
+            return None
         except Exception as exc:
             print(f"GEMINI STT EXCEPTION: {exc}", flush=True)
     return None
@@ -3589,6 +3689,134 @@ def _lifecycle_time_window(label, default_start, default_end):
     return int(m.group(1)) * 60 + int(m.group(2)), int(m.group(3)) * 60 + int(m.group(4))
 
 
+def _room_status_column_index(headers):
+    """Find Status even when the sheet header is displayed as `Status (F)` etc."""
+    normalized = [str(h or '').strip().upper() for h in headers]
+    for i, h in enumerate(normalized):
+        if h in {"STATUS", "GUEST STATUS", "BOOKING STATUS"} or h.startswith("STATUS ("):
+            return i
+    return -1
+
+
+def reconcile_lifecycle_from_room_sheet():
+    """Generic Render-side safety net for lifecycle timestamps.
+
+    Apps Script onEdit does not fire for Python/gspread/API edits. This function
+    therefore mirrors the current Rooms status into Lifecycle_Automation and
+    stamps missing IN/OUT times. It is intentionally hotel-agnostic.
+    """
+    try:
+        with state_lock:
+            rooms = list(shared_store.get("rooms", []))
+            room_headers = list(shared_store.get("room_headers", []))
+            lifecycle = list(shared_store.get("lifecycle_rows", []))
+            lifecycle_headers = list(shared_store.get("lifecycle_headers", []))
+
+        status_idx = _room_status_column_index(room_headers)
+        if status_idx < 0 or not lifecycle_headers:
+            return False
+
+        def idx(names):
+            wanted = {normalize_text(x).replace(" ", "_") for x in names}
+            for i, h in enumerate(lifecycle_headers):
+                if normalize_text(h).replace(" ", "_") in wanted:
+                    return i
+            return -1
+
+        li = {
+            "room": idx(("Room",)),
+            "name": idx(("Guest Name",)),
+            "phone": idx(("Phone",)),
+            "status": idx(("Status",)),
+            "date": idx(("Check_In_Date",)),
+            "in": idx(("CHECK IN TIME",)),
+            "out": idx(("CHECK OUT TIME",)),
+        }
+        required = ("room", "name", "phone", "status", "in", "out")
+        if any(li[k] < 0 for k in required):
+            return False
+
+        # Read/write only when necessary. This also repairs a lifecycle tab that
+        # exists but has lost a row after a Render restart.
+        client = get_gspread_client()
+        if not client:
+            return False
+        sh = client.open_by_key(SHEET_ID)
+        life = sh.worksheet("Lifecycle_Automation")
+        live_values = life.get_all_values()
+        headers = [str(x).strip() for x in (live_values[0] if live_values else lifecycle_headers)]
+        hmap = {normalize_text(h).replace(" ", "_"): i + 1 for i, h in enumerate(headers) if h}
+
+        room_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") == "room"), 0)
+        name_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") in {"guest_name_(d)", "guest_name", "guest"}), 3)
+        phone_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") in {"phone_(e)", "phone", "whatsapp", "mobile"}), 4)
+        date_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") == "check_in_date"), -1)
+
+        existing = {}
+        for r, row in enumerate(live_values[1:], start=2):
+            room = clean_room(row[hmap.get("room", 1) - 1] if len(row) >= hmap.get("room", 1) else "")
+            phone = clean_phone(row[hmap.get("phone", 3) - 1] if len(row) >= hmap.get("phone", 3) else "")
+            if room and phone:
+                existing[f"{phone}:{room}"] = (r, row)
+
+        now = now_ist()
+        changed = False
+        for room_row in rooms:
+            room = clean_room(room_row[room_col] if len(room_row) > room_col else "")
+            phone = clean_phone(room_row[phone_col] if len(room_row) > phone_col else "")
+            status = str(room_row[status_idx] if len(room_row) > status_idx else "").strip().upper()
+            name = str(room_row[name_col] if len(room_row) > name_col else "Guest").strip() or "Guest"
+            if not room or not phone or not status:
+                continue
+            key = f"{phone}:{room}"
+            rec = existing.get(key)
+            if not rec:
+                row_number = max(life.get_last_row() + 1, 2)
+                life.append_row([room, name, phone, status, room_row[date_col] if date_col >= 0 and len(room_row) > date_col else "", "", "", "", "", "", "", "", "", "", ""])
+                existing[key] = (row_number, life.getRange(row_number, 1, 1, 15).getDisplayValues()[0])
+                rec = existing[key]
+                changed = True
+            row_number, row = rec
+            previous_status = str(row[li["status"]] if len(row) > li["status"] else "").strip().upper()
+            is_in = "IN" in status and "OUT" not in status
+            is_out = "OUT" in status
+            old_in = str(row[li["in"]] if len(row) > li["in"] else "").strip()
+            old_out = str(row[li["out"]] if len(row) > li["out"] else "").strip()
+
+            # Keep identity/status/date current.
+            life.getRange(row_number, li["room"] + 1).setValue(room)
+            life.getRange(row_number, li["name"] + 1).setValue(name)
+            life.getRange(row_number, li["phone"] + 1).setValue(phone)
+            life.getRange(row_number, li["status"] + 1).setValue(status)
+            if date_col >= 0 and li["date"] >= 0 and len(room_row) > date_col:
+                life.getRange(row_number, li["date"] + 1).setValue(room_row[date_col])
+
+            transitioned_in = is_in and previous_status and not ("IN" in previous_status and "OUT" not in previous_status)
+            transitioned_out = is_out and previous_status and not ("OUT" in previous_status)
+            if is_in and (not old_in or transitioned_in):
+                life.getRange(row_number, li["in"] + 1).setValue(now)
+                life.getRange(row_number, li["out"] + 1).clearContent()
+                # Reset all proactive markers for a genuinely new stay.
+                marker_names = ("WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT", "LUNCH SENT", "AARTI SENT", "DINNER SENT", "CHECKOUT SENT")
+                for marker in marker_names:
+                    keym = normalize_text(marker).replace(" ", "_")
+                    col = hmap.get(keym)
+                    if col:
+                        life.getRange(row_number, col).clearContent()
+                changed = True
+            elif is_out and (not old_out or transitioned_out):
+                life.getRange(row_number, li["out"] + 1).setValue(now)
+                checkout_col = hmap.get("CHECKOUT_SENT")
+                if checkout_col:
+                    life.getRange(row_number, checkout_col).clearContent()
+                changed = True
+
+        return changed
+    except Exception as exc:
+        print("LIFECYCLE PYTHON RECONCILE ERROR:", exc, flush=True)
+        return False
+
+
 def monitor_guest_status_lifecycle():
     """
     Guest lifecycle automation whose source of truth is the Google Sheet.
@@ -3603,6 +3831,10 @@ def monitor_guest_status_lifecycle():
     while True:
         try:
             fetch_sheet_data_sync()
+            # Apps Script simple onEdit does not fire for API/gspread changes.
+            # Reconcile here so timestamps/notifications still work after a Render restart.
+            if reconcile_lifecycle_from_room_sheet():
+                fetch_sheet_data_sync()
             current = now_ist()
             today = current.strftime("%Y-%m-%d")
             hour = current.hour

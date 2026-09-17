@@ -167,6 +167,136 @@ The bot may generate Google Maps search links from the "Maps:" query for a place
 
 
 ==================================================
+HARIDWAR VERIFIED GUIDE & STORIES
+==================================================
+# HISTORY = documented/officially sourced information
+# TRADITION / PAURANIK KATHA = religious/traditional account
+# Never present a traditional belief as proven history.
+
+PLACES
+
+Place: Har Ki Pauri
+Type: Ghat / Pilgrimage
+Category: Ganga
+Description: Famous Haridwar pilgrimage ghat and principal site associated with the evening Ganga Aarti.
+Aarti Guidance: Reach around 5:15 PM.
+Maps: https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Mansa Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Famous hilltop pilgrimage temple associated with Bilwa Tirtha tradition.
+Maps: https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+Story Label: TRADITION
+
+Place: Chandi Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Famous temple on Neel Parvat and an important Haridwar pilgrimage destination.
+Maps: https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+Story Label: TRADITION
+
+Place: Bilwa Tirtha
+Type: Tirtha
+Category: Pilgrimage
+Description: Traditional sacred area associated with Mansa Devi.
+Maps: https://www.google.com/maps/search/?api=1&query=Bilwa+Tirtha+Haridwar
+Story Label: TRADITION
+
+Place: Neel Parvat
+Type: Sacred Hill
+Category: Pilgrimage
+Description: Sacred hill associated with Chandi Devi Temple.
+Maps: https://www.google.com/maps/search/?api=1&query=Neel+Parvat+Haridwar
+Story Label: TRADITION
+
+Place: Kankhal
+Type: Pilgrimage Area
+Category: History + Tradition
+Description: Important Haridwar religious area associated with Daksha Mahadev Temple.
+Maps: https://www.google.com/maps/search/?api=1&query=Kankhal+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Daksha Mahadev Temple
+Type: Temple
+Category: Shiva / Pauranik
+Description: Kankhal temple associated with the traditional Daksha Yajna and Sati story.
+Maps: https://www.google.com/maps/search/?api=1&query=Daksha+Mahadev+Temple+Kankhal+Haridwar
+Story Label: PAURANIK KATHA
+
+Place: Maya Devi Temple
+Type: Temple
+Category: Shakti / Pilgrimage
+Description: Important ancient religious site of Haridwar.
+Maps: https://www.google.com/maps/search/?api=1&query=Maya+Devi+Temple+Haridwar
+Story Label: HISTORY + TRADITION
+
+Place: Sapt Rishi Ashram
+Type: Ashram
+Category: Spiritual
+Description: Spiritual site associated with the traditional story of the seven rishis.
+Maps: https://www.google.com/maps/search/?api=1&query=Sapt+Rishi+Ashram+Haridwar
+Story Label: TRADITION
+
+Place: Neel Dhara Pakshi Vihar
+Type: Nature
+Category: Birdwatching / Riverside
+Description: Riverside nature spot in the Haridwar area.
+Maps: https://www.google.com/maps/search/?api=1&query=Neel+Dhara+Pakshi+Vihar+Haridwar
+Story Label: GENERAL
+
+Place: Bilkeshwar Mahadev
+Type: Temple
+Category: Shiva
+Description: Local Haridwar Shiva temple; use as a local religious destination unless stronger verified history is added.
+Maps: https://www.google.com/maps/search/?api=1&query=Bilkeshwar+Mahadev+Haridwar
+Story Label: LOCAL TRADITION
+
+Place: Neeleshwar Mahadev
+Type: Temple
+Category: Shiva
+Description: Local Haridwar Shiva temple; use as a local religious destination unless stronger verified history is added.
+Maps: https://www.google.com/maps/search/?api=1&query=Neeleshwar+Mahadev+Haridwar
+Story Label: LOCAL TRADITION
+
+STORY CARDS
+
+Story: Bhagirath and Maa Ganga
+Type: PAURANIK KATHA
+Opening: In Hindu tradition, King Bhagirath is remembered for his penance to bring the sacred Ganga to earth.
+Rule: Present this as a traditional religious story, not proven history.
+Style: Short, respectful, family-friendly.
+
+Story: Har Ki Pauri
+Type: HISTORY + TRADITION
+Opening: Har Ki Pauri is one of Haridwar's most famous ghats and the focus of the evening Ganga Aarti.
+Rule: Describe Raja Vikramaditya as a traditional/local association when mentioned.
+Style: Short, respectful.
+
+Story: Daksha and Sati
+Type: PAURANIK KATHA
+Opening: Kankhal is linked in Hindu tradition with the story of Daksha Yajna and Sati.
+Rule: Present as a pauranik/traditional story.
+Style: Short, respectful.
+
+Story: Kumbh in Haridwar
+Type: HISTORY + TRADITION
+Opening: Haridwar is one of the major Kumbh Mela pilgrimage locations in India.
+Rule: Separate documented festival history from religious belief.
+Style: Short, informative.
+
+AI GUIDE BEHAVIOUR
+- Do not wait for the guest to ask for a story.
+- When conversation touches Ganga Aarti, Har Ki Pauri, Maa Ganga, Mansa Devi, Chandi Devi, Shiva temples, pilgrimage or sightseeing, naturally add one relevant short fact/story or offer one.
+- Keep proactive discovery to one short sentence unless the guest asks for the full story.
+- When the guest asks what else to visit, recommend 2-4 suitable places using this file.
+- When the guest gives available time, build a practical mini-itinerary using only configured places and timings.
+- Use the configured Maps URL when directions/location are requested.
+- Never invent timings, distances, prices or historical facts.
+- If a detail is missing, say reception can confirm it.
+
+==================================================
 PHOTOS & MEDIA
 ==================================================
 # Replace these public HTTPS URLs when hotel photos change.
@@ -187,17 +317,17 @@ Family Suite:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/im
 ==================================================
 GOOGLE MAPS
 ==================================================
-Hotel:
-https://maps.google.com/?q=29.9530,78.1700
+Hotel:https://maps.google.com/?q=29.9530,78.1700
 
-Har Ki Pauri:
-https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
 
-Mansa Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+Har Ki Pauri:https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
 
-Chandi Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+
+Mansa Devi Temple:https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+
+
+Chandi Devi Temple:https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
+
 
 ==================================================
 LOCAL GUIDE RULES

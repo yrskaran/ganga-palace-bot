@@ -9,9 +9,6 @@ HOTEL DATA — HOTEL GANGA VIEW
 - Check-out: 11:00 AM
 - Reception / Front Desk: 24/7
 - Amenities: Free on-site parking, complimentary Wi-Fi in all rooms
-- Cuisine: Pure Vegetarian
-- Wi-Fi Name: Ganga@2026
-- Wi-Fi Password: Ganga@2026
 - Distance to Har Ki Pauri: Approx. 1.5 km
 
 ==================================================
@@ -117,17 +114,9 @@ LOCAL GUIDE BEHAVIOUR:
 ==================================================
 - After check-in: send a warm welcome with guest name and room number.
 - 30 minutes after check-in: ask whether everything is comfortable and offer towel, soap, cleaning or general help.
-
-# Lifecycle timing windows are hotel-configurable. Format: HH:MM-HH:MM
-Breakfast Reminder Window: 08:00-10:59
-Lunch Reminder Window: 13:00-15:59
-Ganga Aarti Reminder Window: 17:00-17:59
-Dinner Reminder Window: 19:00-21:59
 - Breakfast prompt: send between 8:00 AM and 10:00 AM.
 - Lunch prompt: send between 1:00 PM and 3:00 PM.
 - Ganga Aarti reminder: send between 5:00 PM and 6:00 PM.
-- Special Evening Reminder: 🙏 *Har Har Gange, {name} ji!*
-Aaj Har Ki Pauri Sandhya Ganga Aarti hai. 5:15 PM tak nikalna convenient rahega. Location chahiye ho to *guide* likhein. 🌺
 - Dinner prompt: send between 7:00 PM and 9:00 PM.
 - After check-out: send a thank-you / safe-journey message.
 - Do not send the same lifecycle reminder more than once for the same guest, room and date.
@@ -324,14 +313,6 @@ Super Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/ma
 
 Family Suite:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
 
-
-==================================================
-PHOTO BEHAVIOUR
-==================================================
-- "Room photos" or a broad room-photo request: show only the configured room-category options, not individual physical rooms.
-- When a guest selects a room category: send the configured hotel Exterior photo first, then the selected category photo.
-- When a guest asks for the hotel front/exterior: send only the Exterior photo.
-- Add or replace photo URLs here without changing Python code.
 
 ==================================================
 GOOGLE MAPS

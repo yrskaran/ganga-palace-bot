@@ -26,6 +26,13 @@ RULES:
 - If guest asks for a better/premium/Ganga-view/family room, recommend the relevant premium category.
 
 ==================================================
+ORDER CANCELLATION WINDOW
+==================================================
+- Guest order cancellation window: 5 minutes after order confirmation.
+- Within this window, the AI receptionist can cancel the order directly; kitchen staff do not need to open Google Sheets for cancellation.
+- After 5 minutes, do not promise cancellation; explain that the order may already be processing.
+
+==================================================
 3. HOTEL FOOD MENU & RATES — AUTHORITATIVE MENU
 ==================================================
 The following is the hotel kitchen's current pure-vegetarian room-service menu. Only these listed items may be ordered.
@@ -302,33 +309,17 @@ PHOTOS & MEDIA
 # Replace these public HTTPS URLs when hotel photos change.
 # Do not change Python code just to change a photo.
 
-Exterior:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
-
-
-Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
-
-
-Super Deluxe Room:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
-
-
-Family Suite:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
-
-
+Exterior: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/main.jpg
+Deluxe Room: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/room1.jpg
+Super Deluxe Room: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/deluxe.jpg
+Family Suite: https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/images/4bed.jpg
 ==================================================
 GOOGLE MAPS
 ==================================================
-Hotel:
-https://maps.google.com/?q=29.9530,78.1700
-
-Har Ki Pauri:
-https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
-
-Mansa Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
-
-Chandi Devi Temple:
-https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
-
+Hotel: https://maps.google.com/?q=29.9530,78.1700
+Har Ki Pauri: https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+Mansa Devi Temple: https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
+Chandi Devi Temple: https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
 ==================================================
 LOCAL GUIDE RULES
 ==================================================

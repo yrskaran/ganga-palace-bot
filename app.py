@@ -56,6 +56,8 @@ SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
+OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
+OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
 RENDER_EXTERNAL_URL = os.getenv(
     "RENDER_EXTERNAL_URL",
@@ -65,7 +67,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V4-FINAL"
+APP_VERSION = "HOTEL-AI-GENERIC-V6.2-OWNER-REVENUE-FINAL"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 
 # -----------------------------
@@ -87,6 +89,10 @@ shared_store = {
     "staff_headers": [],
     "notification_messages": [],
     "notification_headers": [],
+    "complaint_rows": [],
+    "complaint_headers": [],
+    "payment_history_rows": [],
+    "payment_history_headers": [],
     "lifecycle_rows": [],
     "lifecycle_headers": [],
     "last_synced": 0,
@@ -773,9 +779,10 @@ def attach_google_maps_links(text):
     """Convert AI's private [[MAP:...]] markers into guest-safe Google Maps links."""
     def repl(match):
         query = match.group(1).strip()
-        link = build_google_maps_link(query)
-        return f"\nGoogle Maps: {link}" if link else ""
-    return re.sub(r"\\[\\[MAP:\\s*(.*?)\\s*\\]\\]", repl, str(text or ""))
+        # Prefer the hotel's configured Maps URL; otherwise generate a safe search link.
+        link = get_hotel_map(query) or build_google_maps_link(query)
+        return f"\n📍 {query}: {link}" if link else ""
+    return re.sub(r"\[\[MAP:\s*(.*?)\s*\]\]", repl, str(text or ""))
 
 
 def verify_meta_signature(raw_body, signature_header):
@@ -840,18 +847,23 @@ def fetch_sheet_data_sync():
         except Exception:
             staff = []
 
-        # Notification_Messages is optional so older spreadsheets keep working.
-        notifications = []
-        try:
-            notifications = sh.worksheet("Notification_Messages").get_all_values()
-        except Exception:
-            notifications = []
-
         lifecycle = []
         try:
             lifecycle = sh.worksheet("Lifecycle_Automation").get_all_values()
         except Exception:
             lifecycle = []
+
+        complaints = []
+        try:
+            complaints = sh.worksheet("Complaints").get_all_values()
+        except Exception:
+            complaints = []
+
+        payment_history = []
+        try:
+            payment_history = sh.worksheet("Payment_History").get_all_values()
+        except Exception:
+            payment_history = []
 
         with state_lock:
             shared_store["room_headers"] = [str(x).strip() for x in (rooms[0] if rooms else [])]
@@ -860,10 +872,12 @@ def fetch_sheet_data_sync():
             shared_store["kitchen_orders"] = kitchen[1:] if len(kitchen) > 1 else []
             shared_store["staff_headers"] = [str(x).strip() for x in (staff[0] if staff else [])]
             shared_store["staff_roster"] = staff[1:] if len(staff) > 1 else []
-            shared_store["notification_headers"] = [str(x).strip() for x in (notifications[0] if notifications else [])]
-            shared_store["notification_messages"] = notifications[1:] if len(notifications) > 1 else []
             shared_store["lifecycle_headers"] = [str(x).strip() for x in (lifecycle[0] if lifecycle else [])]
             shared_store["lifecycle_rows"] = lifecycle[1:] if len(lifecycle) > 1 else []
+            shared_store["complaint_headers"] = [str(x).strip() for x in (complaints[0] if complaints else [])]
+            shared_store["complaint_rows"] = complaints[1:] if len(complaints) > 1 else []
+            shared_store["payment_history_headers"] = [str(x).strip() for x in (payment_history[0] if payment_history else [])]
+            shared_store["payment_history_rows"] = payment_history[1:] if len(payment_history) > 1 else []
             shared_store["last_synced"] = time.time()
 
         return True
@@ -873,67 +887,48 @@ def fetch_sheet_data_sync():
 
 
 # ============================================================
-# EDITABLE GUEST NOTIFICATION MESSAGES
+# AI-GENERATED PROACTIVE GUEST MESSAGES
 # ============================================================
-# Message text is read from the Notification_Messages sheet. The engine only
-# knows stable notification keys and placeholder names; hotel wording stays
-# outside app.py. If the sheet is unavailable, a small generic fallback keeps
-# the receptionist from going silent.
 
-_NOTIFICATION_LANGUAGE_ALIASES = {
-    "english": "English",
-    "hindi": "Hindi",
-    "hinglish": "Hinglish",
-}
+def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
+    """Generate a short proactive guest message from the AI + hotel_data.txt.
 
-
-def _notification_header_map():
-    with state_lock:
-        headers = list(shared_store.get("notification_headers", []))
-    return {normalize_text(h).replace(" ", "_"): i for i, h in enumerate(headers) if str(h).strip()}
-
-def get_notification_message(notification_key, language="english", **values):
-    """Return an editable guest notification from Google Sheets.
-
-    The notification tab contains only receptionist-manageable wording:
-    English, Hindi and Hinglish. Other guest languages remain supported by the
-    AI conversation engine, but proactive fixed messages fall back to English
-    when a matching editable notification is not available.
+    No Notification_Messages tab is required. The event itself is deterministic;
+    the wording and guest language are generated from the current hotel brain.
     """
-    key = str(notification_key or "").strip().upper()
-    lang_col = _NOTIFICATION_LANGUAGE_ALIASES.get(str(language or "english").lower(), "English")
-    with state_lock:
-        headers = list(shared_store.get("notification_headers", []))
-        rows = list(shared_store.get("notification_messages", []))
-    hm = _notification_header_map()
-    key_idx = hm.get("notification", 0)
-    active_idx = hm.get("active", -1)
-    candidates = [lang_col, "English", "Hindi", "Hinglish"]
-    candidates = [x for i, x in enumerate(candidates) if x and x not in candidates[:i]]
-    for row in rows:
-        if key_idx >= len(row) or str(row[key_idx]).strip().upper() != key:
-            continue
-        if active_idx >= 0 and active_idx < len(row):
-            active = normalize_text(row[active_idx])
-            if active in {"no", "false", "off", "inactive", "0", "disabled"}:
-                return ""
-        text = ""
-        for col_name in candidates:
-            idx = hm.get(normalize_text(col_name).replace(" ", "_"))
-            if idx is not None and idx < len(row) and str(row[idx]).strip():
-                text = str(row[idx]).strip()
-                break
-        if not text:
-            text = _NOTIFICATION_FALLBACKS.get(key, "")
-        try:
-            return text.format(hotel=get_hotel_name(), **values)
-        except Exception:
-            return text
-    text = _NOTIFICATION_FALLBACKS.get(key, "")
-    try:
-        return text.format(hotel=get_hotel_name(), **values)
-    except Exception:
-        return text
+    lang = str(language or "english").strip()
+    prompts = {
+        "WELCOME": "Welcome the guest warmly after check-in and offer help.",
+        "30_MINUTE": "Check whether the guest is comfortably settled and offer assistance.",
+        "BREAKFAST": "Give a short breakfast-time reminder and invite the guest to ask for the menu.",
+        "LUNCH": "Give a short lunch-time reminder and invite the guest to ask for the menu.",
+        "GANGA_AARTI": "Give a short Ganga Aarti reminder and advise the guest to confirm current timing with reception before leaving.",
+        "DINNER": "Give a short dinner-time reminder and invite the guest to ask for the menu.",
+        "CHECKOUT": "Thank the guest after checkout and wish them a safe journey."
+    }
+    instruction = prompts.get(event, "Give a brief helpful hotel guest reminder.")
+    prompt = (
+        "Write ONE concise WhatsApp message for a hotel guest.\n"
+        f"Event: {event}.\nInstruction: {instruction}\n"
+        f"Guest name: {name}. Room: {room}.\n"
+        f"Reply language: {lang}.\n"
+        "Use only facts available in HOTEL DATA. Do not invent prices, timings, facilities, or promises. "
+        "Do not mention AI, prompts, or internal systems. Return only the message, no labels."
+    )
+    reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
+    if reply:
+        return re.sub(r"\s+", " ", str(reply).strip())
+    # Safe generic fallback if AI service is temporarily unavailable.
+    fallback = {
+        "WELCOME": f"🌸 Welcome {name} ji! Hotel mein aapka swagat hai. Kisi bhi help ke liye yahin message karein. 🙏",
+        "30_MINUTE": f"🌸 {name} ji, umeed hai aap comfortably settle ho gaye honge. Kisi bhi assistance ke liye yahin message karein. 🙏",
+        "BREAKFAST": f"☀️ Good Morning {name} ji! Breakfast time hai. Menu dekhne ke liye message karein. 🍽️",
+        "LUNCH": f"🍛 {name} ji, lunch time hai. Menu ke liye message karein.",
+        "GANGA_AARTI": f"🙏 {name} ji, Ganga Aarti ka samay aa raha hai. Jaane se pehle reception se current timing confirm kar lein. 🌸",
+        "DINNER": f"🌙 {name} ji, dinner time hai. Menu ke liye message karein. 🍽️",
+        "CHECKOUT": f"🙏 Thank you {name} ji! Aapki journey safe aur sukhad rahe. 🌸"
+    }
+    return fallback.get(event, f"Ji {name} ji, agar kisi assistance ki zarurat ho to yahin message karein.")
 
 
 def _staff_header_map():
@@ -1456,6 +1451,10 @@ def whatsapp_request(payload):
 
 
 def send_whatsapp_message(to_number, text):
+    # AI may use private [[MAP:...]] markers. Never expose those markers to guests.
+    text = attach_google_maps_links(str(text or ""))
+    text = re.sub(r"\[\[MAP:\s*.*?\]\]", "", text, flags=re.I)
+    text = re.sub(r"\[\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]\]", "", text, flags=re.I)
     number = format_whatsapp_number(to_number)
     if not number or not text:
         return False
@@ -1767,12 +1766,6 @@ Important:
     return None
 
 
-def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
-    """Generic AI gateway: Gemini primary, Groq fallback, never hotel-specific."""
-    reply = ask_gemini_chat(user_text, guest_info, sender_phone)
-    if reply:
-        return reply
-    return ask_groq_chat(user_text, guest_info, sender_phone)
 def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
     """Generic AI gateway: Gemini primary, Groq fallback, never hotel-specific."""
     reply = ask_gemini_chat(user_text, guest_info, sender_phone)
@@ -2360,8 +2353,268 @@ def menu_message(include_prices=True):
 
 
 # ============================================================
+# COMPLAINT TRACKING / 30-MINUTE FEEDBACK LOOP
+# ============================================================
+
+COMPLAINT_SHEET_NAME = "Complaints"
+COMPLAINT_HEADERS = [
+    "Complaint ID", "Created At", "Room", "Guest Name", "Phone",
+    "Complaint", "Category", "Assigned Staff", "Staff Status", "Status",
+    "Follow-up Due", "Feedback", "Resolved At", "Resolution", "Last Updated"
+]
+
+
+def _complaint_header_map(headers=None):
+    with state_lock:
+        hs = list(headers if headers is not None else shared_store.get("complaint_headers", []))
+    return {re.sub(r"[^a-z0-9]+", "_", normalize_text(h)).strip("_"): i for i, h in enumerate(hs) if str(h).strip()}
+
+
+def _complaint_row_map(row, headers=None):
+    hm = _complaint_header_map(headers)
+    return {k: (row[i] if i < len(row) else "") for k, i in hm.items()}
+
+
+def _complaint_id():
+    return "CMP-" + now_ist().strftime("%Y%m%d-%H%M%S") + "-" + str(random.randint(100,999))
+
+
+def _complaint_role(text):
+    t = normalize_text(text)
+    if any(x in t for x in ["food", "khana", "chai", "coffee", "breakfast", "lunch", "dinner", "order", "cold", "thanda", "taste"]):
+        return "Kitchen"
+    if any(x in t for x in ["wifi", "internet", "ac", "air conditioner", "tv", "remote", "light", "fan", "geyser", "water heater", "charger", "power", "electric"]):
+        return "Maintenance"
+    if any(x in t for x in ["towel", "soap", "safai", "dirty", "ganda", "clean", "bedsheet", "pillow", "blanket", "room cleaning"]):
+        return "Housekeeping"
+    return "Reception"
+
+
+def _append_complaint(room, guest_name, phone, complaint_text):
+    try:
+        client = get_gspread_client()
+        if not client:
+            return None
+        sh = client.open_by_key(SHEET_ID)
+        try:
+            sheet = sh.worksheet(COMPLAINT_SHEET_NAME)
+        except Exception:
+            sheet = sh.add_worksheet(title=COMPLAINT_SHEET_NAME, rows=1000, cols=len(COMPLAINT_HEADERS))
+            sheet.getRange(1,1,1,len(COMPLAINT_HEADERS)).setValues([COMPLAINT_HEADERS]) if False else None
+        values = sheet.get_all_values()
+        headers = values[0] if values else COMPLAINT_HEADERS
+        if not values:
+            sheet.append_row(COMPLAINT_HEADERS)
+            headers = COMPLAINT_HEADERS
+        hm = _complaint_header_map(headers)
+        cid = _complaint_id()
+        created = now_ist()
+        category = _complaint_role(complaint_text)
+        assigned = find_on_duty_staff(room, category)
+        assigned_name = assigned.get("name", "") if assigned else ""
+        follow = created + timedelta(minutes=30)
+        row = [""] * len(headers)
+        vals = {
+            "complaint_id": cid, "created_at": created.strftime("%d-%b-%Y %I:%M %p"),
+            "room": room, "guest_name": guest_name or "Guest", "phone": phone,
+            "complaint": complaint_text, "category": category, "assigned_staff": assigned_name,
+            "staff_status": "SENT" if assigned else "WAITING", "status": "OPEN",
+            "follow_up_due": follow.strftime("%d-%b-%Y %I:%M %p"), "feedback": "",
+            "resolved_at": "", "resolution": "", "last_updated": created.strftime("%d-%b-%Y %I:%M %p")
+        }
+        for key, value in vals.items():
+            if key in hm: row[hm[key]] = value
+        sheet.append_row(row)
+        return {"id": cid, "category": category, "assigned": assigned, "follow_up_due": follow, "row_number": sheet.get_last_row()}
+    except Exception as exc:
+        print("COMPLAINT CREATE ERROR:", exc, flush=True)
+        return None
+
+
+def _find_active_complaint(phone):
+    p = clean_phone(phone)
+    with state_lock:
+        headers = list(shared_store.get("complaint_headers", []))
+        rows = list(shared_store.get("complaint_rows", []))
+    if not headers or not rows:
+        return None
+    hm = _complaint_header_map(headers)
+    candidates=[]
+    for i,row in enumerate(rows,start=2):
+        m=_complaint_row_map(row,headers)
+        if clean_phone(m.get("phone","")) != p: continue
+        status=normalize_text(m.get("status",""))
+        # Only a complaint explicitly waiting for the 30-minute feedback question
+        # may consume a short YES/NO-style guest message as feedback. An OPEN
+        # complaint can contain words like "nahi" as part of a new complaint.
+        if status == "waiting feedback":
+            candidates.append((i,m))
+    return candidates[-1] if candidates else None
+
+
+def _update_complaint(row_number, updates):
+    try:
+        client=get_gspread_client()
+        if not client: return False
+        sh=client.open_by_key(SHEET_ID); sheet=sh.worksheet(COMPLAINT_SHEET_NAME)
+        headers=sheet.get_all_values()[0] if sheet.get_all_values() else COMPLAINT_HEADERS
+        hm=_complaint_header_map(headers)
+        for key,value in updates.items():
+            idx=hm.get(re.sub(r"[^a-z0-9]+", "_", normalize_text(key)).strip("_"))
+            if idx is not None: sheet.update_cell(row_number, idx + 1, value)
+        return True
+    except Exception as exc:
+        print("COMPLAINT UPDATE ERROR:",exc,flush=True); return False
+
+
+def _handle_complaint_feedback(phone, text):
+    active=_find_active_complaint(phone)
+    if not active: return False
+    row_number, rec=active
+    # AI can understand the conversation; these confirmations are only the final safety gate.
+    norm_feedback = normalize_text(text)
+    yes=is_yes(text) or bool(re.search(r"\b(yes|haan|ha|ji haan|ab theek|theek ho gaya|solve ho gaya|solved|ho gaya|done)\b", norm_feedback))
+    no=is_no(text) or bool(re.search(r"\b(no|nahi|nahin|abhi bhi|still|not solved|same problem|problem hai|nahi hua)\b", norm_feedback))
+    if not yes and not no: return False
+    now=now_ist().strftime("%d-%b-%Y %I:%M %p")
+    if yes:
+        ok = _update_complaint(row_number,{"Status":"RESOLVED","Feedback":"YES","Resolved At":now,"Resolution":"Guest confirmed the problem is solved.","Last Updated":now})
+        if ok:
+            send_whatsapp_message(phone,"Thank you for confirming. 🙏 Your complaint has been marked as resolved. If anything else is needed, just message us.")
+        else:
+            send_whatsapp_message(phone,"Ji, aapki confirmation receive ho gayi hai. Sheet update mein dikkat aayi, isliye reception ko follow-up ke liye alert kar raha hoon.")
+            send_staff_alert(room=rec.get("room",""),role="Reception",message=f"⚠️ Complaint resolution update failed\nComplaint: {rec.get('complaint','')}\nGuest: {rec.get('guest_name','Guest')}",fallback_phone=STAFF_PHONE)
+    else:
+        ok = _update_complaint(row_number,{"Status":"REOPENED","Feedback":"NO","Resolution":"Guest reported that the problem is still not solved.","Last Updated":now,"Follow-up Due":now})
+        guest=get_guest_stay_status(phone) or {}
+        send_staff_alert(room=guest.get("room",rec.get("room","")),role=rec.get("category","Reception"),message=(f"COMPLAINT REOPENED\nRoom: {guest.get('room',rec.get('room',''))}\nGuest: {guest.get('name',rec.get('guest_name','Guest'))}\nProblem still not solved.\nComplaint: {rec.get('complaint','')}\nPhone: +{phone}"),fallback_phone=STAFF_PHONE)
+        send_whatsapp_message(phone,"Ji, samajh gaya. 🙏 Maine complaint dobara staff ko priority ke saath bhej di hai.")
+    fetch_sheet_data_sync()
+    return True
+
+
+def process_complaint_followups():
+    try:
+        with state_lock:
+            headers=list(shared_store.get("complaint_headers",[])); rows=list(shared_store.get("complaint_rows",[]))
+        if not headers or not rows: return
+        hm=_complaint_header_map(headers); now=now_ist()
+        for row_number,row in enumerate(rows,start=2):
+            rec=_complaint_row_map(row,headers)
+            status=normalize_text(rec.get("status",""))
+            if status not in {"open","reopened"}: continue
+            due=_parse_sheet_datetime(rec.get("follow_up_due",""))
+            if not due or now < due: continue
+            phone=clean_phone(rec.get("phone",""))
+            if not phone: continue
+            sent = send_whatsapp_message(phone,"Namaste ji 🙏 Aapne jo problem batayi thi, kya ab problem solve ho gayi hai? Kripya *Haan* ya *Nahi* bata dein.")
+            if sent:
+                stamp=now.strftime("%d-%b-%Y %I:%M %p")
+                _update_complaint(row_number,{"Status":"WAITING FEEDBACK","Feedback":"PENDING","Last Updated":stamp})
+            else:
+                print(f"COMPLAINT FOLLOW-UP SEND FAILED: {phone} row={row_number}; will retry", flush=True)
+    except Exception as exc:
+        print("COMPLAINT FOLLOW-UP ERROR:",exc,flush=True)
+
+
+# ============================================================
 # SERVICE / COMPLAINT ROUTING
 # ============================================================
+
+def _parse_ai_json(text):
+    """Extract one JSON object from an AI response without trusting prose around it."""
+    raw = str(text or "").strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.I | re.S).strip()
+    try:
+        obj = json.loads(raw)
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        m = re.search(r"\{.*\}", raw, flags=re.S)
+        if not m:
+            return {}
+        try:
+            obj = json.loads(m.group(0))
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+
+
+def classify_guest_intent(text, guest_info=None, sender_phone=None):
+    """AI semantic intent gate for ambiguous service complaints/cancellations.
+
+    This is deliberately generic: the hotel-specific facts remain in hotel_data.txt.
+    Deterministic rules handle obvious cases; AI handles natural/weird wording.
+    """
+    prompt = f"""
+Classify this hotel guest message for backend routing.
+Return ONLY one JSON object with exactly these keys:
+{{"intent":"COMPLAINT|ORDER_CANCEL|ORDER_SELECTION|ORDER|GENERAL|RECEPTION","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|RECEPTION|NONE","confidence":0.0}}
+
+Guest message: {text}
+Guest context: {guest_info or {}}
+Recent conversation context is available to you. Resolve references such as "that", "it", "same one", "don't send it".
+Rules:
+- COMPLAINT means the guest reports something wrong, missing, damaged, dirty, unsafe, uncomfortable, delayed, or unsatisfactory, even if they never use the word complaint/problem.
+- Examples include pests/animals in room, smell, noise, leaking water, AC not cooling, WiFi failing, dirty room, missing item, cold/wrong food, or dissatisfaction with delivered service.
+- ORDER_CANCEL means the guest wants an existing/pending order stopped or withdrawn, including natural language such as "leave it", "don't send that", "I changed my mind".
+- Do not classify a normal request/question as COMPLAINT.
+- category should be the operational team that should handle a complaint.
+"""
+    try:
+        reply = ask_ai_chat(prompt, guest_info or {}, sender_phone)
+        obj = _parse_ai_json(reply)
+        intent = str(obj.get("intent", "")).strip().upper()
+        category = str(obj.get("category", "NONE")).strip().upper()
+        try:
+            confidence = float(obj.get("confidence", 0))
+        except Exception:
+            confidence = 0.0
+        if intent in {"COMPLAINT", "ORDER_CANCEL", "ORDER_SELECTION", "ORDER", "GENERAL", "RECEPTION"}:
+            if category not in {"HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "RECEPTION"}:
+                category = "NONE"
+            return {"intent": intent, "category": category, "confidence": max(0.0, min(1.0, confidence))}
+    except Exception as exc:
+        print("AI INTENT ERROR:", exc, flush=True)
+    return {"intent": "", "category": "NONE", "confidence": 0.0}
+
+
+def _recent_pending_kitchen_order(room, max_minutes=5):
+    """Recover the latest pending order from Sheets if Render lost in-memory order state."""
+    try:
+        with state_lock:
+            rows = list(shared_store.get("kitchen_orders", []))
+        now = now_ist()
+        candidates = []
+        for row in rows:
+            if len(row) < 6 or clean_room(row[1]) != clean_room(room):
+                continue
+            if "PENDING" not in str(row[5]).upper():
+                continue
+            raw = str(row[0] or "").strip()
+            dt = None
+            for fmt in ("%d-%b %I:%M %p", "%d-%b-%Y %I:%M %p", "%d-%b-%Y %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    if dt.tzinfo is None:
+                        dt = IST.localize(dt) if hasattr(IST, "localize") else dt.replace(tzinfo=IST)
+                    if fmt == "%d-%b %I:%M %p":
+                        dt = dt.replace(year=now.year)
+                    break
+                except Exception:
+                    continue
+            if not dt:
+                continue
+            age = (now - dt.astimezone(IST)).total_seconds()
+            if -120 <= age <= max_minutes * 60:
+                candidates.append((dt, str(row[3]).strip()))
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            dt, order = candidates[0]
+            return {"order": order, "time": dt.timestamp(), "source": "sheet"}
+    except Exception as exc:
+        print("RECENT KITCHEN ORDER LOOKUP ERROR:", exc, flush=True)
+    return None
+
 
 def looks_like_complaint(text):
     t = normalize_text(text)
@@ -2369,7 +2622,8 @@ def looks_like_complaint(text):
         "complaint", "problem", "issue", "dikkat", "kharab",
         "thandi", "cold", "late", "nahi aaya", "wrong order",
         "dirty", "ganda", "safai nahi", "towel nahi",
-        "soap nahi", "remote nahi", "mouse", "help"
+        "soap nahi", "remote nahi", "mouse", "help", "not working",
+        "not working", "connect nahi", "nahi chal", "kaam nahi", "no internet"
     ]
     return any(w in t for w in complaint_words)
 
@@ -2779,62 +3033,150 @@ def process_and_reply(message, sender_phone, msg_type):
     )
 
     # ========================================================
-    # 1. ACTIVE ORDER CANCELLATION
+    # ACTIVE COMPLAINT FEEDBACK
     # ========================================================
-    if "cancel" in t and any(x in t for x in ["order", "khana", "food"]):
-        with state_lock:
-            active = active_orders.get(sender_phone)
+    if _handle_complaint_feedback(sender_phone, user_text):
+        return
 
+    # ========================================================
+    # 1. ACTIVE ORDER CANCELLATION / CHANGE OF MIND
+    # ========================================================
+    # Understand natural cancellation language from the active-order context.
+    # The guest does not have to say the word "order" or "cancel".
+    # Examples: "chai rehne do", "nahi chahiye", "mat bhejo", "order rok do".
+    with state_lock:
+        active = active_orders.get(sender_phone)
+    if not active and is_inhouse:
+        active = _recent_pending_kitchen_order(guest_info.get("room", ""), max_minutes=30)
+
+    cancellation_phrases = [
+        "cancel", "cancellation", "rehne do", "rehne", "nahi chahiye",
+        "nahin chahiye", "mat bhejo", "mat bhejna", "nahi bhejna",
+        "nahin bhejna", "chhod do", "chodo", "rok do", "rok dena",
+        "order rok", "dont send", "don't send", "no longer want",
+        "change my mind", "change of mind"
+    ]
+    cancellation_intent = bool(active and any(x in t for x in cancellation_phrases))
+    if not cancellation_intent:
+        # Let AI resolve less predictable change-of-mind language, with or without
+        # an in-memory order record. This also lets the bot explain a >5-minute
+        # cancellation safely instead of falling through to a generic reply.
+        cancel_ai = classify_guest_intent(user_text, guest_info, sender_phone)
+        cancellation_intent = cancel_ai.get("intent") == "ORDER_CANCEL" and cancel_ai.get("confidence", 0) >= 0.55
+
+    if cancellation_intent:
+        if not is_inhouse:
+            with state_lock:
+                active_orders.pop(sender_phone, None)
+            send_whatsapp_message(sender_phone, "Ji, room service sirf in-house guests ke liye available hai.")
+            return
         if not active:
-            send_whatsapp_message(
-                sender_phone,
-                "Aapka koi recent active order cancellation ke liye nahi mila."
-            )
+            send_whatsapp_message(sender_phone, "Ji, mujhe aapke room ka koi pending order nahi mil raha jise main cancel kar sakun. 🙏")
             return
 
-        if time.time() - active["time"] > 300:
-            with state_lock:
-                active_orders.pop(sender_phone, None)
-
+        # Cancellation is intentionally limited to 5 minutes from order creation.
+        # The bot writes the cancellation to Kitchen_Orders itself; kitchen staff
+        # do not need to open Sheets just to process the cancellation.
+        order_age_seconds = max(0, time.time() - float(active.get("time", time.time())))
+        cancel_window_minutes = 5
+        if order_age_seconds > cancel_window_minutes * 60:
             send_whatsapp_message(
                 sender_phone,
-                "Order ko 5 minute se zyada ho chuke hain. Cancellation ke liye reception se sampark karein."
+                f"Ji {guest_info['name']} ji, order ko 5 minute se zyada ho gaye hain, isliye main cancellation confirm nahi kar sakta. Kitchen mein processing shuru ho chuki ho sakti hai. 🙏"
             )
-            return
-
-        if is_inhouse:
-            ok = update_kitchen_order_status(
-                guest_info["room"],
-                active["order"],
-                "CANCELLED"
-            )
-
-            if ok:
-                send_staff_alert(
-                    room=guest_info['room'],
-                    role="Kitchen",
-                    message=(
-                        f"ऑर्डर रद्द\nRoom: {guest_info['room']} ({guest_info['name']})\n"
-                        f"Order: {active['order']}"
-                    ),
-                    fallback_phone=KITCHEN_PHONE,
-                )
-                send_whatsapp_message(
-                    sender_phone,
-                    f"Ji {guest_info['name']} ji, aapka order cancel kar diya gaya hai."
-                )
-            else:
-                send_whatsapp_message(
-                    sender_phone,
-                    "Order cancellation sheet me update nahi ho paayi. Kripya reception se confirm karein."
-                )
-
             with state_lock:
                 active_orders.pop(sender_phone, None)
             return
+
+        ok = update_kitchen_order_status(
+            guest_info["room"],
+            active["order"],
+            "CANCELLED"
+        )
+
+        if ok:
+            send_staff_alert(
+                room=guest_info['room'],
+                role="Kitchen",
+                message=(
+                    f"ऑर्डर रद्द\nRoom: {guest_info['room']} ({guest_info['name']})\n"
+                    f"Order: {active['order']}"
+                ),
+                fallback_phone=KITCHEN_PHONE,
+            )
+            send_whatsapp_message(
+                sender_phone,
+                f"Ji {guest_info['name']} ji, samajh gaya. {active['order']} ka order cancel kar diya gaya hai. 🙏"
+            )
+        else:
+            send_whatsapp_message(
+                sender_phone,
+                "Ji, order abhi cancel nahi ho paaya. Kitchen mein order process ho chuka ho sakta hai. Main reception se confirm karwane mein help karta hoon."
+            )
+
+        with state_lock:
+            active_orders.pop(sender_phone, None)
+        return
 
     # ========================================================
-    # 2. CONTEXTUAL FOOD SELECTION
+    # 2. AI SEMANTIC COMPLAINT DETECTION
+    # ========================================================
+    # Obvious complaints are fast-pathed; ambiguous natural language goes to AI.
+    complaint_detected = looks_like_complaint(user_text)
+    ai_intent = {"intent": "", "category": "NONE", "confidence": 0.0}
+    if not complaint_detected:
+        ai_intent = classify_guest_intent(user_text, guest_info, sender_phone)
+        complaint_detected = ai_intent.get("intent") == "COMPLAINT" and ai_intent.get("confidence", 0) >= 0.55
+
+    if complaint_detected:
+        room = guest_info["room"] if is_inhouse else extract_room_number(user_text)
+        if not room:
+            send_whatsapp_message(sender_phone, "Ji, complaint register karne ke liye kripya room number bata dein.")
+            return
+        name = guest_info.get("name", "Guest") if guest_info else "Guest"
+        rec = _append_complaint(room, name, sender_phone, user_text)
+        if not rec:
+            # Never claim registration or notify a department if the sheet write failed.
+            print(f"COMPLAINT REGISTRATION FAILED: room={room} phone={sender_phone}", flush=True)
+            send_staff_alert(
+                room=room, role="Reception",
+                message=(f"⚠️ COMPLAINT REGISTRATION FAILED\nRoom: {room}\nGuest: {name}\n"
+                         f"Complaint: {user_text}\nPlease register/review immediately."),
+                fallback_phone=STAFF_PHONE,
+            )
+            send_whatsapp_message(sender_phone, "Ji, aapki complaint receive ho gayi hai. Main reception ko abhi alert kar raha hoon kyunki complaint register karte waqt Sheet update nahi ho paaya.")
+            return
+
+        role = rec.get("category", _complaint_role(user_text))
+        if ai_intent.get("category") in {"HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "RECEPTION"}:
+            role = ai_intent["category"].title()
+            # Keep the stored operational category aligned with AI classification.
+            _update_complaint(rec.get("row_number", 0), {"Category": role, "Last Updated": now_ist().strftime("%d-%b-%Y %I:%M %p")})
+
+        staff_ok = send_staff_alert(
+            room=room, role=role,
+            message=(f"🚨 COMPLAINT REGISTERED\nRoom: {room}\nGuest: {name}\nCategory: {role}\n"
+                     f"Complaint: {user_text}\nPhone: +{sender_phone}\nAssigned: {rec.get('assigned', {}).get('name', '') if rec.get('assigned') else 'Please assign'}"),
+            fallback_phone=STAFF_PHONE,
+        )
+        if not staff_ok:
+            send_staff_alert(
+                room=room, role="Reception",
+                message=(f"⚠️ Complaint {rec.get('id')} is saved in Complaints but primary staff notification failed.\n"
+                         f"Room: {room}\nComplaint: {user_text}"),
+                fallback_phone=STAFF_PHONE,
+            )
+        send_whatsapp_message(
+            sender_phone,
+            f"Ji {name} ji, aapki complaint Complaints record mein register ho gayi hai. "
+            f"{('Staff ko alert kar diya hai.' if staff_ok else 'Primary staff notification fail hua, isliye reception ko alert kar diya hai.')} "
+            "Main 30 minute baad khud poochunga ki problem solve hui ya nahi. 🙏"
+        )
+        fetch_sheet_data_sync()
+        return
+
+    # ========================================================
+    # 3. CONTEXTUAL FOOD SELECTION
     # If the bot just offered choices such as Cutting Chai / Masala Chai,
     # a short reply like "Masala" is a selection, not a new conversation.
     # This is generic for every menu group; it is not an item-by-item rule.
@@ -2843,6 +3185,17 @@ def process_and_reply(message, sender_phone, msg_type):
         pending_selection = order_sessions.get(sender_phone)
 
     if pending_selection and pending_selection.get("selection_pending"):
+        # A guest can change their mind before choosing a specific item.
+        # Treat natural phrases such as "chai rehne do" as cancellation.
+        pending_cancel = any(x in t for x in ["rehne do", "rehne", "nahi chahiye", "nahin chahiye", "mat bhejo", "chodo", "chhod do", "cancel"])
+        if not pending_cancel and ai_intent.get("intent") == "ORDER_CANCEL" and ai_intent.get("confidence", 0) >= 0.55:
+            pending_cancel = True
+        if pending_cancel:
+            with state_lock:
+                order_sessions.pop(sender_phone, None)
+            send_whatsapp_message(sender_phone, "Ji theek hai, order nahi bhejenge. 🙏")
+            return
+
         if is_inhouse:
             generic = pending_selection.get("generic", "")
             qty = max(1, int(pending_selection.get("qty", 1)))
@@ -3346,34 +3699,6 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     # ========================================================
-    # 13. COMPLAINTS - MUST NOT CREATE KITCHEN ORDER
-    # ========================================================
-    if looks_like_complaint(user_text):
-        room = guest_info["room"] if is_inhouse else extract_room_number(user_text)
-
-        if room:
-            send_staff_alert(
-                room=room,
-                role="Housekeeping",
-                message=(
-                    f"स्टाफ अलर्ट - शिकायत\nRoom: {room}\n"
-                    f"Guest: {guest_info.get('name','Guest') if guest_info else 'Guest'}\n"
-                    f"Details: {user_text}\nPhone: +{sender_phone}"
-                ),
-                fallback_phone=STAFF_PHONE,
-            )
-            send_whatsapp_message(
-                sender_phone,
-                f"Ji {guest_info.get('name','') if guest_info else ''} ji, maine staff ko complaint inform kar di hai."
-            )
-        else:
-            send_whatsapp_message(
-                sender_phone,
-                "Ji, zaroor. Kripya room number bata dein, main staff ko inform kar deta hoon."
-            )
-        return
-
-    # ========================================================
     # 14. HOUSEKEEPING / SERVICE
     # ========================================================
     svc = service_type(user_text)
@@ -3550,9 +3875,13 @@ def handle_incoming_async(message, sender_phone, msg_type):
 
 def build_full_bill_paid_message(name, room, fin, language):
     total = int(fin.get("grand_total", 0))
-    return get_notification_message(
-        "FULL_BILL_PAID", language, name=name, room=room, grand_total=f"{total:,}"
+    prompt = (
+        "Write one short WhatsApp confirmation that a hotel guest's complete bill is paid. "
+        f"Guest: {name}. Room: {room}. Total paid: Rs.{total:,}. Balance: Rs.0. "
+        f"Language: {language}. Use only these facts. Return only the message."
     )
+    reply = ask_ai_chat(prompt, {"name": name, "room": room, "status": "CHECKED_OUT"}, None)
+    return reply or f"✅ Thank you {name} ji. Room {room} ka complete bill ₹{total:,} paid ho gaya hai. Balance ₹0. 🙏"
 
 
 def process_full_bill_paid_notifications(rows):
@@ -3640,15 +3969,12 @@ def _parse_sheet_datetime(value):
 
 
 def _room_lifecycle_columns():
-    """Resolve lifecycle columns from the dedicated Lifecycle_Automation tab."""
+    """Lifecycle_Automation stores only automation markers; timing comes from Rooms."""
     return {
         "room": _lifecycle_header_index(("Room",)),
         "name": _lifecycle_header_index(("Guest Name",)),
         "phone": _lifecycle_header_index(("Phone",)),
         "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
-        "check_in_date": _lifecycle_header_index(("Check_In_Date",)),
-        "check_in": _lifecycle_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
-        "check_out": _lifecycle_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
         "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
         "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
         "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
@@ -3657,7 +3983,6 @@ def _room_lifecycle_columns():
         "dinner_sent": _lifecycle_header_index(("DINNER SENT",)),
         "checkout_sent": _lifecycle_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
     }
-
 
 def _mark_room_lifecycle_cell(row_number, col_index, value):
     """Persist lifecycle marker in the dedicated Lifecycle_Automation sheet."""
@@ -3699,123 +4024,283 @@ def _room_status_column_index(headers):
 
 
 def reconcile_lifecycle_from_room_sheet():
-    """Generic Render-side safety net for lifecycle timestamps.
-
-    Apps Script onEdit does not fire for Python/gspread/API edits. This function
-    therefore mirrors the current Rooms status into Lifecycle_Automation and
-    stamps missing IN/OUT times. It is intentionally hotel-agnostic.
-    """
+    """Mirror guest identity/status into the marker ledger; Rooms owns timestamps."""
     try:
         with state_lock:
-            rooms = list(shared_store.get("rooms", []))
-            room_headers = list(shared_store.get("room_headers", []))
-            lifecycle = list(shared_store.get("lifecycle_rows", []))
-            lifecycle_headers = list(shared_store.get("lifecycle_headers", []))
+            rooms=list(shared_store.get("rooms",[])); rh=list(shared_store.get("room_headers",[]))
+            lifecycle_headers=list(shared_store.get("lifecycle_headers",[]))
+        if not lifecycle_headers: return False
+        status_idx=_room_status_column_index(rh)
+        if status_idx<0: return False
+        client=get_gspread_client()
+        if not client: return False
+        sh=client.open_by_key(SHEET_ID); life=sh.worksheet("Lifecycle_Automation")
+        # Rooms owns the actual event timestamps. Apps Script handles manual
+        # edits; this Render-side reconciliation handles API/gspread edits so
+        # checkout/check-in never depends on a staff member opening Sheets.
+        try:
+            rooms_sheet = sh.get_worksheet(0)
+        except Exception:
+            rooms_sheet = sh.sheet1
+        room_values = rooms_sheet.get_all_values()
+        vals=life.get_all_values(); headers=vals[0] if vals else lifecycle_headers
+        hm=_complaint_header_map(headers)
+        def find(names, default=-1):
+            for n in names:
+                k=normalize_text(n).replace(" ","_")
+                if k in hm:return hm[k]
+            return default
+        li={"room":find(("Room",),0),"name":find(("Guest Name",),1),"phone":find(("Phone",),2),"status":find(("Status",),3)}
+        room_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)
+        name_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"guest_name_(d)","guest_name","guest"}),3)
+        phone_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"phone_(e)","phone","whatsapp","mobile"}),4)
+        room_in_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_in_time","in_time","check-in_time"}),-1)
+        room_out_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_out_time","out_time","check-out_time"}),-1)
+        existing={}
+        for r,row in enumerate(vals[1:],start=2):
+            key=clean_phone(row[li["phone"]] if len(row)>li["phone"] else "")+":"+clean_room(row[li["room"]] if len(row)>li["room"] else "")
+            if key!=":":existing[key]=r
+        changed=False
+        for rr_idx, rr in enumerate(rooms, start=2):
+            room=clean_room(rr[room_col] if len(rr)>room_col else ""); phone=clean_phone(rr[phone_col] if len(rr)>phone_col else ""); name=str(rr[name_col] if len(rr)>name_col else "Guest").strip(); status=str(rr[status_idx] if len(rr)>status_idx else "").strip().upper()
+            if not room or not phone or not status:continue
+            key=phone+":"+room; rownum=existing.get(key)
+            previous_status = ""
+            if rownum:
+                life_row = vals[rownum-1] if rownum-1 < len(vals) else []
+                previous_status = str(life_row[li["status"]] if len(life_row)>li["status"] else "").strip().upper()
+            if not rownum:
+                # A brand-new OUT row may be historical data; do not stamp it
+                # with the current time unless we observe a real transition.
+                life.append_row([room,name,phone,status,"","","","","","",""]); rownum=life.get_last_row(); existing[key]=rownum; changed=True
+            life.update_cell(rownum,li["room"]+1,room); life.update_cell(rownum,li["name"]+1,name); life.update_cell(rownum,li["phone"]+1,phone); life.update_cell(rownum,li["status"]+1,status)
 
-        status_idx = _room_status_column_index(room_headers)
-        if status_idx < 0 or not lifecycle_headers:
-            return False
-
-        def idx(names):
-            wanted = {normalize_text(x).replace(" ", "_") for x in names}
-            for i, h in enumerate(lifecycle_headers):
-                if normalize_text(h).replace(" ", "_") in wanted:
-                    return i
-            return -1
-
-        li = {
-            "room": idx(("Room",)),
-            "name": idx(("Guest Name",)),
-            "phone": idx(("Phone",)),
-            "status": idx(("Status",)),
-            "date": idx(("Check_In_Date",)),
-            "in": idx(("CHECK IN TIME",)),
-            "out": idx(("CHECK OUT TIME",)),
-        }
-        required = ("room", "name", "phone", "status", "in", "out")
-        if any(li[k] < 0 for k in required):
-            return False
-
-        # Read/write only when necessary. This also repairs a lifecycle tab that
-        # exists but has lost a row after a Render restart.
-        client = get_gspread_client()
-        if not client:
-            return False
-        sh = client.open_by_key(SHEET_ID)
-        life = sh.worksheet("Lifecycle_Automation")
-        live_values = life.get_all_values()
-        headers = [str(x).strip() for x in (live_values[0] if live_values else lifecycle_headers)]
-        hmap = {normalize_text(h).replace(" ", "_"): i + 1 for i, h in enumerate(headers) if h}
-
-        room_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") == "room"), 0)
-        name_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") in {"guest_name_(d)", "guest_name", "guest"}), 3)
-        phone_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") in {"phone_(e)", "phone", "whatsapp", "mobile"}), 4)
-        date_col = next((i for i,h in enumerate(room_headers) if normalize_text(h).replace(" ", "_") == "check_in_date"), -1)
-
-        existing = {}
-        for r, row in enumerate(live_values[1:], start=2):
-            room = clean_room(row[hmap.get("room", 1) - 1] if len(row) >= hmap.get("room", 1) else "")
-            phone = clean_phone(row[hmap.get("phone", 3) - 1] if len(row) >= hmap.get("phone", 3) else "")
-            if room and phone:
-                existing[f"{phone}:{room}"] = (r, row)
-
-        now = now_ist()
-        changed = False
-        for room_row in rooms:
-            room = clean_room(room_row[room_col] if len(room_row) > room_col else "")
-            phone = clean_phone(room_row[phone_col] if len(room_row) > phone_col else "")
-            status = str(room_row[status_idx] if len(room_row) > status_idx else "").strip().upper()
-            name = str(room_row[name_col] if len(room_row) > name_col else "Guest").strip() or "Guest"
-            if not room or not phone or not status:
-                continue
-            key = f"{phone}:{room}"
-            rec = existing.get(key)
-            if not rec:
-                row_number = max(life.get_last_row() + 1, 2)
-                life.append_row([room, name, phone, status, room_row[date_col] if date_col >= 0 and len(room_row) > date_col else "", "", "", "", "", "", "", "", "", "", ""])
-                existing[key] = (row_number, life.getRange(row_number, 1, 1, 15).getDisplayValues()[0])
-                rec = existing[key]
-                changed = True
-            row_number, row = rec
-            previous_status = str(row[li["status"]] if len(row) > li["status"] else "").strip().upper()
-            is_in = "IN" in status and "OUT" not in status
-            is_out = "OUT" in status
-            old_in = str(row[li["in"]] if len(row) > li["in"] else "").strip()
-            old_out = str(row[li["out"]] if len(row) > li["out"] else "").strip()
-
-            # Keep identity/status/date current.
-            life.getRange(row_number, li["room"] + 1).setValue(room)
-            life.getRange(row_number, li["name"] + 1).setValue(name)
-            life.getRange(row_number, li["phone"] + 1).setValue(phone)
-            life.getRange(row_number, li["status"] + 1).setValue(status)
-            if date_col >= 0 and li["date"] >= 0 and len(room_row) > date_col:
-                life.getRange(row_number, li["date"] + 1).setValue(room_row[date_col])
-
-            transitioned_in = is_in and previous_status and not ("IN" in previous_status and "OUT" not in previous_status)
-            transitioned_out = is_out and previous_status and not ("OUT" in previous_status)
-            if is_in and (not old_in or transitioned_in):
-                life.getRange(row_number, li["in"] + 1).setValue(now)
-                life.getRange(row_number, li["out"] + 1).clearContent()
-                # Reset all proactive markers for a genuinely new stay.
-                marker_names = ("WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT", "LUNCH SENT", "AARTI SENT", "DINNER SENT", "CHECKOUT SENT")
-                for marker in marker_names:
-                    keym = normalize_text(marker).replace(" ", "_")
-                    col = hmap.get(keym)
-                    if col:
-                        life.getRange(row_number, col).clearContent()
-                changed = True
-            elif is_out and (not old_out or transitioned_out):
-                life.getRange(row_number, li["out"] + 1).setValue(now)
-                checkout_col = hmap.get("CHECKOUT_SENT")
-                if checkout_col:
-                    life.getRange(row_number, checkout_col).clearContent()
-                changed = True
-
+            now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
+            in_status = ("IN" in status and "OUT" not in status)
+            out_status = ("OUT" in status)
+            if in_status and room_in_col >= 0:
+                current_in = str(rr[room_in_col] if len(rr)>room_in_col else "").strip()
+                if not current_in and (not previous_status or not ("IN" in previous_status and "OUT" not in previous_status)):
+                    rooms_sheet.update_cell(rr_idx, room_in_col + 1, now_text)
+                    changed = True
+            if out_status and room_out_col >= 0:
+                current_out = str(rr[room_out_col] if len(rr)>room_out_col else "").strip()
+                if not current_out and previous_status and not ("OUT" in previous_status):
+                    rooms_sheet.update_cell(rr_idx, room_out_col + 1, now_text)
+                    changed = True
         return changed
     except Exception as exc:
-        print("LIFECYCLE PYTHON RECONCILE ERROR:", exc, flush=True)
+        print("LIFECYCLE MARKER SYNC ERROR:",exc,flush=True); return False
+
+
+# ============================================================
+# OWNER DAILY REVENUE REPORT
+# ============================================================
+
+def _owner_report_date(value):
+    if value is None or str(value).strip() == "":
+        return None
+    if isinstance(value, datetime):
+        return value.astimezone(IST).date() if value.tzinfo else value.replace(tzinfo=IST).date()
+    text = str(value).strip()
+    formats = (
+        "%d-%b %I:%M %p", "%d-%b-%Y %I:%M %p", "%d-%b-%Y %H:%M:%S",
+        "%d-%b-%Y %H:%M", "%d-%m-%Y", "%d/%m/%Y", "%Y-%m-%d",
+        "%d-%m-%Y %I:%M:%S %p", "%d/%m/%Y %I:%M:%S %p",
+        "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"
+    )
+    for fmt in formats:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            if fmt == "%d-%b %I:%M %p":
+                parsed = parsed.replace(year=now_ist().year)
+            return parsed.date()
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return (parsed.astimezone(IST) if parsed.tzinfo else parsed.replace(tzinfo=IST)).date()
+    except Exception:
+        return None
+
+
+def _owner_report_metrics():
+    """Build today's operational sales/collection snapshot from live Sheets data.
+
+    Room revenue is the room-rate revenue accrued for today's in-house/checkout-today
+    guests. Kitchen revenue is today's non-cancelled kitchen sales. Payments received
+    is the actual payment-history amount recorded today. Keeping these separate avoids
+    double-counting kitchen charges when a guest pays the combined room bill.
+    """
+    today = now_ist().date()
+    with state_lock:
+        rooms = list(shared_store.get("rooms", []))
+        room_headers = list(shared_store.get("room_headers", []))
+        kitchen = list(shared_store.get("kitchen_orders", []))
+        kh = list(shared_store.get("kitchen_headers", []))
+        payments = list(shared_store.get("payment_history_rows", []))
+        ph = list(shared_store.get("payment_history_headers", []))
+
+    def col(headers, *names, default=-1):
+        upper = [str(x).strip().upper() for x in headers]
+        for name in names:
+            target = str(name).strip().upper()
+            if target in upper:
+                return upper.index(target)
+        return default
+
+    room_price = col(room_headers, "PRICE (C)", "PRICE", "RATE", default=2)
+    room_status = col(room_headers, "STATUS (F)", "STATUS", "GUEST STATUS", "BOOKING STATUS", default=5)
+    room_in_date = col(room_headers, "CHECK_IN_DATE", "CHECK IN DATE", "CHECK-IN DATE", default=6)
+
+    room_revenue = 0
+    room_guest_count = 0
+    for row in rooms:
+        status = str(row[room_status] if room_status >= 0 and len(row) > room_status else "").upper()
+        if not ("IN" in status or "OUT" in status):
+            continue
+        check_in = _owner_report_date(row[room_in_date] if room_in_date >= 0 and len(row) > room_in_date else "")
+        if check_in is None:
+            continue
+        # Accrue one room-night for guests staying today. This does not mean cash was
+        # received today; cash is reported separately from Payment_History.
+        if check_in <= today:
+            rate = safe_int(row[room_price] if room_price >= 0 and len(row) > room_price else 0)
+            if rate > 0:
+                room_revenue += rate
+                room_guest_count += 1
+
+    kitchen_time = col(kh, "TIMESTAMP", "DATE", "TIME", default=0)
+    kitchen_amount = col(kh, "AMOUNT", "PRICE", "TOTAL", default=4)
+    kitchen_status = col(kh, "STATUS", default=5)
+    kitchen_revenue = 0
+    kitchen_orders = 0
+    for row in kitchen:
+        if _owner_report_date(row[kitchen_time] if kitchen_time >= 0 and len(row) > kitchen_time else "") != today:
+            continue
+        status = str(row[kitchen_status] if kitchen_status >= 0 and len(row) > kitchen_status else "").upper()
+        if "CANCEL" in status:
+            continue
+        amount = safe_int(row[kitchen_amount] if kitchen_amount >= 0 and len(row) > kitchen_amount else 0)
+        if amount > 0:
+            kitchen_revenue += amount
+            kitchen_orders += 1
+
+    payment_time = col(ph, "PAYMENT TIME", "TIMESTAMP", "DATE", default=0)
+    payment_amount = col(ph, "AMOUNT", "PAYMENT", "TOTAL", default=3)
+    payments_received = 0
+    payment_count = 0
+    for row in payments:
+        if _owner_report_date(row[payment_time] if payment_time >= 0 and len(row) > payment_time else "") != today:
+            continue
+        amount = safe_int(row[payment_amount] if payment_amount >= 0 and len(row) > payment_amount else 0)
+        if amount > 0:
+            payments_received += amount
+            payment_count += 1
+
+    # Current outstanding from live guest financials: room total + non-cancelled kitchen
+    # less the payment amount recorded on Rooms. This is a snapshot, not a cash-flow metric.
+    outstanding = 0
+    room_total_current = 0
+    kitchen_total_current = 0
+    for row in rooms:
+        status = str(row[room_status] if room_status >= 0 and len(row) > room_status else "").upper()
+        if "OUT" in status:
+            continue
+        rate = safe_int(row[room_price] if room_price >= 0 and len(row) > room_price else 0)
+        check_in = _owner_report_date(row[room_in_date] if room_in_date >= 0 and len(row) > room_in_date else "")
+        if rate <= 0 or check_in is None:
+            continue
+        room_total_current += rate * max(1, (today - check_in).days)
+        room = clean_room(row[0] if row else "")
+        for k in kitchen:
+            if len(k) < 6 or clean_room(k[1]) != room or "CANCEL" in str(k[5]).upper():
+                continue
+            kitchen_total_current += safe_int(k[4])
+        total_paid_idx = col(room_headers, "TOTAL PAID", "TOTAL PAYMENT", "PAID TOTAL", default=-1)
+        total_paid = safe_int(row[total_paid_idx] if total_paid_idx >= 0 and len(row) > total_paid_idx else 0)
+        outstanding += max(0, rate * max(1, (today - check_in).days) + sum(safe_int(k[4]) for k in kitchen if len(k)>=6 and clean_room(k[1])==room and "CANCEL" not in str(k[5]).upper()) - total_paid)
+
+    return {
+        "date": today,
+        "room_revenue": room_revenue,
+        "kitchen_revenue": kitchen_revenue,
+        "total_sales": room_revenue + kitchen_revenue,
+        "payments_received": payments_received,
+        "outstanding": outstanding,
+        "room_guest_count": room_guest_count,
+        "kitchen_orders": kitchen_orders,
+        "payment_count": payment_count,
+    }
+
+
+def update_owner_daily_revenue(send_message=False):
+    if not OWNER_PHONE:
+        print("OWNER REPORT: OWNER_PHONE not configured; sheet update skipped.", flush=True)
+        return False
+    try:
+        client = get_gspread_client()
+        if not client:
+            print("OWNER REPORT: Google Sheets unavailable.", flush=True)
+            return False
+        sh = client.open_by_key(SHEET_ID)
+        try:
+            sheet = sh.worksheet("Owner_Daily_Revenue")
+        except Exception:
+            sheet = sh.add_worksheet(title="Owner_Daily_Revenue", rows=1000, cols=9)
+        headers = ["Date","Room Revenue Today","Kitchen Revenue Today","Total Sales Today","Payments Received Today","Outstanding","Room Guests","Kitchen Orders","Last Updated"]
+        current = sheet.get_all_values()
+        if not current:
+            sheet.append_row(headers)
+            current = [headers]
+        elif [str(x).strip() for x in current[0][:len(headers)]] != headers:
+            sheet.update("A1:I1", [headers])
+            current = [headers] + current[1:]
+        metrics = _owner_report_metrics()
+        date_text = metrics["date"].strftime("%d-%m-%Y")
+        row_num = None
+        for i, row in enumerate(current[1:], start=2):
+            if row and str(row[0]).strip() == date_text:
+                row_num = i; break
+        values = [[date_text, metrics["room_revenue"], metrics["kitchen_revenue"], metrics["total_sales"], metrics["payments_received"], metrics["outstanding"], metrics["room_guest_count"], metrics["kitchen_orders"], now_ist().strftime("%d-%b-%Y %I:%M %p")]]
+        if row_num:
+            sheet.update(f"A{row_num}:I{row_num}", values)
+        else:
+            sheet.append_row(values[0], value_input_option="USER_ENTERED")
+        if send_message:
+            msg = (f"📊 *Hotel Ganga View — Daily Update*\n"
+                   f"Date: {date_text}\n"
+                   f"🛏️ Room revenue today: ₹{metrics['room_revenue']:,}\n"
+                   f"🍽️ Kitchen revenue today: ₹{metrics['kitchen_revenue']:,}\n"
+                   f"💰 Total sales today: ₹{metrics['total_sales']:,}\n"
+                   f"💳 Payments received today: ₹{metrics['payments_received']:,}\n"
+                   f"📌 Current outstanding: ₹{metrics['outstanding']:,}\n"
+                   f"Updated: {now_ist().strftime('%I:%M %p')}")
+            return send_whatsapp_message(OWNER_PHONE, msg)
+        return True
+    except Exception as exc:
+        print("OWNER REPORT ERROR:", exc, flush=True)
+        traceback.print_exc()
         return False
 
+
+def maybe_send_owner_report(current):
+    if not OWNER_PHONE or not OWNER_REPORT_TIMES:
+        return
+    slot = current.strftime("%H:%M")
+    if slot not in OWNER_REPORT_TIMES:
+        return
+    key = f"{current.date().isoformat()}:{slot}"
+    with state_lock:
+        sent = shared_store.setdefault("owner_report_sent", set())
+        if key in sent:
+            return
+        sent.add(key)
+    # Live refresh before calculating the owner's figures.
+    fetch_sheet_data_sync()
+    if not update_owner_daily_revenue(send_message=True):
+        with state_lock:
+            shared_store.get("owner_report_sent", set()).discard(key)
 
 def monitor_guest_status_lifecycle():
     """
@@ -3835,7 +4320,9 @@ def monitor_guest_status_lifecycle():
             # Reconcile here so timestamps/notifications still work after a Render restart.
             if reconcile_lifecycle_from_room_sheet():
                 fetch_sheet_data_sync()
+            process_complaint_followups()
             current = now_ist()
+            maybe_send_owner_report(current)
             today = current.strftime("%Y-%m-%d")
             hour = current.hour
 
@@ -3858,11 +4345,47 @@ def monitor_guest_status_lifecycle():
             rows = lifecycle_rows
             cols = _room_lifecycle_columns()
 
-            required = ("room", "name", "phone", "status", "check_in", "check_out", "welcome_sent", "thirty_sent", "checkout_sent")
+            required = ("room", "name", "phone", "status", "welcome_sent", "thirty_sent", "checkout_sent")
             if any(cols[x] < 0 for x in required):
-                print("LIFECYCLE WAITING FOR DEDICATED TAB: run Setup Lifecycle Timestamps in Apps Script", flush=True)
-                time.sleep(30)
-                continue
+                # Self-heal the marker ledger instead of waiting forever for a manual setup.
+                try:
+                    client = get_gspread_client()
+                    sh = client.open_by_key(SHEET_ID) if client else None
+                    if sh:
+                        try:
+                            life_sheet = sh.worksheet("Lifecycle_Automation")
+                        except Exception:
+                            life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=11)
+                        existing_headers = life_sheet.get_all_values()[0] if life_sheet.get_all_values() else []
+                        if not existing_headers:
+                            life_sheet.append_row(["Room","Guest Name","Phone","Status","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
+                        fetch_sheet_data_sync()
+                        rows = list(shared_store.get("lifecycle_rows", []))
+                        cols = _room_lifecycle_columns()
+                except Exception as exc:
+                    print("LIFECYCLE AUTO-SETUP ERROR:", exc, flush=True)
+                if any(cols[x] < 0 for x in required):
+                    print("LIFECYCLE MARKER TAB UNAVAILABLE: will retry automatic setup on next cycle", flush=True)
+                    time.sleep(30)
+                    continue
+
+            # Rooms is the single source of truth for check-in/check-out timestamps.
+            with state_lock:
+                room_headers=list(shared_store.get("room_headers",[])); room_data=list(shared_store.get("rooms",[]))
+            def _find_room_col(names, default=-1):
+                for i,h in enumerate(room_headers):
+                    k=normalize_text(h).replace(" ","_")
+                    if k in {normalize_text(n).replace(" ","_") for n in names}: return i
+                return default
+            room_status_col=_room_status_column_index(room_headers)
+            room_in_col=_find_room_col(("CHECK IN TIME","IN TIME","Check-In Time"),-1)
+            room_out_col=_find_room_col(("CHECK OUT TIME","OUT TIME","Check-Out Time"),-1)
+            room_phone_col=_find_room_col(("PHONE (E)","PHONE","WHATSAPP","MOBILE"),4)
+            room_room_col=_find_room_col(("ROOM (A)","ROOM"),0)
+            room_time_map={}
+            for rr in room_data:
+                rp=clean_phone(rr[room_phone_col] if len(rr)>room_phone_col else ""); rm=clean_room(rr[room_room_col] if len(rr)>room_room_col else "")
+                if rp and rm: room_time_map[f"{rp}:{rm}"]=(rr[room_in_col] if room_in_col>=0 and len(rr)>room_in_col else "", rr[room_out_col] if room_out_col>=0 and len(rr)>room_out_col else "")
 
             for row_index, row in enumerate(rows, start=2):
                 if len(row) <= max(cols.values()):
@@ -3881,8 +4404,9 @@ def monitor_guest_status_lifecycle():
                 lifecycle_key = f"{phone}:{room}"
                 lifecycle_status_cache[lifecycle_key] = status
 
-                check_in_at = _parse_sheet_datetime(row[cols["check_in"]])
-                check_out_at = _parse_sheet_datetime(row[cols["check_out"]])
+                room_times = room_time_map.get(f"{phone}:{room}", ("", ""))
+                check_in_at = _parse_sheet_datetime(room_times[0])
+                check_out_at = _parse_sheet_datetime(room_times[1])
 
                 # Self-heal the exact active checkout event when Apps Script did not run.
                 # We only do this on a detected status transition, never for pre-existing old OUT rows.
@@ -3894,7 +4418,7 @@ def monitor_guest_status_lifecycle():
                     # Welcome is tied to the Sheet's current IN record.
                     if not _lifecycle_sent(row, cols["welcome_sent"]):
                         lang = get_guest_response_language(phone)
-                        welcome_text = get_notification_message("WELCOME", lang, name=name, room=room)
+                        welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
                         if welcome_text and send_whatsapp_message(phone, welcome_text):
                             _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
@@ -3902,41 +4426,32 @@ def monitor_guest_status_lifecycle():
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
                         if current >= check_in_at + timedelta(minutes=30):
                             lang = get_guest_response_language(phone)
-                            thirty_text = get_notification_message("30_MINUTE", lang, name=name, room=room)
+                            thirty_text = get_ai_lifecycle_message("30_MINUTE", lang, name, room, {"name": name, "room": room, "status": status})
                             if thirty_text and send_whatsapp_message(phone, thirty_text):
                                 _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
                     # Meal reminders remain time-window based and persist their sent date.
                     if breakfast_window and not _lifecycle_sent(row, cols["breakfast_sent"]):
                         lang = get_guest_response_language(phone)
-                        text = get_notification_message("BREAKFAST", lang, name=name, room=room)
+                        text = get_ai_lifecycle_message("BREAKFAST", lang, name, room, {"name": name, "room": room, "status": status})
                         if text and send_whatsapp_message(phone, text):
                             _mark_room_lifecycle_cell(row_index, cols["breakfast_sent"], today)
 
                     if lunch_window and not _lifecycle_sent(row, cols["lunch_sent"]):
                         lang = get_guest_response_language(phone)
-                        text = get_notification_message("LUNCH", lang, name=name, room=room)
+                        text = get_ai_lifecycle_message("LUNCH", lang, name, room, {"name": name, "room": room, "status": status})
                         if text and send_whatsapp_message(phone, text):
                             _mark_room_lifecycle_cell(row_index, cols["lunch_sent"], today)
 
                     if aarti_window and not _lifecycle_sent(row, cols["aarti_sent"]):
                         lang = get_guest_response_language(phone)
-                        event_text = get_notification_message("GANGA_AARTI", lang, name=name, room=room)
-                        # Preserve the existing hotel_data Special Evening Reminder as a
-                        # hotel-specific fallback when the new sheet row is not present.
-                        if not event_text or event_text == _NOTIFICATION_FALLBACKS.get("GANGA_AARTI", ""):
-                            configured = get_hotel_value("Special Evening Reminder", "")
-                            if configured:
-                                try:
-                                    event_text = configured.format(name=name, room=room, hotel=get_hotel_name())
-                                except Exception:
-                                    event_text = configured
+                        event_text = get_ai_lifecycle_message("GANGA_AARTI", lang, name, room, {"name": name, "room": room, "status": status})
                         if event_text and send_whatsapp_message(phone, event_text):
                             _mark_room_lifecycle_cell(row_index, cols["aarti_sent"], today)
 
                     if dinner_window and not _lifecycle_sent(row, cols["dinner_sent"]):
                         lang = get_guest_response_language(phone)
-                        text = get_notification_message("DINNER", lang, name=name, room=room)
+                        text = get_ai_lifecycle_message("DINNER", lang, name, room, {"name": name, "room": room, "status": status})
                         if text and send_whatsapp_message(phone, text):
                             _mark_room_lifecycle_cell(row_index, cols["dinner_sent"], today)
 
@@ -3948,7 +4463,7 @@ def monitor_guest_status_lifecycle():
                     # If an old OUT row has already been acknowledged, no duplicate.
                     if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)
-                        checkout_text = get_notification_message("CHECKOUT", lang, name=name, room=room)
+                        checkout_text = get_ai_lifecycle_message("CHECKOUT", lang, name, room, {"name": name, "room": room, "status": status})
                         if checkout_text and send_whatsapp_message(phone, checkout_text):
                             _mark_room_lifecycle_cell(row_index, cols["checkout_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 

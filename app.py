@@ -81,6 +81,8 @@ shared_store = {
     "staff_headers": [],
     "notification_messages": [],
     "notification_headers": [],
+    "lifecycle_rows": [],
+    "lifecycle_headers": [],
     "last_synced": 0,
 }
 
@@ -619,14 +621,6 @@ def resolve_requested_photo(user_text):
     photos = get_hotel_media().get("photos", {})
     if any(x in t for x in ["hotel front", "hotel photo", "outside", "exterior", "bahar", "front photo"]):
         return "exterior"
-    # Semantic aliases used only as a safe fallback when the AI service is
-    # unavailable. These are category-level concepts, not hotel-specific rules.
-    if "family" in t and "family suite" in photos:
-        return "family suite"
-    if "super deluxe" in t and "super deluxe room" in photos:
-        return "super deluxe room"
-    if "deluxe" in t and "deluxe room" in photos and "super deluxe" not in t:
-        return "deluxe room"
     candidates = []
     for name in photos:
         if name == "exterior":
@@ -835,6 +829,12 @@ def fetch_sheet_data_sync():
         except Exception:
             notifications = []
 
+        lifecycle = []
+        try:
+            lifecycle = sh.worksheet("Lifecycle_Automation").get_all_values()
+        except Exception:
+            lifecycle = []
+
         with state_lock:
             shared_store["room_headers"] = [str(x).strip() for x in (rooms[0] if rooms else [])]
             shared_store["rooms"] = rooms[1:] if len(rooms) > 1 else []
@@ -844,6 +844,8 @@ def fetch_sheet_data_sync():
             shared_store["staff_roster"] = staff[1:] if len(staff) > 1 else []
             shared_store["notification_headers"] = [str(x).strip() for x in (notifications[0] if notifications else [])]
             shared_store["notification_messages"] = notifications[1:] if len(notifications) > 1 else []
+            shared_store["lifecycle_headers"] = [str(x).strip() for x in (lifecycle[0] if lifecycle else [])]
+            shared_store["lifecycle_rows"] = lifecycle[1:] if len(lifecycle) > 1 else []
             shared_store["last_synced"] = time.time()
 
         return True
@@ -1686,144 +1688,6 @@ Important:
                     time.sleep(1.0)
                     continue
                 break
-    return None
-
-
-def _extract_json_object(text):
-    """Extract the first JSON object from an AI response without crashing the bot."""
-    if not text:
-        return None
-    raw = str(text).strip()
-    try:
-        obj = json.loads(raw)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
-    m = re.search(r"\{.*\}", raw, re.S)
-    if not m:
-        return None
-    try:
-        obj = json.loads(m.group(0))
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        return None
-
-
-def ask_ai_brain(user_text, guest_info=None, sender_phone=None):
-    """
-    AI-first receptionist decision layer.
-
-    The model sees hotel_data + conversation + current guest record and decides
-    what the guest actually wants. Python remains a safety/action executor,
-    not the primary conversational decision maker.
-    """
-    if not GEMINI_API_KEY:
-        return None
-
-    language = guest_language(user_text)
-    language_rule = language_instruction(language, user_text)
-    guest_context = guest_info or {}
-    history = get_conversation_history(sender_phone) if sender_phone else []
-    hotel_db = get_hotel_data()
-
-    decision_prompt = f"""
-You are the AI BRAIN of a real hotel WhatsApp receptionist.
-Do not behave like a keyword matcher. Understand the guest's meaning, context,
-previous turns, implied requests, language, and current hotel/guest state.
-
-{language_rule}
-
-Return ONLY one JSON object. No markdown and no extra text.
-Schema:
-{{
-  "route": "GENERAL|RECEPTION|KITCHEN|HOUSEKEEPING|PHOTO|BILL|CHECKIN|CHECKOUT|GUIDE|WIFI|AVAILABILITY|RATE|CANCEL_ORDER|NONE",
-  "reply": "natural customer-facing reply, in the guest's language",
-  "reason": "short internal reason",
-  "category": "room/photo category if relevant, otherwise empty",
-  "item": "exact menu item if relevant, otherwise empty",
-  "quantity": 1
-}}
-
-Rules:
-- GENERAL means answer from hotel data/conversation without a backend action.
-- RECEPTION means reception must confirm/arrange something; do not invent an answer.
-- KITCHEN means an actual food order/action is intended. Do not create an order
-  merely because food is mentioned as a question or complaint.
-- HOUSEKEEPING means a staff service request such as towel, soap, cleaning, etc.
-- PHOTO means the guest actually wants a photo; category should be inferred from context.
-- BILL means the guest asks about actual guest-specific money/bill/payment/advance.
-- GUIDE means sightseeing/location/route/local recommendation.
-- CHECKIN/CHECKOUT are only for genuine check-in/check-out intent. A guest saying
-  "I already checked in" is NOT a request to start check-in.
-- CANCEL_ORDER means a recent active food order should be cancelled.
-- WIFI means Wi-Fi credentials OR a Wi-Fi problem. For a problem, reply should
-  indicate staff/reception help if hotel data cannot solve it.
-- AVAILABILITY means live room availability; never claim a room is available unless
-  the backend has actual availability data.
-- RATE means room pricing from hotel_data.
-- If one message contains multiple requests, choose the route that represents the
-  primary action and mention the other requested information in reply when it can
-  be safely answered from hotel_data.
-- Never invent prices, availability, policies, facilities, payment status, or
-  verification results.
-- Room service/kitchen/housekeeping actions are ONLY allowed for an in-house guest.
-- If the user is not in-house and requests such service, route to RECEPTION or GENERAL
-  and explain politely rather than pretending the action was completed.
-- If information is absent from hotel_data or the live guest record, route to RECEPTION.
-- Keep reply normally 1-3 short sentences.
-
-CURRENT GUEST RECORD:
-{json.dumps(guest_context, ensure_ascii=False, default=str)}
-
-RECENT CONVERSATION:
-{json.dumps(history[-CONVERSATION_MEMORY_LIMIT:], ensure_ascii=False, default=str)}
-
-HOTEL DATA:
-{hotel_db}
-
-GUEST MESSAGE:
-{user_text}
-"""
-
-    models = []
-    for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
-        if model and model not in models:
-            models.append(model)
-    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
-    payload = {
-        "contents": [{"role": "user", "parts": [{"text": decision_prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 500},
-    }
-    for model in models:
-        try:
-            res = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                json=payload, headers=headers, timeout=12,
-            )
-            if res.status_code != 200:
-                continue
-            data = res.json()
-            parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-            raw = "".join(str(x.get("text", "")) for x in parts if x.get("text"))
-            obj = _extract_json_object(raw)
-            if not obj:
-                continue
-            route = str(obj.get("route", "NONE")).upper().strip()
-            allowed = {"GENERAL","RECEPTION","KITCHEN","HOUSEKEEPING","PHOTO","BILL","CHECKIN","CHECKOUT","GUIDE","WIFI","AVAILABILITY","RATE","CANCEL_ORDER","NONE"}
-            if route not in allowed:
-                route = "GENERAL"
-            obj["route"] = route
-            obj["reply"] = str(obj.get("reply", "")).strip()
-            obj["reason"] = str(obj.get("reason", "")).strip()
-            obj["category"] = str(obj.get("category", "")).strip()
-            obj["item"] = str(obj.get("item", "")).strip()
-            try:
-                obj["quantity"] = max(1, int(obj.get("quantity", 1)))
-            except Exception:
-                obj["quantity"] = 1
-            return obj
-        except Exception as exc:
-            print("AI BRAIN ERROR:", exc, flush=True)
     return None
 
 
@@ -2815,56 +2679,6 @@ def process_and_reply(message, sender_phone, msg_type):
     )
 
     # ========================================================
-    # AI BRAIN — PRIMARY UNDERSTANDING LAYER
-    # ========================================================
-    # The AI decides what the guest means before legacy deterministic executors
-    # run. If the AI service is temporarily unavailable, the existing safe
-    # fallback router continues to operate.
-    ai_brain = ask_ai_brain(user_text, guest_info, sender_phone)
-    ai_route = (ai_brain or {}).get("route", "")
-    ai_reply = (ai_brain or {}).get("reply", "")
-
-    if ai_brain and ai_route == "GENERAL" and ai_reply:
-        ai_reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", ai_reply).strip()
-        ai_reply = attach_google_maps_links(ai_reply).strip()
-        if ai_reply:
-            send_whatsapp_message(sender_phone, ai_reply)
-            remember_conversation(sender_phone, "user", user_text)
-            remember_conversation(sender_phone, "assistant", ai_reply)
-            return
-
-    if ai_brain and ai_route == "RECEPTION":
-        reply = ai_reply or ("Ji, main reception se iski confirmation karwa deta hoon. Kripya thoda samay dein.")
-        send_reception_fallback(sender_phone, guest_info, reply, user_text, "ai_brain_reception")
-        remember_conversation(sender_phone, "user", user_text)
-        remember_conversation(sender_phone, "assistant", reply)
-        return
-
-    # Guest-specific financial questions are routed by AI, so phrases such as
-    # "advance kitna diya", "what have I paid", etc. do not depend on keywords.
-    if ai_brain and ai_route == "BILL":
-        if is_inhouse:
-            fetch_sheet_data_sync()
-            fin = get_guest_financials(guest_info["room"], sender_phone)
-            if any(x in normalize_text(user_text) for x in ["advance", "deposit"]):
-                paid = fin.get("room_advance", 0)
-                reply = f"Ji {guest_info['name']} ji, aapke room record ke hisaab se advance paid {_money(paid)} hai."
-            else:
-                reply = format_bill_message(fin, guest_info["room"], guest_info["name"])
-            send_whatsapp_message(sender_phone, reply)
-            remember_conversation(sender_phone, "user", user_text)
-            remember_conversation(sender_phone, "assistant", reply)
-            return
-        if is_checkout:
-            reply = "Ji, purani payment details reception se confirm karwa deta hoon."
-            send_reception_fallback(sender_phone, guest_info, reply, user_text, "ai_brain_bill_checkout")
-            return
-        # Do not expose guessed financial information for an unknown guest.
-        reply = "Ji, aapka actual bill/advance record dekhne ke liye reception se confirm karna hoga."
-        send_reception_fallback(sender_phone, guest_info, reply, user_text, "ai_brain_bill_unknown")
-        return
-
-    # ========================================================
     # 1. ACTIVE ORDER CANCELLATION
     # ========================================================
     if "cancel" in t and any(x in t for x in ["order", "khana", "food"]):
@@ -3245,13 +3059,7 @@ def process_and_reply(message, sender_phone, msg_type):
         "photos", "photo", "hotel front", "hotel photo", "exterior", "outside"
     ])
     if photo_intent:
-        requested = (ai_brain or {}).get("category", "").strip() or resolve_requested_photo(user_text)
-        # Normalize common AI category wording against the actual configured keys.
-        if requested:
-            media_names = [name for name, _ in get_room_photo_categories()]
-            req_norm = normalize_text(requested)
-            matched = next((name for name in media_names if req_norm == normalize_text(name) or req_norm in normalize_text(name) or normalize_text(name) in req_norm), None)
-            requested = matched or requested
+        requested = resolve_requested_photo(user_text)
         if requested:
             photo_url = get_hotel_photo(requested)
             if requested == "exterior":
@@ -3268,19 +3076,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 send_whatsapp_image(sender_phone, exterior, f"🏨 {get_hotel_name()} — Hotel Front")
             if photo_url:
                 send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
-            # Mixed requests such as "family room ki photo aur price" must
-            # answer both parts instead of letting photo routing consume the turn.
-            if any(x in t for x in ["price", "rate", "kitne ka", "kitna ka", "cost", "rent"]):
-                categories = list(get_room_categories().values())
-                match = None
-                for cat in categories:
-                    cname = normalize_text(cat.get("name", ""))
-                    if normalize_text(requested) in cname or cname in normalize_text(requested):
-                        match = cat
-                        break
-                if match and match.get("rate"):
-                    send_whatsapp_message(sender_phone, f"{match['name']}: Rs.{match['rate']} per night.")
-            if not photo_url:
+            else:
                 reply = "Ji, is room category ki photo abhi configured nahi hai. Main reception se share karwa deta hoon."
                 send_reception_fallback(sender_phone, guest_info, reply, f"Photo requested for room category '{requested}' but configured photo was unavailable.", "photo_fallback")
             return
@@ -3707,10 +3503,9 @@ def process_full_bill_paid_notifications(rows):
 # PROACTIVE LIFECYCLE MONITOR
 # ============================================================
 
-def _room_header_index(header_names):
-    """Return the 0-based column index for the first matching room-sheet header."""
+def _lifecycle_header_index(header_names):
     with state_lock:
-        headers = [str(x).strip() for x in shared_store.get("room_headers", [])]
+        headers = [str(x).strip() for x in shared_store.get("lifecycle_headers", [])]
     wanted = {normalize_text(x).replace(" ", "_") for x in header_names}
     for i, h in enumerate(headers):
         if normalize_text(h).replace(" ", "_") in wanted:
@@ -3745,23 +3540,27 @@ def _parse_sheet_datetime(value):
 
 
 def _room_lifecycle_columns():
-    """Resolve lifecycle columns without assuming fixed positions."""
+    """Resolve lifecycle columns from the dedicated Lifecycle_Automation tab."""
     return {
-        "status": _room_header_index(("Status", "Guest Status", "Booking Status")),
-        "check_in": _room_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
-        "check_out": _room_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
-        "welcome_sent": _room_header_index(("WELCOME SENT",)),
-        "thirty_sent": _room_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
-        "breakfast_sent": _room_header_index(("BREAKFAST SENT",)),
-        "lunch_sent": _room_header_index(("LUNCH SENT",)),
-        "aarti_sent": _room_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),
-        "dinner_sent": _room_header_index(("DINNER SENT",)),
-        "checkout_sent": _room_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
+        "room": _lifecycle_header_index(("Room",)),
+        "name": _lifecycle_header_index(("Guest Name",)),
+        "phone": _lifecycle_header_index(("Phone",)),
+        "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
+        "check_in_date": _lifecycle_header_index(("Check_In_Date",)),
+        "check_in": _lifecycle_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
+        "check_out": _lifecycle_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
+        "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
+        "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
+        "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
+        "lunch_sent": _lifecycle_header_index(("LUNCH SENT",)),
+        "aarti_sent": _lifecycle_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),
+        "dinner_sent": _lifecycle_header_index(("DINNER SENT",)),
+        "checkout_sent": _lifecycle_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
     }
 
 
 def _mark_room_lifecycle_cell(row_number, col_index, value):
-    """Persist a lifecycle marker in Google Sheets. row_number is 1-based."""
+    """Persist lifecycle marker in the dedicated Lifecycle_Automation sheet."""
     if col_index < 0:
         return False
     try:
@@ -3769,7 +3568,7 @@ def _mark_room_lifecycle_cell(row_number, col_index, value):
         if not client:
             return False
         sh = client.open_by_key(SHEET_ID)
-        sheet = sh.get_worksheet(0)
+        sheet = sh.worksheet("Lifecycle_Automation")
         sheet.update_cell(row_number, col_index + 1, value)
         return True
     except Exception as exc:
@@ -3819,18 +3618,17 @@ def monitor_guest_status_lifecycle():
             dinner_window = d0 <= minute_now <= d1
 
             with state_lock:
-                rows = list(shared_store.get("rooms", []))
-                headers = list(shared_store.get("room_headers", []))
+                room_rows = list(shared_store.get("rooms", []))
+                lifecycle_rows = list(shared_store.get("lifecycle_rows", []))
 
             # Keep full-bill payment notification behaviour intact.
-            process_full_bill_paid_notifications(rows)
+            process_full_bill_paid_notifications(room_rows)
+            rows = lifecycle_rows
             cols = _room_lifecycle_columns()
 
-            # If the Google Sheet has not yet been given lifecycle columns, do not
-            # fall back to volatile memory. The Apps Script setup creates them.
-            required = ("status", "check_in", "check_out", "welcome_sent", "thirty_sent", "checkout_sent")
+            required = ("room", "name", "phone", "status", "check_in", "check_out", "welcome_sent", "thirty_sent", "checkout_sent")
             if any(cols[x] < 0 for x in required):
-                print("LIFECYCLE WAITING FOR SHEET COLUMNS: run setupLifecycleColumns() in Apps Script", flush=True)
+                print("LIFECYCLE WAITING FOR DEDICATED TAB: run Setup Lifecycle Timestamps in Apps Script", flush=True)
                 time.sleep(30)
                 continue
 
@@ -3838,9 +3636,9 @@ def monitor_guest_status_lifecycle():
                 if len(row) <= max(cols.values()):
                     continue
 
-                room = clean_room(row[0])
-                name = str(row[3]).strip() if len(row) > 3 else "Guest"
-                phone = clean_phone(row[4]) if len(row) > 4 else ""
+                room = clean_room(row[cols["room"]])
+                name = str(row[cols["name"]]).strip() if cols["name"] < len(row) else "Guest"
+                phone = clean_phone(row[cols["phone"]]) if cols["phone"] < len(row) else ""
                 status = str(row[cols["status"]]).upper().strip()
                 if not room or not phone:
                     continue
@@ -3848,29 +3646,7 @@ def monitor_guest_status_lifecycle():
                 is_in = "IN" in status and "OUT" not in status
                 is_out = "OUT" in status
 
-                # Detect status changes made through gspread/API as well as manual Sheet edits.
-                # Apps Script handles human edits; this generic engine handles programmatic edits.
                 lifecycle_key = f"{phone}:{room}"
-                previous_status = lifecycle_status_cache.get(lifecycle_key)
-                if previous_status is not None and previous_status != status:
-                    client = get_gspread_client()
-                    try:
-                        if is_in and cols["check_in"] >= 0 and not str(row[cols["check_in"]]).strip():
-                            timestamp = current.strftime("%d-%b-%Y %I:%M %p")
-                            sheet = client.open_by_key(SHEET_ID).get_worksheet(0) if client else None
-                            if sheet:
-                                sheet.update_cell(row_index, cols["check_in"] + 1, timestamp)
-                                row[cols["check_in"]] = timestamp
-                                print(f"LIFECYCLE AUTO TIMESTAMP: CHECK IN room={room} phone={phone}", flush=True)
-                        elif is_out and cols["check_out"] >= 0 and not str(row[cols["check_out"]]).strip():
-                            timestamp = current.strftime("%d-%b-%Y %I:%M %p")
-                            sheet = client.open_by_key(SHEET_ID).get_worksheet(0) if client else None
-                            if sheet:
-                                sheet.update_cell(row_index, cols["check_out"] + 1, timestamp)
-                                row[cols["check_out"]] = timestamp
-                                print(f"LIFECYCLE AUTO TIMESTAMP: CHECK OUT room={room} phone={phone}", flush=True)
-                    except Exception as exc:
-                        print(f"LIFECYCLE AUTO TIMESTAMP ERROR room={room}: {exc}", flush=True)
                 lifecycle_status_cache[lifecycle_key] = status
 
                 check_in_at = _parse_sheet_datetime(row[cols["check_in"]])

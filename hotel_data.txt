@@ -317,17 +317,17 @@ Family Suite:https://raw.githubusercontent.com/yrskaran/ganga-palace-bot/main/im
 ==================================================
 GOOGLE MAPS
 ==================================================
-Hotel:https://maps.google.com/?q=29.9530,78.1700
+Hotel:
+https://maps.google.com/?q=29.9530,78.1700
 
+Har Ki Pauri:
+https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
 
-Har Ki Pauri:https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar
+Mansa Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
 
-
-Mansa Devi Temple:https://www.google.com/maps/search/?api=1&query=Mansa+Devi+Temple+Haridwar
-
-
-Chandi Devi Temple:https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
-
+Chandi Devi Temple:
+https://www.google.com/maps/search/?api=1&query=Chandi+Devi+Temple+Haridwar
 
 ==================================================
 LOCAL GUIDE RULES

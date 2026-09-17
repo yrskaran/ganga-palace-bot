@@ -69,6 +69,10 @@ GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
 APP_VERSION = "HOTEL-AI-GENERIC-V6.2-OWNER-REVENUE-FINAL"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
+RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
+SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
+LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
+GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
 
 # -----------------------------
 # HOTEL DATA
@@ -104,6 +108,9 @@ processed_msg_ids = set()
 message_id_limit = 5000
 
 order_sessions = {}
+# Explicit confirmation state used when a guest appears to repeat a very recent
+# kitchen order. This prevents an accidental second kitchen row / second charge.
+duplicate_order_sessions = {}
 checkin_sessions = {}
 service_sessions = {}
 active_orders = {}
@@ -133,6 +140,10 @@ lifecycle_status_cache = {}
 
 ACTIVE_CHAT_MODEL = None
 last_model_fetch = 0
+GROQ_UNAVAILABLE_UNTIL = 0.0
+GROQ_LOCK = threading.RLock()
+last_sheet_sync_attempt = 0.0
+last_lifecycle_reconcile = 0.0
 
 
 # ============================================================
@@ -829,6 +840,14 @@ def get_gspread_client():
 
 
 def fetch_sheet_data_sync():
+    """Refresh the Sheet cache, but never hammer Google Sheets on every code path."""
+    global last_sheet_sync_attempt
+    now = time.time()
+    with state_lock:
+        if now - last_sheet_sync_attempt < SHEET_SYNC_MIN_INTERVAL:
+            return False
+        last_sheet_sync_attempt = now
+
     client = get_gspread_client()
     if not client:
         return False
@@ -1057,7 +1076,7 @@ def sync_sheets_in_background():
             fetch_sheet_data_sync()
         except Exception:
             traceback.print_exc()
-        time.sleep(20)
+        time.sleep(SHEET_SYNC_MIN_INTERVAL)
 
 
 def append_kitchen_order(room, guest_name, order_details, amount):
@@ -1068,11 +1087,11 @@ def append_kitchen_order(room, guest_name, order_details, amount):
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         stamp = now_ist().strftime("%d-%b %I:%M %p")
-        sheet.append_row(
-            [stamp, str(room), str(guest_name), str(order_details), int(amount), "PENDING"],
-            value_input_option="USER_ENTERED"
-        )
-        fetch_sheet_data_sync()
+        new_row = [stamp, str(room), str(guest_name), str(order_details), int(amount), "PENDING"]
+        sheet.append_row(new_row, value_input_option="USER_ENTERED")
+        # Keep the in-memory cache current without spending another Sheets read.
+        with state_lock:
+            shared_store.setdefault("kitchen_orders", []).append(new_row)
         return True
     except Exception as exc:
         print("ORDER APPEND ERROR:", exc, flush=True)
@@ -1106,7 +1125,12 @@ def update_kitchen_order_status(room, order_details, new_status):
                 and "PENDING" in row_status
             ):
                 sheet.update_cell(row_index + 1, 6, new_status)
-                fetch_sheet_data_sync()
+                with state_lock:
+                    cached = shared_store.get("kitchen_orders", [])
+                    for cached_row in reversed(cached):
+                        if len(cached_row) >= 6 and clean_room(cached_row[1]) == target_room and normalize_text(cached_row[3]) == target_order and "PENDING" in str(cached_row[5]).upper():
+                            cached_row[5] = new_status
+                            break
                 return True
 
         return False
@@ -2000,7 +2024,30 @@ def build_guide_fallback(user_text, sender_phone=None):
     return "Ji, yahan kuch aur jagah hain jahan aap ghoom sakte hain:\n" + "\n".join(lines)
 
 
+def _groq_circuit_open():
+    with GROQ_LOCK:
+        return time.time() < GROQ_UNAVAILABLE_UNTIL
+
+
+def _groq_set_circuit_breaker(seconds, reason):
+    global GROQ_UNAVAILABLE_UNTIL
+    with GROQ_LOCK:
+        GROQ_UNAVAILABLE_UNTIL = max(GROQ_UNAVAILABLE_UNTIL, time.time() + max(1, int(seconds)))
+    print(f"GROQ CIRCUIT OPEN: {reason} for ~{int(seconds)}s", flush=True)
+
+
+def _compact_ai_text(text, limit):
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    # Keep the beginning because hotel_data.txt is intentionally structured with
+    # identity, rates and menu first; deterministic backend logic still has the full file.
+    return text[:limit].rstrip() + "\n[HOTEL DATA CONTEXT TRUNCATED FOR AI TOKEN SAFETY]"
+
+
 def ask_groq_chat(user_text, guest_info=None, sender_phone=None):
+    if _groq_circuit_open():
+        return None
     model = get_active_groq_model()
     if not model:
         return None
@@ -2018,11 +2065,15 @@ def ask_groq_chat(user_text, guest_info=None, sender_phone=None):
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = get_hotel_data()
+    # Groq's TPM limit is sensitive to INPUT tokens, not only max_tokens.
+    # Keep the hotel brain authoritative but compact the AI copy; deterministic
+    # backend functions continue to use the complete hotel_data.txt.
+    hotel_db = _compact_ai_text(get_hotel_data(), 6200)
     history = get_conversation_history(sender_phone) if sender_phone else []
+    recent_history = history[-4:]
     history_text = "\n".join(
-        f"{item.get('role','user').upper()}: {item.get('content','')}"
-        for item in history
+        f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 700)}"
+        for item in recent_history
     ) or "No earlier conversation available."
 
     system_prompt = f"""
@@ -2044,7 +2095,7 @@ Hotel knowledge file:
 {hotel_db}
 
 Structured local guide:
-{local_guide_context()}
+{_compact_ai_text(local_guide_context(), 2200)}
 
 Important:
 - Use the hotel knowledge file as your primary source of hotel facts.
@@ -2087,7 +2138,7 @@ Important:
         "model": model,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 300,
+        "max_tokens": 180,
     }
 
     try:
@@ -2107,19 +2158,50 @@ Important:
         if res.status_code == 200:
             return res.json()["choices"][0]["message"]["content"].strip()
 
-        print("GROQ CHAT ERROR:", res.status_code, res.text[:500], flush=True)
+        body = res.text[:1000]
+        print("GROQ CHAT ERROR:", res.status_code, body, flush=True)
 
-        # Re-discover the model and retry once if the selected model became invalid.
-        if not GROQ_CHAT_MODEL:
+        # Never immediately retry a TPM/rate-limit error: that only burns more quota.
+        if res.status_code == 429:
+            _groq_set_circuit_breaker(GROQ_RATE_LIMIT_COOLDOWN, "Groq rate limit/TPM reached")
+            return None
+
+        # A 400 caused by message length gets ONE compact retry, without rediscovering
+        # the model or sending the same oversized payload again.
+        if res.status_code == 400 and "length" in body.lower():
+            compact_system = (
+                f"You are the WhatsApp receptionist for {get_hotel_name()}. "
+                f"{language_rule} Use the hotel knowledge below. Be concise. "
+                "Do not invent facts, prices, availability or bookings.\n"
+                f"HOTEL DATA:\n{_compact_ai_text(get_hotel_data(), 3500)}"
+            )
+            compact_payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": compact_system},
+                    {"role": "user", "content": _compact_ai_text(user_text, 1200)},
+                ],
+                "temperature": 0.2,
+                "max_tokens": 120,
+            }
+            try:
+                retry = requests.post(url, json=compact_payload, headers=headers, timeout=15)
+                if retry.status_code == 200:
+                    return retry.json()["choices"][0]["message"]["content"].strip()
+                print("GROQ COMPACT RETRY ERROR:", retry.status_code, retry.text[:500], flush=True)
+            except Exception as retry_exc:
+                print("GROQ COMPACT RETRY EXCEPTION:", retry_exc, flush=True)
+            return None
+
+        # Re-discover the model only for non-rate-limit model errors.
+        if res.status_code in {400, 401, 403, 404} and not GROQ_CHAT_MODEL:
             global ACTIVE_CHAT_MODEL
             ACTIVE_CHAT_MODEL = None
             retry_model = get_active_groq_model(force=True)
             if retry_model and retry_model != model:
                 payload["model"] = retry_model
                 try:
-                    retry = requests.post(
-                        url, json=payload, headers=headers, timeout=20
-                    )
+                    retry = requests.post(url, json=payload, headers=headers, timeout=15)
                     if retry.status_code == 200:
                         return retry.json()["choices"][0]["message"]["content"].strip()
                 except Exception as retry_exc:
@@ -2614,6 +2696,91 @@ def _recent_pending_kitchen_order(room, max_minutes=5):
     except Exception as exc:
         print("RECENT KITCHEN ORDER LOOKUP ERROR:", exc, flush=True)
     return None
+
+
+def _recent_matching_kitchen_order(room, order_details, max_minutes=10):
+    """Find a very recent non-cancelled kitchen order matching this exact order.
+
+    This is intentionally deterministic: the bot should never create a second
+    charge merely because the guest repeated the same food request a minute later.
+    A repeat is surfaced to the guest and requires an explicit second confirmation.
+    """
+    target_room = clean_room(room)
+    target_order = normalize_text(order_details)
+    if not target_room or not target_order:
+        return None
+
+    try:
+        with state_lock:
+            rows = list(shared_store.get("kitchen_orders", []))
+        now = now_ist()
+        candidates = []
+
+        for row in rows:
+            if len(row) < 6 or clean_room(row[1]) != target_room:
+                continue
+
+            status = str(row[5] or "").strip().upper()
+            # A cancelled order should not block a fresh order.
+            if "CANCEL" in status:
+                continue
+
+            stored_order = normalize_text(row[3])
+            if stored_order != target_order:
+                continue
+
+            raw = str(row[0] or "").strip()
+            dt = None
+            for fmt in ("%d-%b %I:%M %p", "%d-%b-%Y %I:%M %p", "%d-%b-%Y %H:%M:%S"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    if dt.tzinfo is None:
+                        dt = IST.localize(dt) if hasattr(IST, "localize") else dt.replace(tzinfo=IST)
+                    if fmt == "%d-%b %I:%M %p":
+                        dt = dt.replace(year=now.year)
+                    break
+                except Exception:
+                    continue
+
+            if not dt:
+                continue
+
+            age = (now - dt.astimezone(IST)).total_seconds()
+            if -120 <= age <= max_minutes * 60:
+                candidates.append((dt, str(row[3]).strip(), status, max(0, int(age))))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            dt, order, status, age_seconds = candidates[0]
+            return {
+                "order": order,
+                "time": dt.timestamp(),
+                "status": status,
+                "age_seconds": age_seconds,
+                "source": "sheet",
+            }
+    except Exception as exc:
+        print("RECENT MATCHING ORDER LOOKUP ERROR:", exc, flush=True)
+    return None
+
+
+def _duplicate_order_message(name, room, recent, language="hinglish"):
+    """Guest-facing warning before creating a second charge for a recent repeat."""
+    age_seconds = int(recent.get("age_seconds", 0))
+    age_text = "abhi" if age_seconds < 60 else f"{max(1, age_seconds // 60)} minute pehle"
+    order = recent.get("order", "same order")
+
+    if language == "english":
+        return (
+            f"{name} ji, you ordered {order} for Room {room} {age_text}. "
+            "Do you want to order the same item again? Please reply YES to create a new order; "
+            "otherwise I will not generate a duplicate kitchen charge. 🙏"
+        )
+    return (
+        f"Ji {name} ji, {order} Room {room} ke liye aapne {age_text} hi order kiya tha. "
+        "Kya aap wahi item dobara mangwana chahte hain? YES/Haan bolenge tabhi naya order aur naya bill charge banega; "
+        "warna duplicate charge nahi banega. 🙏"
+    )
 
 
 def looks_like_complaint(text):
@@ -3119,6 +3286,76 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     # ========================================================
+    # 1B. RECENT DUPLICATE-ORDER CONFIRMATION
+    # If the guest was warned about a recent repeat, only an explicit YES
+    # creates another Kitchen_Orders row. A plain food message must never
+    # silently create a second charge.
+    # ========================================================
+    with state_lock:
+        duplicate_pending = duplicate_order_sessions.get(sender_phone)
+
+    if duplicate_pending:
+        if is_yes(user_text):
+            if not is_inhouse:
+                with state_lock:
+                    duplicate_order_sessions.pop(sender_phone, None)
+                send_whatsapp_message(sender_phone, "Room service sirf in-house guests ke liye available hai.")
+                return
+
+            order_text = duplicate_pending.get("order", "")
+            total = int(duplicate_pending.get("total", 0))
+            ok = append_kitchen_order(
+                guest_info["room"], guest_info["name"], order_text, total
+            )
+            with state_lock:
+                duplicate_order_sessions.pop(sender_phone, None)
+
+            if ok:
+                send_staff_alert(
+                    room=guest_info['room'],
+                    role="Kitchen",
+                    message=(
+                        f"नया रूम सर्विस ऑर्डर (REPEAT CONFIRMED)\n"
+                        f"Room: {guest_info['room']} ({guest_info['name']})\n"
+                        f"Order: {order_text}\n"
+                        f"Amount: Rs.{total}\n"
+                        f"Phone: +{sender_phone}"
+                    ),
+                    fallback_phone=KITCHEN_PHONE,
+                )
+                with state_lock:
+                    active_orders[sender_phone] = {
+                        "order": order_text,
+                        "total": total,
+                        "time": time.time(),
+                    }
+                send_whatsapp_message(
+                    sender_phone,
+                    f"Ji {guest_info['name']} ji, {order_text} ka second order bhi confirm ho gaya hai. Jald deliver hoga. 🙏"
+                )
+            else:
+                send_whatsapp_message(
+                    sender_phone,
+                    "Ji, repeat order save nahi ho paaya. Kripya thodi der baad dobara try karein."
+                )
+            return
+
+        if is_no(user_text):
+            with state_lock:
+                duplicate_order_sessions.pop(sender_phone, None)
+            send_whatsapp_message(
+                sender_phone,
+                f"Ji bilkul. {duplicate_pending.get('order', 'same order')} dobara nahi bhejenge aur duplicate charge nahi banega. 🙏"
+            )
+            return
+
+        send_whatsapp_message(
+            sender_phone,
+            "Ji, same item dobara chahiye to Haan/YES, warna Nahi/NO batayein. 🙏"
+        )
+        return
+
+    # ========================================================
     # 2. AI SEMANTIC COMPLAINT DETECTION
     # ========================================================
     # Obvious complaints are fast-pathed; ambiguous natural language goes to AI.
@@ -3226,6 +3463,27 @@ def process_and_reply(message, sender_phone, msg_type):
                     std_name, price = menu[key]
                     amount = qty * price
                     order_text = f"{qty} x {std_name}"
+
+                    recent = _recent_matching_kitchen_order(
+                        guest_info["room"], order_text, max_minutes=RECENT_DUPLICATE_ORDER_MINUTES
+                    )
+                    if recent:
+                        lang = get_guest_response_language(sender_phone)
+                        with state_lock:
+                            duplicate_order_sessions[sender_phone] = {
+                                "order": order_text,
+                                "total": amount,
+                                "recent": recent,
+                                "created": time.time(),
+                            }
+                        reply = _duplicate_order_message(
+                            guest_info["name"], guest_info["room"], recent, lang
+                        )
+                        send_whatsapp_message(sender_phone, reply)
+                        remember_conversation(sender_phone, "user", user_text)
+                        remember_conversation(sender_phone, "assistant", reply)
+                        return
+
                     with state_lock:
                         order_sessions[sender_phone] = {
                             "order": order_text,
@@ -3776,6 +4034,26 @@ def process_and_reply(message, sender_phone, msg_type):
 
         order_text = format_order(parsed["items"])
 
+        recent = _recent_matching_kitchen_order(
+            guest_info["room"], order_text, max_minutes=RECENT_DUPLICATE_ORDER_MINUTES
+        )
+        if recent:
+            lang = get_guest_response_language(sender_phone)
+            with state_lock:
+                duplicate_order_sessions[sender_phone] = {
+                    "order": order_text,
+                    "total": parsed["total"],
+                    "recent": recent,
+                    "created": time.time(),
+                }
+            reply = _duplicate_order_message(
+                guest_info["name"], guest_info["room"], recent, lang
+            )
+            send_whatsapp_message(sender_phone, reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", reply)
+            return
+
         with state_lock:
             order_sessions[sender_phone] = {
                 "order": order_text,
@@ -4317,9 +4595,12 @@ def monitor_guest_status_lifecycle():
         try:
             fetch_sheet_data_sync()
             # Apps Script simple onEdit does not fire for API/gspread changes.
-            # Reconcile here so timestamps/notifications still work after a Render restart.
-            if reconcile_lifecycle_from_room_sheet():
-                fetch_sheet_data_sync()
+            # Reconcile occasionally, not on every 30-second loop, to protect the
+            # Google Sheets per-user read quota.
+            global last_lifecycle_reconcile
+            if time.time() - last_lifecycle_reconcile >= LIFECYCLE_RECONCILE_MIN_INTERVAL:
+                if reconcile_lifecycle_from_room_sheet():
+                    last_lifecycle_reconcile = time.time()
             process_complaint_followups()
             current = now_ist()
             maybe_send_owner_report(current)
@@ -4356,7 +4637,8 @@ def monitor_guest_status_lifecycle():
                             life_sheet = sh.worksheet("Lifecycle_Automation")
                         except Exception:
                             life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=11)
-                        existing_headers = life_sheet.get_all_values()[0] if life_sheet.get_all_values() else []
+                        existing_values = life_sheet.get_all_values()
+                        existing_headers = existing_values[0] if existing_values else []
                         if not existing_headers:
                             life_sheet.append_row(["Room","Guest Name","Phone","Status","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
                         fetch_sheet_data_sync()

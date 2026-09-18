@@ -83,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.3-AI-FIRST-TRI-FALLBACK-VOICE-FIX"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.5-AI-FIRST-PHOTO-RESOLVE-FIX"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -295,7 +295,7 @@ def guest_language(text):
 
     words = set(re.findall(r'[a-zA-Z]+', raw.lower()))
     sets = {
-        'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao'},
+        'hinglish': {'hai','hain','mujhe','chahiye','karo','karna','karni','bhejo','kitna','kitne','kahan','kahaan','kaise','kyun','kyunki','mera','meri','mere','aap','aapka','ji','kab','abhi','kal','aaj','subah','shaam','khana','pani','kamra','saaf','safai','hoga','hogi','batao','dikhao','kya','aur','ye','yeh','woh','wahi','wala','wali','waale','ka','ki','ke','ko','se','me','mein','par','pe','to','bhi','ho','tha','thi','the'},
         'punjabi': {'tusi','tuhanu','tuhada','tuhadi','tuhade','kithon','kithe','kinna','kinne','chahida','chahidi','dasso','dasdo','savera','paani','ji','menu','mainu','meni','saanu','thoda','kar deo','bhejdo','chaahidi'},
         'rajasthani': {'mhane','mharo','mhari','thare','tharo','thari','mhare','koni','ghano','ghani','khamma','padharo','chokho','chhoro','chhori','kai','mhane','thareko','baisa','sa'},
         'bengali': {'ami','amake','amar','apni','apnar','ache','achi','kothay','koto','chai','diben','den','bhalo','khabar','ghor','ekhane','amar','lagbe','din','ekta'},
@@ -698,28 +698,54 @@ def get_room_photo_categories():
     return [(name, url) for name, url in photos.items() if name not in {"exterior", "front", "hotel", "outside"}]
 
 
-def resolve_requested_photo(user_text):
-    """Resolve a specific configured photo from the guest's natural-language request."""
+def resolve_requested_photo(user_text, allowed_categories=None):
+    """Resolve a configured photo from the guest's current wording.
+
+    Generic, data-driven guardrail only: category names come from hotel_data.txt.
+    Indirect/contextual requests such as "wahi room" remain the AI's job.
+    """
     t = normalize_text(user_text)
     photos = get_hotel_media().get("photos", {})
-    if any(x in t for x in ["hotel front", "hotel photo", "outside", "exterior", "bahar", "front photo"]):
-        return "exterior"
+    allowed = {str(x).strip().lower() for x in (allowed_categories or photos.keys())}
 
-    # No hotel-specific category names are hardcoded here. If the AI router is
-    # unavailable, use only names configured in hotel_data.txt as a conservative fallback.
+    if any(x in t for x in ["hotel front", "hotel photo", "outside", "exterior", "bahar", "front photo"]):
+        return "exterior" if any(str(k).strip().lower() == "exterior" for k in photos) else None
+
+    # Generic request words are not room-category evidence.
+    stop_words = {
+        "photo", "photos", "pic", "pics", "picture", "pictures", "image", "images",
+        "room", "rooms", "ki", "ka", "ke", "wala", "wali", "waala", "waali",
+        "please", "send", "bhejo", "bhej", "dikhao", "dikha", "show", "do", "de",
+        "mujhe", "meri", "mere", "the", "a", "an", "of", "for", "me"
+    }
+    query_tokens = {x for x in re.findall(r"[a-z0-9]+", t) if len(x) > 1 and x not in stop_words}
+    if not query_tokens:
+        return None
 
     candidates = []
-    for name in photos:
-        if name == "exterior":
+    exact_category = []
+    for raw_name in photos:
+        name = str(raw_name).strip().lower()
+        if name == "exterior" or name not in allowed:
             continue
-        tokens = [x for x in normalize_text(name).split() if len(x) > 2]
-        score = sum(1 for tok in tokens if tok in t)
-        if score:
-            candidates.append((score, len(tokens), name))
-    if candidates:
-        candidates.sort(reverse=True)
-        return candidates[0][2]
-    return None
+        name_tokens = {x for x in re.findall(r"[a-z0-9]+", name) if len(x) > 1 and x not in stop_words}
+        if query_tokens == name_tokens:
+            exact_category.append(raw_name)
+            continue
+        overlap = len(query_tokens & name_tokens)
+        if overlap == len(query_tokens) and overlap > 0:
+            candidates.append((overlap, len(name_tokens), raw_name))
+
+    # An exact configured category after removing generic words is unambiguous.
+    # Example: "deluxe room ki photo" -> configured key "deluxe room".
+    if len(exact_category) == 1:
+        return exact_category[0]
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    best_score = candidates[0][0]
+    best = [x for x in candidates if x[0] == best_score]
+    return best[0][2] if len(best) == 1 else None
 
 
 def get_hotel_guide():
@@ -1900,7 +1926,7 @@ def _openrouter_model_candidates():
 
 
 def _openrouter_content_is_usable(content):
-    """Reject empty/guard-only outputs that are not receptionist answers."""
+    """Reject empty/guard-only/internal-reasoning outputs before WhatsApp send."""
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -1921,10 +1947,31 @@ def _openrouter_content_is_usable(content):
         "response safety safe",
         "user safety unsafe response safety unsafe",
     }
+    internal_markers = {
+        "here's a thinking process",
+        "here is a thinking process",
+        "thinking process",
+        "analyze user input",
+        "determine the core question",
+        "core question",
+        "i need to reply naturally",
+        "system prompt",
+        "guest context:",
+        "hotel knowledge:",
+        "recent conversation:",
+        "assistant analysis",
+        "chain of thought",
+        "analysis:",
+    }
     if lowered in blocked_exact or (
         "user safety:" in lowered and "response safety:" in lowered
     ):
         print(f"OPENROUTER NON-CHAT SAFETY OUTPUT REJECTED: {text[:180]!r}", flush=True)
+        return ""
+    marker_hits = sum(1 for marker in internal_markers if marker in lowered)
+    looks_like_numbered_reasoning = bool(re.search(r"(?:^|\n)\s*1[\.)]\s*\*?analy", lowered))
+    if marker_hits >= 1 or looks_like_numbered_reasoning:
+        print(f"OPENROUTER INTERNAL REASONING OUTPUT REJECTED: {text[:220]!r}", flush=True)
         return ""
     return text
 
@@ -1991,6 +2038,8 @@ Hotel knowledge:
             "messages": messages,
             "temperature": 0.2,
             "max_tokens": 360 if structured else 220,
+            # Never ask a reasoning model to expose chain-of-thought to the chat response.
+            "reasoning_effort": "none",
         }
         # Gemma supports response_format. Nemotron Lightning does not, so rely
         # on the JSON-only prompt for that fallback and validate the result later.
@@ -2035,6 +2084,7 @@ Hotel knowledge:
                     ],
                     "temperature": 0.2,
                     "max_tokens": 120,
+                    "reasoning_effort": "none",
                 }
                 if structured and "nemotron-3.5-lightning" not in model.lower():
                     compact_payload["response_format"] = {"type": "json_object"}
@@ -3610,7 +3660,7 @@ Rules:
 - For a known factual question, answer directly in 'reply' using hotel data; do not unnecessarily tell the guest to ask reception.
 - For unsupported or property-specific policy questions, set needs_reception=true and say reception can confirm.
 - For a physical/operational action, identify it in 'action' and leave actual execution to the backend.
-- For photos, resolve the guest's wording to one of the CONFIGURED PHOTO KEYS. 'Family', 'family wala', 'family ka', 'family room', or 'family suite' should resolve from the current choices/context, not from a hardcoded keyword list.
+- For photos, use the CURRENT guest message as the strongest evidence. Previous assistant messages or previously shown photos are not proof of the category wanted now. Resolve the current wording against the CONFIGURED PHOTO KEYS and current photo choices. Generic words such as "room", "photo", "ka/ki/ke" are not themselves category evidence. Do not use a hardcoded hotel-specific alias table.
 - For menus, infer the requested section from natural wording. If the guest asks 'subah kya khate ho?', infer BREAKFAST when appropriate from context.
 - For food orders, map wording to exact authoritative menu item names and quantities. Never invent an item outside the menu.
 - If a broad food group is requested without a specific choice, use ORDER_SELECTION and populate generic.
@@ -3792,9 +3842,25 @@ def _menu_section_message(section_name):
     return "\n".join(out) if len(out) > 1 else None
 
 
-def _handle_ai_photo_route(sender_phone, guest_info, result):
+def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
     target = str(result.get("photo_target", "")).strip()
     categories = get_room_photo_categories()
+
+    # Validate the AI target against the CURRENT guest wording when that wording
+    # contains a unique configured category. This prevents a previously shown
+    # category from being repeated when the guest explicitly asks for another one.
+    current_text_target = resolve_requested_photo(
+        user_text,
+        [name for name, _ in categories],
+    ) if user_text else None
+    if current_text_target:
+        if target.strip().lower() != str(current_text_target).strip().lower():
+            print(
+                f"PHOTO AI TARGET OVERRIDDEN BY CURRENT TEXT: ai={target!r} current_text={user_text!r} resolved={current_text_target!r}",
+                flush=True,
+            )
+        target = current_text_target
+
     if not target:
         with state_lock:
             photo_sessions[sender_phone] = {
@@ -4425,7 +4491,7 @@ def process_and_reply(message, sender_phone, msg_type):
         ai_action = ai_understanding.get("action")
 
         if ai_action == "SHOW_PHOTO":
-            _handle_ai_photo_route(sender_phone, guest_info, ai_understanding)
+            _handle_ai_photo_route(sender_phone, guest_info, ai_understanding, user_text)
             return
 
         if ai_action == "SHOW_MENU":

@@ -635,19 +635,40 @@ def get_hotel_media():
 
 
 def get_hotel_photo(kind):
+    """Return the configured photo URL using robust normalized matching.
+
+    Hotel-specific photo names remain entirely in hotel_data.txt. Matching is
+    case/spacing tolerant so phrases such as "Deluxe room" resolve to a
+    configured "Deluxe Room" key without adding hotel-specific Python rules.
+    """
     media = get_hotel_media().get("photos", {})
-    k = re.sub(r"\s+", " ", str(kind or "").strip().lower())
+    raw = str(kind or "").strip()
+    k = re.sub(r"\s+", " ", raw.lower())
     aliases = {
         "outside": "exterior", "hotel": "exterior", "front": "exterior",
         "main": "exterior", "outside photo": "exterior", "hotel front": "exterior",
+        "hotel exterior": "exterior", "hotel photo": "exterior",
     }
     k = aliases.get(k, k)
-    if k in media:
-        return media[k]
-    for name, url in media.items():
-        if k and (k in name or name in k):
-            return url
-    return None
+
+    # Exact normalized key match first.
+    normalized_media = {re.sub(r"\s+", " ", str(name).strip().lower()): url for name, url in media.items()}
+    if k in normalized_media:
+        return normalized_media[k]
+
+    # Token-aware fallback for minor wording differences, e.g. "deluxe room photo".
+    query_tokens = [x for x in re.findall(r"[a-z0-9]+", k) if len(x) > 2 and x not in {"photo", "photos", "room"}]
+    best = None
+    for name, url in normalized_media.items():
+        name_tokens = [x for x in re.findall(r"[a-z0-9]+", name) if len(x) > 2 and x not in {"photo", "photos", "room"}]
+        if not query_tokens or not name_tokens:
+            continue
+        overlap = len(set(query_tokens) & set(name_tokens))
+        if overlap == len(set(query_tokens)) or overlap == len(set(name_tokens)):
+            score = (overlap, -abs(len(name_tokens) - len(query_tokens)))
+            if best is None or score > best[0]:
+                best = (score, url)
+    return best[1] if best else None
 
 
 def get_room_photo_categories():
@@ -666,13 +687,20 @@ def resolve_requested_photo(user_text):
     # Semantic category aliases prevent generic word overlap such as "room"
     # from selecting the wrong configured category. Hotel-specific names still
     # come from hotel_data.txt; these are generic language patterns only.
-    for aliases, configured in [
-        (("family suite", "family room", "family wala room", "family"), "family suite"),
-        (("super deluxe", "super-deluxe"), "super deluxe room"),
-        (("deluxe room", "deluxe"), "deluxe room"),
-    ]:
-        if any(alias in t for alias in aliases) and configured in photos:
-            return configured
+    # Match configured category names dynamically. The Python code does not
+    # need a hotel-specific list: aliases only describe generic language.
+    semantic_aliases = [
+        (("family suite", "family room", "family wala room", "family"), ("family suite",)),
+        (("super deluxe", "super-deluxe"), ("super deluxe room", "super deluxe")),
+        (("deluxe room", "deluxe"), ("deluxe room", "deluxe")),
+    ]
+    normalized_photos = {re.sub(r"\s+", " ", str(name).strip().lower()): name for name in photos}
+    for aliases, targets in semantic_aliases:
+        if any(alias in t for alias in aliases):
+            for target in targets:
+                nt = re.sub(r"\s+", " ", target.strip().lower())
+                if nt in normalized_photos:
+                    return normalized_photos[nt]
 
     candidates = []
     for name in photos:
@@ -3807,6 +3835,7 @@ def process_and_reply(message, sender_phone, msg_type):
         requested = resolve_requested_photo(user_text)
         if requested:
             photo_url = get_hotel_photo(requested)
+            print(f"PHOTO RESOLVED: text={user_text!r} requested={requested!r} url={photo_url!r}", flush=True)
             if requested == "exterior":
                 if photo_url:
                     send_whatsapp_image(sender_phone, photo_url, f"🏨 {requested.title()}")

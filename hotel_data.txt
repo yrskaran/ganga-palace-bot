@@ -328,3 +328,419 @@ LOCAL GUIDE RULES
 - When the guest asks how to go or asks for a location, provide the matching Maps link.
 - When the guest asks for an itinerary, use the time and preferences stated by the guest plus this guide.
 - Never invent a price, timing, distance or attraction detail that is not present here.
+
+==================================================
+12. STANDARD GUEST FAQ & OPERATING ANSWERS
+==================================================
+PURPOSE:
+- Use this section for common guest questions so the AI can answer directly whenever the answer is documented.
+- Do not ask reception for a question that is already answered in this file.
+- If a field below says NOT CONFIGURED / RECEPTION CONFIRMATION REQUIRED, do not invent an answer. Ask reception only when necessary and use the private [[RECEPTION_NOTIFY:...]] marker for an actionable confirmation request.
+- Never tell the guest that something is "not configured". Say that reception can confirm the current hotel policy/service.
+
+A. BASIC STAY INFORMATION
+- Standard check-in time: 12:00 PM.
+- Standard check-out time: 11:00 AM.
+- Reception / Front Desk: 24/7.
+- Early check-in: Policy/extra charge NOT CONFIGURED. Do not promise availability or price; ask reception to confirm based on arrival time and room availability.
+- Late check-out: Policy/extra charge NOT CONFIGURED. Do not promise availability or price; ask reception to confirm based on occupancy and departure time.
+
+B. WI-FI / AMENITIES
+- Wi-Fi: Complimentary Wi-Fi is available in all rooms.
+- Wi-Fi password: NOT CONFIGURED. Never invent or guess the password; reception must provide the current password.
+- Free on-site parking: YES.
+- Parking wording: "Free on-site parking is available." Do not promise a reserved/guaranteed parking space unless the hotel record says so.
+- Swimming pool: NOT CONFIGURED. Do not claim the hotel has a pool or give timings unless added here.
+- Gym: NOT CONFIGURED. Do not claim the hotel has a gym or give timings unless added here.
+- 24-hour hot water: NOT CONFIGURED. Do not claim 24/7 hot water unless added here.
+
+C. EXTRA BED / MATTRESS / OCCUPANCY
+- Extra bed charge: NOT CONFIGURED. Do not invent a fee.
+- Extra mattress charge: NOT CONFIGURED. Do not invent a fee.
+- Extra guest / occupancy limit: NOT CONFIGURED in this file. Do not approve overcrowding or floor sleeping arrangements. Reception must confirm maximum occupancy and any extra-person/mattress policy.
+
+D. BREAKFAST / FOOD SERVICE
+- Breakfast prompt window: 8:00 AM to 10:00 AM.
+- Breakfast complimentary status: NOT CONFIGURED. Do not say free or paid unless this file is updated or the current booking/rate record explicitly confirms it.
+- Breakfast exact service hours: Only the prompt window is configured (8:00 AM to 10:00 AM). Do not invent kitchen serving hours beyond this window.
+- Room service: Available for in-house guests.
+- 24/7 room-service availability: NOT CONFIGURED. Do not claim 24/7 availability.
+- Current food menu and prices are authoritative in section 3 above.
+- Food orders require guest confirmation before they are sent to the kitchen.
+
+E. HOUSEKEEPING / MAINTENANCE
+- AC or TV not working: Treat as a staff service / maintenance request. Register/route the request to the appropriate staff member; do not ask the guest to diagnose the fault.
+- Towel, soap, room cleaning, luggage assistance, TV remote, water and general help: staff-service requests for in-house guests.
+- If the guest describes noise, smell, pests, leaking water, AC not cooling, TV failure, or another unsatisfactory condition, understand it as a possible complaint even if the guest never uses the word "complaint".
+- Never promise a repair completion time unless a staff member or operational record provides one.
+
+F. LAUNDRY / DRY CLEANING
+- Laundry service: NOT CONFIGURED.
+- Dry-cleaning service: NOT CONFIGURED.
+- Process/charges: NOT CONFIGURED. Do not invent rates or turnaround times; ask reception only when the guest wants to use the service.
+
+G. TRANSPORT / LOCAL TRAVEL
+- Nearest railway station: NOT CONFIGURED in hotel_data.txt. Do not invent distance/time.
+- Nearest airport: NOT CONFIGURED in hotel_data.txt. Do not invent distance/time.
+- Airport pickup/drop: NOT CONFIGURED. Do not promise a cab or quote a fare without a configured source.
+- Local sightseeing cab: NOT CONFIGURED. Do not promise a cab or quote a fare without a configured source.
+- Local sightseeing recommendations: Use the Local Guide sections already present in this file.
+- Nearby/local food options: Use only configured places in the Local Guide; do not invent prices or distances.
+
+H. PAYMENTS
+- Payment methods accepted (UPI / credit card / debit card / cash): NOT CONFIGURED as a complete list. Do not claim a method is accepted unless the current hotel record confirms it.
+- Bill/payment status: Use actual Google Sheets data. Never invent an amount, paid status, advance, or refund.
+
+I. LUGGAGE / CHECK-OUT SUPPORT
+- Luggage storage / cloakroom after check-out: NOT CONFIGURED. Do not promise storage or security arrangements unless reception confirms them.
+- Early check-out: Follow the actual room/stay record and current hotel policy. Do not invent refund rules for unused nights.
+
+J. RESTAURANT / DINING INFORMATION
+- In-house restaurant location: NOT CONFIGURED.
+- Dinner serving closing time: NOT CONFIGURED.
+- Do not invent restaurant floor/location or kitchen closing time. If the guest needs the current information, reception can confirm.
+- Food ordering through WhatsApp uses the authoritative menu in section 3 and requires confirmation before kitchen submission.
+
+K. WAKE-UP CALL
+- Wake-up call service: NOT CONFIGURED.
+- Do not promise a phone wake-up call or a staff visit unless reception confirms the service.
+- If a guest asks for a wake-up call, treat it as a reasonable reception request and ask reception to confirm availability/time.
+
+L. ROOM UPGRADE
+- Room categories and published nightly rates are in section 2.
+- Upgrade options: Use the configured room categories to explain the available categories.
+- Live room availability and whether a specific upgrade is available for this guest: must come from the actual room/booking record; never invent.
+- Additional upgrade charge: Calculate only from actual current room/stay data when available; otherwise reception confirmation is required.
+
+M. CURRENT BILL / FOOD TOTAL
+- Guest asks "mera abhi tak ka bill kitna hai?", "food ka total?", "kitna due hai?", "room + food total?": use actual Google Sheets / billing-engine data.
+- Never calculate a final due amount from memory if the current room record, kitchen orders, payments or stay dates are available in the system.
+- Paid kitchen entries are deducted from amount due as defined in section 9.
+
+==================================================
+13. COMMON UNUSUAL / TRICKY GUEST QUESTIONS
+==================================================
+GENERAL RULE:
+- Understand the guest's actual intention rather than matching exact keywords.
+- Give a direct natural answer when hotel policy/facts are known.
+- For requests requiring a policy decision, physical intervention, another guest's property/access, or an unsupported hotel facility, do not invent. Explain the practical boundary and offer the nearest legitimate alternative.
+- Do not shame, argue with, or mock the guest.
+
+1. "I will not use the AC/TV, will my room rent become half?"
+- Room tariff is based on the booked room category and stay record; this file does not define a usage-based discount.
+- Do not promise a half-price reduction. Ask reception to confirm any discretionary discount.
+
+2. "Can I take the hotel towel/slippers/bathrobe home for free?"
+- Amenity take-away policy is NOT CONFIGURED.
+- Do not say yes or free without confirmation. Tell the guest reception can confirm whether any item may be taken or purchased.
+
+3. "It is raining, can you stop the rain for a while?"
+- Do not claim the hotel can control weather.
+- Reply playfully/politely if appropriate, then offer a practical indoor alternative or suggest waiting for safer weather before sightseeing.
+
+4. "My neighbour is snoring loudly, can you wake them up?"
+- Treat this as a noise/comfort complaint.
+- Do not enter another guest's room or instruct the AI to confront them directly.
+- Alert the appropriate staff/reception team so staff can handle the issue through normal hotel procedures.
+
+5. "I brought my gas cylinder/stove; can I cook aloo paratha in my room?"
+- In-room cooking/open-flame policy is NOT CONFIGURED.
+- Do not approve gas/stove use in a room without confirmed hotel policy. Offer the hotel kitchen/room-service menu as the safe available food option where applicable.
+
+6. "Do any rooms have ghosts? If a ghost comes, will I get a refund?"
+- Do not present rumors as facts and do not invent a refund promise.
+- Respond respectfully and, if needed, say reception can explain the hotel's actual refund policy.
+
+7. "We are 10 people; can we sleep on mattresses on the floor in one standard room?"
+- Do not approve occupancy beyond the actual room policy/record.
+- Ask reception to confirm maximum occupancy and extra-mattress availability.
+
+8. "There is too much traffic/noise outside; can you turn its volume down?"
+- Understand this as a noise/comfort complaint.
+- Staff can be asked whether a quieter room or another practical remedy is available; do not promise the outside noise itself can be reduced.
+
+9. "I am bored; can a bellboy play Ludo with me for two hours?"
+- Do not promise staff personal entertainment or assign an employee to personal activities.
+- Politely explain that staff are on duty and offer a hotel/local activity suggestion if useful.
+
+10. "The hotel soap/shampoo is great; can I buy a 5-litre container?"
+- Product sale availability and pricing are NOT CONFIGURED.
+- Do not invent a price or inventory. Reception can confirm whether bulk sale is offered.
+
+11. "Can I put detergent in the swimming pool and wash clothes there?"
+- Do not permit use of a pool (or any facility) for an incompatible purpose, and do not claim a pool exists unless configured.
+- Give a clear practical refusal and direct the guest to an approved laundry option if one is configured later.
+
+12. "Can you rotate my window toward the other building?"
+- Do not promise structural/window modification.
+- Offer to check whether another room with the desired view/direction is available, subject to the room record.
+
+13. "Can I pack two days of buffet breakfast in a tiffin and take it?"
+- Buffet/take-away policy is NOT CONFIGURED.
+- Do not promise free take-away food. Ask reception if the property permits takeaway or paid packed meals.
+
+14. "Do you have a toothbrush left by a previous guest?"
+- Never reuse or offer another guest's personal toothbrush.
+- Offer a fresh toothbrush/amenity only if the hotel stocks one; otherwise reception can confirm availability.
+
+15. "Can you throw cold water on my face at 6 AM to wake me up?"
+- Understand the intended request as a wake-up service.
+- Do not promise physical contact or unsafe wake-up methods. Ask reception about the available wake-up-call procedure.
+
+16. "Go secretly into another guest's room and bring me their charger."
+- Refuse the privacy/unauthorized-access request.
+- Suggest asking reception for a spare/loan charger or a legitimate charging solution.
+
+17. "Can a security guard sit inside my room all night?"
+- Understand the guest is asking for reassurance/security.
+- Do not promise a guard will remain inside a guest room. Escalate to reception/security for a suitable safety arrangement if needed.
+
+18. "Can I make tea using the hot water from the bathroom?"
+- Do not assume bathroom hot water is potable/drinking water.
+- Tell the guest to use drinking water/mineral water for food or beverages; the menu lists Mineral Water at Rs.20.
+
+19. "I check out early tomorrow; can I eat tomorrow night's free dinner today?"
+- Do not invent free-meal entitlements or substitution/refund rules.
+- Explain that meal entitlement/substitution depends on the booking/hotel policy and reception can confirm.
+
+20. "TV works, but my favourite serial is missing; can you call the director?"
+- Understand this as a TV/channel/content request.
+- Do not promise to contact a TV director. Offer to have staff check the available channels/settings/provider where applicable.
+
+==================================================
+13A. GUEST-FACING MENU SECTIONS — SHOW ONLY WHAT THE GUEST ASKS FOR
+==================================================
+PURPOSE:
+- The full authoritative food list above remains the source of truth for orderable items and prices.
+- This section only organizes those same listed items into guest-friendly menu sections.
+- When the guest asks for a specific section, show ONLY that section (plus a very short follow-up if they want to order).
+- Do not dump the full menu when the guest asks for one section.
+- If the guest asks for the "full menu" / "all items", show all sections.
+- If the guest's wording is indirect, slang-heavy, misspelled, mixed Hindi-English, or conversational, understand the intended section from context.
+- Do not invent items, prices, combos, timings or availability that are not in the authoritative menu/data.
+
+SECTION TRIGGERS:
+- "Breakfast", "subah ka nashta", "morning food" → BREAKFAST
+- "Lunch", "dopahar ka khana" → LUNCH
+- "Dinner", "raat ka khana" → DINNER
+- "Drinks", "beverages", "liquid", "peene ko", "chai/coffee/lassi" → BEVERAGES & DRINKS
+- "Sweets", "dessert", "meetha" → SWEETS & DESSERTS
+- "Snacks", "starter", "light food", "kuch halka" → SNACKS / LIGHT BITES
+- "Dal" → DAL
+- "Paneer" → PANEER / MAIN COURSE OPTIONS
+- "Roti", "naan", "bread" → BREADS
+- "Rice", "chawal" → RICE
+- "Raita", "salad" → SIDES / ACCOMPANIMENTS
+- "Thali" → THALI
+- If the guest says only a broad term such as "khana kya hai?", ask whether they want Breakfast, Lunch, Dinner, Drinks, Snacks, or the Full Menu, unless the conversation context already makes the meal period clear.
+
+BREAKFAST MENU
+- Plain Butter Toast: Rs. 50
+- Poha: Rs. 70
+- Veg Besan Chilla: Rs. 80
+- Aloo Paratha: Rs. 90
+- Paneer Paratha: Rs. 130
+- Mix Veg Paratha: Rs. 110
+- Puri Bhaji: Rs. 110
+- Chole Bhature: Rs. 140
+- Cutting Chai: Rs. 20
+- Masala Chai: Rs. 30
+- Hot Coffee: Rs. 40
+- Cold Coffee: Rs. 80
+- Hot Milk: Rs. 50
+- Sweet Lassi: Rs. 60
+- Salted Lassi: Rs. 60
+
+LUNCH MENU
+- Veg Pakoda: Rs. 90
+- Paneer Pakoda: Rs. 140
+- French Fries: Rs. 90
+- Veg Sandwich: Rs. 90
+- Cheese Grilled Sandwich: Rs. 150
+- Plain Maggi: Rs. 60
+- Veg Masala Maggi: Rs. 80
+- Dal Fry: Rs. 130
+- Dal Tadka: Rs. 160
+- Dal Makhani: Rs. 190
+- Aloo Jeera: Rs. 130
+- Mix Veg: Rs. 170
+- Matar Paneer: Rs. 210
+- Shahi Paneer: Rs. 240
+- Kadhai Paneer: Rs. 250
+- Paneer Butter Masala: Rs. 260
+- Tawa Roti Plain: Rs. 15
+- Tawa Roti Butter: Rs. 20
+- Plain Naan: Rs. 45
+- Butter Naan: Rs. 60
+- Garlic Naan: Rs. 75
+- Steamed Rice: Rs. 110
+- Jeera Rice: Rs. 140
+- Veg Pulao: Rs. 170
+- Boondi Raita: Rs. 70
+- Veg Raita: Rs. 90
+- Green Salad: Rs. 50
+- Standard Veg Thali: Rs. 200
+- Special Deluxe Ganga Thali: Rs. 290
+
+DINNER MENU
+- Veg Pakoda: Rs. 90
+- Paneer Pakoda: Rs. 140
+- French Fries: Rs. 90
+- Veg Sandwich: Rs. 90
+- Cheese Grilled Sandwich: Rs. 150
+- Plain Maggi: Rs. 60
+- Veg Masala Maggi: Rs. 80
+- Dal Fry: Rs. 130
+- Dal Tadka: Rs. 160
+- Dal Makhani: Rs. 190
+- Aloo Jeera: Rs. 130
+- Mix Veg: Rs. 170
+- Matar Paneer: Rs. 210
+- Shahi Paneer: Rs. 240
+- Kadhai Paneer: Rs. 250
+- Paneer Butter Masala: Rs. 260
+- Tawa Roti Plain: Rs. 15
+- Tawa Roti Butter: Rs. 20
+- Plain Naan: Rs. 45
+- Butter Naan: Rs. 60
+- Garlic Naan: Rs. 75
+- Steamed Rice: Rs. 110
+- Jeera Rice: Rs. 140
+- Veg Pulao: Rs. 170
+- Boondi Raita: Rs. 70
+- Veg Raita: Rs. 90
+- Green Salad: Rs. 50
+- Standard Veg Thali: Rs. 200
+- Special Deluxe Ganga Thali: Rs. 290
+
+BEVERAGES & DRINKS
+HOT / WARM:
+- Cutting Chai: Rs. 20
+- Masala Chai: Rs. 30
+- Hot Coffee: Rs. 40
+- Hot Milk: Rs. 50
+COLD / REFRESHING:
+- Cold Coffee: Rs. 80
+- Sweet Lassi: Rs. 60
+- Salted Lassi: Rs. 60
+WATER:
+- Mineral Water: Rs. 20
+
+SNACKS / LIGHT BITES
+- Plain Butter Toast: Rs. 50
+- Veg Pakoda: Rs. 90
+- Paneer Pakoda: Rs. 140
+- French Fries: Rs. 90
+- Veg Sandwich: Rs. 90
+- Cheese Grilled Sandwich: Rs. 150
+- Plain Maggi: Rs. 60
+- Veg Masala Maggi: Rs. 80
+
+DAL
+- Dal Fry: Rs. 130
+- Dal Tadka: Rs. 160
+- Dal Makhani: Rs. 190
+
+PANEER / MAIN COURSE OPTIONS
+- Matar Paneer: Rs. 210
+- Shahi Paneer: Rs. 240
+- Kadhai Paneer: Rs. 250
+- Paneer Butter Masala: Rs. 260
+
+VEGETABLE MAIN COURSE
+- Aloo Jeera: Rs. 130
+- Mix Veg: Rs. 170
+
+BREADS
+- Tawa Roti Plain: Rs. 15
+- Tawa Roti Butter: Rs. 20
+- Plain Naan: Rs. 45
+- Butter Naan: Rs. 60
+- Garlic Naan: Rs. 75
+
+RICE
+- Steamed Rice: Rs. 110
+- Jeera Rice: Rs. 140
+- Veg Pulao: Rs. 170
+
+SIDES / ACCOMPANIMENTS
+- Boondi Raita: Rs. 70
+- Veg Raita: Rs. 90
+- Green Salad: Rs. 50
+
+THALI
+- Standard Veg Thali: Rs. 200
+- Special Deluxe Ganga Thali: Rs. 290
+
+SWEETS & DESSERTS
+- No sweets or desserts are currently listed in the authoritative hotel menu.
+- If the guest asks for sweets/dessert/meetha, say none are currently listed and reception/kitchen can confirm whether any fresh item is available that day.
+- Never invent a sweet or dessert name/price.
+
+MENU RESPONSE RULES:
+- Guest: "Breakfast dikhao" → return only BREAKFAST MENU.
+- Guest: "Lunch mein kya hai?" → return only LUNCH MENU.
+- Guest: "Kuch peene ko hai?" → return only BEVERAGES & DRINKS.
+- Guest: "Meetha kya hai?" → return SWEETS & DESSERTS status only.
+- Guest: "Dal mein kya hai?" → return only DAL.
+- Guest: "Roti ka menu" → return only BREADS.
+- Guest: "Rice options?" → return only RICE.
+- Guest: "Raita ya salad hai?" → return only SIDES / ACCOMPANIMENTS.
+- Guest: "Thali dikhao" → return only THALI.
+- Guest: "Poora menu bhejo" → show all menu sections.
+- Guest: "Kuch achha khane ko suggest karo" → use conversation context and the authoritative menu to suggest a small number of relevant options; do not dump every section.
+- Prices should be shown when the guest asks for price/rate/cost/bill, or when presenting a requested menu section where the price is already in the authoritative list.
+- Food ordering still follows the confirmation rule: show options first, capture the selection/quantity, confirm the order, then send it to the kitchen.
+
+==================================================
+14. AI RESPONSE STYLE FOR REAL-WORLD GUEST MESSAGES
+==================================================
+- The guest does not need to use hotel keywords such as "complaint", "maintenance", "room service", or "cancel".
+- Infer the intended meaning from the full sentence, slang, spelling mistakes, mixed Hindi-English, voice-transcription errors, follow-up context and indirect wording.
+- Examples of meaning equivalence include:
+  "AC thanda nahi kar raha" → maintenance/complaint
+  "bahar se bahut shor aa raha" → noise/comfort complaint
+  "rehne do, mat bhejna" → cancellation/change of mind
+  "wahi wala phir se" → use the recent conversation/order context
+  "room mein 2 aur log aa jayenge?" → occupancy question
+  "kal 6 baje utha dena" → wake-up request
+- Do not demand exact yes/no wording when the guest's meaning is otherwise clear.
+- Preserve the guest's preferred language and script as already defined by the AI language rules.
+- For an answerable question, answer directly first; do not unnecessarily redirect the guest to reception.
+- Only use reception escalation when the answer is a property policy decision, live operational fact, physical intervention, account-specific decision, or information not present in this file or actual backend data.
+
+==================================================
+15. DATA ITEMS TO FILL LATER (NO CODE CHANGE NEEDED)
+==================================================
+Fill these values here when the hotel confirms them:
+- Wi-Fi Password: [ADD CURRENT PASSWORD]
+- Early Check-in Policy: [ADD POLICY]
+- Early Check-in Charge: [ADD AMOUNT / FREE / CASE-BY-CASE]
+- Late Check-out Policy: [ADD POLICY]
+- Late Check-out Charge: [ADD AMOUNT / FREE / CASE-BY-CASE]
+- Extra Bed Charge: [ADD AMOUNT]
+- Extra Mattress Charge: [ADD AMOUNT]
+- Breakfast Complimentary: [YES / NO]
+- Breakfast Service Timing: [ADD EXACT TIMING]
+- Room Service Timing: [ADD EXACT TIMING / 24x7 IF TRUE]
+- Hot Water Timing: [ADD EXACT TIMING / 24x7 IF TRUE]
+- Swimming Pool: [YES / NO] | Timing: [ADD]
+- Gym: [YES / NO] | Timing: [10am to 7 pm]
+- Laundry: [YES / NO] | Charges: [ADD]
+- Dry Cleaning: [YES / NO] | Charges: [250rs]
+- Nearest Railway Station: [NAME + VERIFIED DISTANCE/TIME]
+- Nearest Airport: [NAME + VERIFIED DISTANCE/TIME]
+- Airport Pickup/Drop: [YES / NO] | Charge: [ADD]
+- Local Sightseeing Cab: [YES / NO] | Charge/Rate: [ADD]
+- Accepted Payment Methods: [ADD VERIFIED METHODS]
+- Luggage Storage/Cloakroom: [YES / NO] | Hours: [ADD]
+- Restaurant Location: [ADD]
+- Dinner Serving Timing: [10:30 pm last ]
+- Wake-up Call: [YES / NO] | Procedure: [NO]
+- Room Upgrade Policy: [NO]
+- Upgrade Charges: [ADD / CASE-BY-CASE]
+
+IMPORTANT:
+- Until a value above is filled, the AI must not guess it.
+- Editing this section should be enough for these hotel-specific FAQs; do not add separate Python rules for every wording variant.
+

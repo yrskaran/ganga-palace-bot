@@ -51,10 +51,16 @@ GEMINI_LOCK = threading.RLock()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "").strip()
 
-# Third AI provider: OpenRouter's free-model router. It is optional; when no
-# key is configured, this provider is skipped without affecting the other two.
+# Third AI provider: OpenRouter explicit free conversational models. It is optional;
+# when no key is configured, this provider is skipped without affecting the other two.
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "").strip()
+OPENROUTER_MODELS = [
+    x.strip() for x in os.getenv(
+        "OPENROUTER_MODELS",
+        "google/gemma-4-31b-it:free,nvidia/nemotron-3.5-lightning:free"
+    ).split(",") if x.strip()
+]
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
 OPENROUTER_APP_NAME = os.getenv("OPENROUTER_APP_NAME", "Hotel Ganga View AI Receptionist").strip()
 OPENROUTER_UNAVAILABLE_UNTIL = 0.0
@@ -77,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.2-AI-FIRST-TRI-FALLBACK"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.3-AI-FIRST-TRI-FALLBACK-VOICE-FIX"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -1635,24 +1641,34 @@ def mark_message_as_read(message_id):
 
 def download_whatsapp_media(media_id):
     if not media_id or not WHATSAPP_TOKEN:
+        print(f"MEDIA DOWNLOAD SKIPPED: media_id={bool(media_id)} token={bool(WHATSAPP_TOKEN)}", flush=True)
         return None
 
     try:
         meta_url = f"https://graph.facebook.com/{GRAPH_API_VERSION}/{media_id}"
         headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}"}
 
-        meta = requests.get(meta_url, headers=headers, timeout=10)
+        meta = requests.get(meta_url, headers=headers, timeout=12)
         if meta.status_code != 200:
+            print(f"MEDIA META ERROR: status={meta.status_code} body={meta.text[:600]}", flush=True)
             return None
 
-        media_url = meta.json().get("url")
+        meta_data = meta.json() or {}
+        media_url = meta_data.get("url")
+        mime_type = meta_data.get("mime_type", "")
         if not media_url:
+            print(f"MEDIA META MISSING URL: {meta_data}", flush=True)
             return None
 
-        media = requests.get(media_url, headers=headers, timeout=20)
-        if media.status_code == 200:
+        media = requests.get(media_url, headers=headers, timeout=25)
+        if media.status_code == 200 and media.content:
+            print(
+                f"MEDIA DOWNLOAD OK: id={media_id} bytes={len(media.content)} mime={mime_type or media.headers.get('content-type','')}",
+                flush=True,
+            )
             return media.content
 
+        print(f"MEDIA CONTENT ERROR: status={media.status_code} bytes={len(media.content or b'')} body={media.text[:400]}", flush=True)
     except Exception as exc:
         print("MEDIA DOWNLOAD ERROR:", exc, flush=True)
 
@@ -1856,8 +1872,65 @@ Important:
     return None
 
 
+def _openrouter_model_candidates():
+    """Return explicit conversational free models; never use openrouter/free randomly.
+
+    The free router can select any eligible free model, including a safety-only
+    model. For a receptionist we want chat-capable models with predictable text
+    output, so use a small explicit fallback list instead.
+    """
+    candidates = []
+    configured = [x for x in OPENROUTER_MODELS if x]
+    if configured:
+        candidates.extend(configured)
+    # Backward compatibility: an explicit OPENROUTER_MODEL can still override
+    # the list, but the old openrouter/free router is deliberately ignored.
+    if OPENROUTER_MODEL and OPENROUTER_MODEL.lower() != "openrouter/free":
+        candidates.insert(0, OPENROUTER_MODEL)
+    # Always keep the known-good free conversational fallbacks available.
+    candidates.extend([
+        "google/gemma-4-31b-it:free",
+        "nvidia/nemotron-3.5-lightning:free",
+    ])
+    out = []
+    for model in candidates:
+        if model and model not in out:
+            out.append(model)
+    return out
+
+
+def _openrouter_content_is_usable(content):
+    """Reject empty/guard-only outputs that are not receptionist answers."""
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if text:
+                    parts.append(str(text))
+        content = "".join(parts)
+    text = str(content or "").strip()
+    if not text:
+        return ""
+    lowered = normalize_text(text)
+    # OpenRouter's free pool can expose a content-safety classifier. Its output
+    # must never be sent as the guest-facing receptionist answer.
+    blocked_exact = {
+        "user safety safe response safety safe",
+        "user safety safe",
+        "response safety safe",
+        "user safety unsafe response safety unsafe",
+    }
+    if lowered in blocked_exact or (
+        "user safety:" in lowered and "response safety:" in lowered
+    ):
+        print(f"OPENROUTER NON-CHAT SAFETY OUTPUT REJECTED: {text[:180]!r}", flush=True)
+        return ""
+    return text
+
+
 def ask_openrouter_chat(user_text, guest_info=None, sender_phone=None, structured=False):
-    """Third conversational AI fallback using OpenRouter's free-model router."""
+    """Third conversational AI fallback using explicit OpenRouter free chat models."""
     if not OPENROUTER_API_KEY or _openrouter_circuit_open():
         return None
 
@@ -1904,14 +1977,6 @@ Hotel knowledge:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": str(user_text)})
 
-    payload = {
-        "model": OPENROUTER_MODEL or "openrouter/free",
-        "messages": messages,
-        "temperature": 0.2,
-        "max_tokens": 360 if structured else 220,
-    }
-    if structured:
-        payload["response_format"] = {"type": "json_object"}
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type": "application/json",
@@ -1920,54 +1985,84 @@ Hotel knowledge:
     if OPENROUTER_SITE_URL:
         headers["HTTP-Referer"] = OPENROUTER_SITE_URL
 
-    try:
-        res = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            json=payload,
-            headers=headers,
-            timeout=22,
-        )
-        if res.status_code == 200:
-            data = res.json() or {}
-            content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-            if isinstance(content, list):
-                content = "".join(str(x.get("text", "")) for x in content if isinstance(x, dict))
-            if str(content).strip():
-                return str(content).strip()
-            print("OPENROUTER EMPTY RESPONSE", flush=True)
-            return None
-
-        body = res.text[:1200]
-        print("OPENROUTER CHAT ERROR:", res.status_code, body, flush=True)
-        if res.status_code == 429:
-            wait = _rate_limit_retry_seconds(res, 3600)
-            _openrouter_set_circuit_breaker(wait, "OpenRouter free-model rate limit reached")
-            return None
-        if res.status_code in {401, 403, 404}:
-            _openrouter_set_circuit_breaker(300, f"OpenRouter HTTP {res.status_code}")
-            return None
-        if res.status_code == 400 and "length" in body.lower():
-            compact_payload = {
-                "model": OPENROUTER_MODEL or "openrouter/free",
-                "messages": [
-                    {"role": "system", "content": f"You are a hotel receptionist. {language_rule} Use only this hotel data:\n{_compact_ai_text(get_hotel_data(), 3500)}"},
-                    {"role": "user", "content": _compact_ai_text(user_text, 1200)},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 120,
-            }
-            retry = requests.post("https://openrouter.ai/api/v1/chat/completions", json=compact_payload, headers=headers, timeout=15)
-            if retry.status_code == 200:
-                data = retry.json() or {}
+    for model in _openrouter_model_candidates():
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": 0.2,
+            "max_tokens": 360 if structured else 220,
+        }
+        # Gemma supports response_format. Nemotron Lightning does not, so rely
+        # on the JSON-only prompt for that fallback and validate the result later.
+        if structured and "nemotron-3.5-lightning" not in model.lower():
+            payload["response_format"] = {"type": "json_object"}
+        try:
+            print(f"OPENROUTER TRY: model={model} structured={structured}", flush=True)
+            res = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=22,
+            )
+            if res.status_code == 200:
+                data = res.json() or {}
                 content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-                return str(content).strip() if content else None
-    except (requests.Timeout, requests.ConnectionError) as exc:
-        print("OPENROUTER CHAT NETWORK ERROR:", exc, flush=True)
-        _openrouter_set_circuit_breaker(45, "OpenRouter network failure")
-    except Exception as exc:
-        print("OPENROUTER CHAT EXCEPTION:", exc, flush=True)
-    return None
+                usable = _openrouter_content_is_usable(content)
+                if usable:
+                    print(f"OPENROUTER SUCCESS: model={model}", flush=True)
+                    return usable
+                print(f"OPENROUTER EMPTY/INVALID OUTPUT: model={model}", flush=True)
+                continue
 
+            body = res.text[:1200]
+            print(f"OPENROUTER CHAT ERROR: model={model} status={res.status_code} {body}", flush=True)
+            if res.status_code == 429:
+                # Do not keep hammering the same free endpoint. Move to the next
+                # explicit model; only open the shared circuit after the fallback
+                # candidates are exhausted.
+                continue
+            if res.status_code in {401, 403}:
+                _openrouter_set_circuit_breaker(300, f"OpenRouter HTTP {res.status_code}")
+                return None
+            if res.status_code == 404:
+                continue
+            if res.status_code == 400 and "length" in body.lower():
+                compact_payload = {
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": f"You are a hotel receptionist. {language_rule} Use only this hotel data:\n{_compact_ai_text(get_hotel_data(), 3500)}"},
+                        {"role": "user", "content": _compact_ai_text(user_text, 1200)},
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 120,
+                }
+                if structured and "nemotron-3.5-lightning" not in model.lower():
+                    compact_payload["response_format"] = {"type": "json_object"}
+                retry = requests.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    json=compact_payload,
+                    headers=headers,
+                    timeout=15,
+                )
+                if retry.status_code == 200:
+                    data = retry.json() or {}
+                    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
+                    usable = _openrouter_content_is_usable(content)
+                    if usable:
+                        print(f"OPENROUTER COMPACT SUCCESS: model={model}", flush=True)
+                        return usable
+                continue
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            print(f"OPENROUTER NETWORK ERROR: model={model}: {exc}", flush=True)
+            continue
+        except Exception as exc:
+            print(f"OPENROUTER CHAT EXCEPTION: model={model}: {exc}", flush=True)
+            continue
+
+    # All explicit free conversational models failed for this turn. A short
+    # circuit avoids a burst of retries while preserving later recovery.
+    _openrouter_set_circuit_breaker(45, "OpenRouter free conversational models unavailable")
+    return None
 
 def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
     """Generic AI gateway: Gemini -> Groq -> OpenRouter Free."""
@@ -1980,12 +2075,32 @@ def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
     return ask_openrouter_chat(user_text, guest_info, sender_phone)
 
 
-def transcribe_audio_gemini(audio_bytes):
-    """Primary voice transcription through Gemini; Groq remains the fallback.
+def _normalize_audio_mime(mime_type):
+    raw = str(mime_type or "audio/ogg").strip().lower().split(";", 1)[0]
+    supported = {
+        "audio/ogg", "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3",
+        "audio/mp4", "audio/m4a", "audio/webm", "audio/flac",
+    }
+    return raw if raw in supported else "audio/ogg"
 
-    Quota/network failures open the same circuit breaker used by chat so a
-    voice note cannot burn the remaining free-tier quota across every model.
-    """
+
+def _audio_extension_for_mime(mime_type):
+    mime = _normalize_audio_mime(mime_type)
+    return {
+        "audio/ogg": "ogg",
+        "audio/wav": "wav",
+        "audio/x-wav": "wav",
+        "audio/mpeg": "mp3",
+        "audio/mp3": "mp3",
+        "audio/mp4": "mp4",
+        "audio/m4a": "m4a",
+        "audio/webm": "webm",
+        "audio/flac": "flac",
+    }.get(mime, "ogg")
+
+
+def transcribe_audio_gemini(audio_bytes, mime_type="audio/ogg"):
+    """Primary voice transcription through Gemini; Groq remains the fallback."""
     if not GEMINI_API_KEY or not audio_bytes or _gemini_circuit_open():
         return None
     models = []
@@ -1998,7 +2113,7 @@ def transcribe_audio_gemini(audio_bytes):
     payload = {
         "contents": [{"role": "user", "parts": [
             {"text": prompt},
-            {"inlineData": {"mimeType": "audio/ogg", "data": encoded}},
+            {"inlineData": {"mimeType": _normalize_audio_mime(mime_type), "data": encoded}},
         ]}],
         "generationConfig": {"temperature": 0, "maxOutputTokens": 500},
     }
@@ -2013,7 +2128,9 @@ def transcribe_audio_gemini(audio_bytes):
                 parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
                 text = "".join(str(x.get("text", "")) for x in parts if x.get("text")).strip()
                 if text:
+                    print(f"GEMINI STT SUCCESS: model={model}", flush=True)
                     return text
+                print(f"GEMINI STT EMPTY: model={model}", flush=True)
             else:
                 body = res.text[:1000]
                 print(f"GEMINI STT ERROR: model={model} status={res.status_code} {body}", flush=True)
@@ -2039,38 +2156,64 @@ def transcribe_audio_gemini(audio_bytes):
 # GROQ / AI
 # ============================================================
 
-def transcribe_audio_groq(audio_bytes):
+def transcribe_audio_groq(audio_bytes, mime_type="audio/ogg"):
     if not GROQ_API_KEY or not audio_bytes:
         return None
 
     url = "https://api.groq.com/openai/v1/audio/transcriptions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+    mime = _normalize_audio_mime(mime_type)
+    extension = _audio_extension_for_mime(mime)
     files = {
-        "file": ("voice_note.ogg", audio_bytes, "audio/ogg")
+        "file": (f"voice_note.{extension}", audio_bytes, mime)
     }
-    data = {
-        "model": "whisper-large-v3",
-        "response_format": "json",
-        "prompt": (
-            "Multilingual hotel conversation. Transcribe food, room-service, housekeeping, booking, billing and guest-service requests accurately. Preserve the guest's words."
-        ),
-    }
+    models = []
+    for model in [
+        os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo").strip(),
+        "whisper-large-v3",
+        "whisper-large-v3-turbo",
+    ]:
+        if model and model not in models:
+            models.append(model)
 
-    try:
-        res = requests.post(
-            url,
-            headers=headers,
-            files=files,
-            data=data,
-            timeout=30
-        )
-        if res.status_code == 200:
-            return res.json().get("text", "").strip()
-    except Exception as exc:
-        print("GROQ STT ERROR:", exc, flush=True)
+    for model in models:
+        data = {
+            "model": model,
+            "response_format": "json",
+            "temperature": 0,
+            "prompt": (
+                "Multilingual hotel conversation. Transcribe food, room-service, housekeeping, booking, billing and guest-service requests accurately. Preserve the guest's spoken language and wording. Do not translate."
+            ),
+        }
+        try:
+            res = requests.post(
+                url,
+                headers=headers,
+                files=files,
+                data=data,
+                timeout=35,
+            )
+            if res.status_code == 200:
+                text = str((res.json() or {}).get("text", "")).strip()
+                if text:
+                    print(f"GROQ STT SUCCESS: model={model}", flush=True)
+                    return text
+                print(f"GROQ STT EMPTY: model={model}", flush=True)
+                continue
 
+            body = res.text[:1200]
+            print(f"GROQ STT ERROR: model={model} status={res.status_code} {body}", flush=True)
+            if res.status_code in {401, 403}:
+                return None
+            # Try the alternate Whisper model on throttling rather than giving up.
+            if res.status_code == 429:
+                continue
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            print(f"GROQ STT NETWORK ERROR: model={model}: {exc}", flush=True)
+            continue
+        except Exception as exc:
+            print(f"GROQ STT EXCEPTION: model={model}: {exc}", flush=True)
     return None
-
 
 def get_active_groq_model(force=False):
     global ACTIVE_CHAT_MODEL, last_model_fetch
@@ -3721,12 +3864,19 @@ def process_and_reply(message, sender_phone, msg_type):
 
     # -------- audio --------
     if msg_type == "audio":
-        media_id = message.get("audio", {}).get("id")
+        audio_info = message.get("audio", {}) or {}
+        media_id = audio_info.get("id")
+        mime_type = audio_info.get("mime_type", "audio/ogg")
+        print(f"VOICE NOTE RECEIVED: media_id={media_id!r} mime={mime_type!r}", flush=True)
         audio_bytes = download_whatsapp_media(media_id)
 
         if audio_bytes:
-            transcription = transcribe_audio_gemini(audio_bytes) or transcribe_audio_groq(audio_bytes)
+            transcription = (
+                transcribe_audio_gemini(audio_bytes, mime_type)
+                or transcribe_audio_groq(audio_bytes, mime_type)
+            )
             user_text = transcription or ""
+            print(f"VOICE TRANSCRIPTION: {user_text!r}", flush=True)
 
         if not user_text:
             send_whatsapp_message(

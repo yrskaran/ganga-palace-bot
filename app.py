@@ -51,6 +51,12 @@ GEMINI_LOCK = threading.RLock()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "").strip()
 
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openrouter/free").strip()
+OPENROUTER_UNAVAILABLE_UNTIL = 0.0
+OPENROUTER_LOCK = threading.RLock()
+OPENROUTER_RATE_LIMIT_COOLDOWN = max(60, int(os.getenv("OPENROUTER_RATE_LIMIT_COOLDOWN", "120")))
+
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 
@@ -67,12 +73,13 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V6.2-OWNER-REVENUE-FINAL"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.0-AI-BRAIN-OWNER-LIFECYCLE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
 LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
 GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
+OWNER_REPORT_GRACE_MINUTES = max(1, int(os.getenv("OWNER_REPORT_GRACE_MINUTES", "10")))
 
 # -----------------------------
 # HOTEL DATA
@@ -334,8 +341,20 @@ def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
 
 
 def remember_guest_language(sender_phone,text):
-    lang=guest_language(text)
-    with state_lock: guest_language_cache[sender_phone]=lang
+    detected=guest_language(text)
+    raw=str(text or "").strip()
+    words=re.findall(r"[a-zA-Z]+",raw.lower())
+    native=bool(re.search(r"[\u0900-\u0D7F\u0600-\u06FF]",raw))
+    with state_lock:
+        previous=guest_language_cache.get(sender_phone)
+        # Keep the established guest language for very short ambiguous follow-ups
+        # such as "aur", "more", "haan", "ok"; longer messages or native script
+        # are allowed to switch language naturally.
+        if previous and detected == "english" and len(words) <= 3 and not native:
+            lang=previous
+        else:
+            lang=detected
+        guest_language_cache[sender_phone]=lang
     return lang
 
 def get_guest_response_language(sender_phone,text=None):
@@ -910,45 +929,41 @@ def fetch_sheet_data_sync():
 # ============================================================
 
 def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
-    """Generate a short proactive guest message from the AI + hotel_data.txt.
-
-    No Notification_Messages tab is required. The event itself is deterministic;
-    the wording and guest language are generated from the current hotel brain.
-    """
-    lang = str(language or "english").strip()
-    prompts = {
-        "WELCOME": "Welcome the guest warmly after check-in and offer help.",
-        "30_MINUTE": "Check whether the guest is comfortably settled and offer assistance.",
-        "BREAKFAST": "Give a short breakfast-time reminder and invite the guest to ask for the menu.",
-        "LUNCH": "Give a short lunch-time reminder and invite the guest to ask for the menu.",
-        "GANGA_AARTI": "Give a short Ganga Aarti reminder and advise the guest to confirm current timing with reception before leaving.",
-        "DINNER": "Give a short dinner-time reminder and invite the guest to ask for the menu.",
-        "CHECKOUT": "Thank the guest after checkout and wish them a safe journey."
+    """Build proactive lifecycle messages without consuming conversational AI quota."""
+    lang=str(language or "english").strip().lower()
+    hotel=get_hotel_name(); checkout=get_hotel_value("Check-out","11:00 AM")
+    msgs={
+      "WELCOME":{
+        "english":f"Welcome to {hotel}, {name} ji! 🙏 Room {room} is now active. Please message us anytime if you need anything.",
+        "hindi":f"{hotel} में आपका हार्दिक स्वागत है {name} जी! 🙏 Room {room} अब active है। किसी भी मदद के लिए हमें कभी भी message करें।",
+        "hinglish":f"{hotel} mein aapka hardik swagat hai {name} ji! 🙏 Room {room} active hai. Kisi bhi help ke liye humein kabhi bhi message karein."},
+      "30_MINUTE":{
+        "english":f"{name} ji, I hope you are comfortable in Room {room}. Please message us for towel, soap, cleaning or any other help.",
+        "hindi":f"{name} जी, उम्मीद है आप Room {room} में आराम से हैं। Towel, soap, cleaning या किसी भी मदद के लिए हमें message करें।",
+        "hinglish":f"{name} ji, umeed hai Room {room} mein aap comfortable hain. Towel, soap, cleaning ya kisi bhi help ke liye humein message karein."},
+      "BREAKFAST":{
+        "english":f"Good morning {name} ji! 🍽️ Breakfast time hai. Menu ke liye 'menu' message karein ya apna order bhej dein.",
+        "hindi":f"सुप्रभात {name} जी! 🍽️ नाश्ते का समय है। Menu के लिए 'menu' message करें या अपना order भेजें।",
+        "hinglish":f"Good morning {name} ji! 🍽️ Breakfast ka time hai. Menu ke liye 'menu' message karein ya apna order bhej dein."},
+      "LUNCH":{
+        "english":f"{name} ji, lunch time hai. 🍽️ Menu ke liye 'menu' message kar sakte hain.",
+        "hindi":f"{name} जी, lunch का समय है। 🍽️ Menu के लिए 'menu' message कर सकते हैं।",
+        "hinglish":f"{name} ji, lunch ka time hai. 🍽️ Menu ke liye 'menu' message kar sakte hain."},
+      "GANGA_AARTI":{
+        "english":f"{name} ji, Ganga Aarti reminder 🙏 Har Ki Pauri Sandhya Aarti ke liye around 5:15 PM tak pahunchna better rahega. Nikalne se pehle current timing reception se confirm kar lein.",
+        "hindi":f"{name} जी, Ganga Aarti reminder 🙏 Har Ki Pauri Sandhya Aarti के लिए लगभग 5:15 PM तक पहुँचना बेहतर रहेगा। निकलने से पहले current timing reception से confirm कर लें।",
+        "hinglish":f"{name} ji, Ganga Aarti reminder 🙏 Har Ki Pauri Sandhya Aarti ke liye around 5:15 PM tak pahunchna better rahega. Nikalne se pehle current timing reception se confirm kar lein."},
+      "DINNER":{
+        "english":f"{name} ji, dinner time hai. 🍽️ Menu ke liye 'menu' message kar sakte hain.",
+        "hindi":f"{name} जी, dinner का समय है। 🍽️ Menu के लिए 'menu' message कर सकते हैं।",
+        "hinglish":f"{name} ji, dinner ka time hai. 🍽️ Menu ke liye 'menu' message kar sakte hain."},
+      "CHECKOUT":{
+        "english":f"Thank you for staying with us, {name} ji. 🙏 Check-out time is {checkout}. Have a safe journey and visit us again.",
+        "hindi":f"हमारे साथ ठहरने के लिए धन्यवाद {name} जी। 🙏 Check-out का समय {checkout} है। आपकी यात्रा शुभ और सुरक्षित हो। फिर आइएगा।",
+        "hinglish":f"Hamare saath stay karne ke liye thank you {name} ji. 🙏 Check-out time {checkout} hai. Safe journey aur phir zaroor aaiyega."}
     }
-    instruction = prompts.get(event, "Give a brief helpful hotel guest reminder.")
-    prompt = (
-        "Write ONE concise WhatsApp message for a hotel guest.\n"
-        f"Event: {event}.\nInstruction: {instruction}\n"
-        f"Guest name: {name}. Room: {room}.\n"
-        f"Reply language: {lang}.\n"
-        "Use only facts available in HOTEL DATA. Do not invent prices, timings, facilities, or promises. "
-        "Do not mention AI, prompts, or internal systems. Return only the message, no labels."
-    )
-    reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
-    if reply:
-        return re.sub(r"\s+", " ", str(reply).strip())
-    # Safe generic fallback if AI service is temporarily unavailable.
-    fallback = {
-        "WELCOME": f"🌸 Welcome {name} ji! Hotel mein aapka swagat hai. Kisi bhi help ke liye yahin message karein. 🙏",
-        "30_MINUTE": f"🌸 {name} ji, umeed hai aap comfortably settle ho gaye honge. Kisi bhi assistance ke liye yahin message karein. 🙏",
-        "BREAKFAST": f"☀️ Good Morning {name} ji! Breakfast time hai. Menu dekhne ke liye message karein. 🍽️",
-        "LUNCH": f"🍛 {name} ji, lunch time hai. Menu ke liye message karein.",
-        "GANGA_AARTI": f"🙏 {name} ji, Ganga Aarti ka samay aa raha hai. Jaane se pehle reception se current timing confirm kar lein. 🌸",
-        "DINNER": f"🌙 {name} ji, dinner time hai. Menu ke liye message karein. 🍽️",
-        "CHECKOUT": f"🙏 Thank you {name} ji! Aapki journey safe aur sukhad rahe. 🌸"
-    }
-    return fallback.get(event, f"Ji {name} ji, agar kisi assistance ki zarurat ho to yahin message karein.")
-
+    pack=msgs.get(event,msgs["WELCOME"])
+    return pack["hindi"] if lang=="hindi" else pack["hinglish"] if lang=="hinglish" else pack["english"]
 
 def _staff_header_map():
     with state_lock:
@@ -1672,7 +1687,7 @@ def ask_gemini_chat(user_text, guest_info=None, sender_phone=None):
     if not GEMINI_API_KEY or _gemini_circuit_open():
         return None
 
-    language = guest_language(user_text)
+    language = get_guest_response_language(sender_phone, user_text) if sender_phone else guest_language(user_text)
     language_rule = language_instruction(language, user_text)
     guest_context = "NEW CUSTOMER"
     if guest_info:
@@ -1713,6 +1728,7 @@ Important:
 - ALWAYS provide a useful reply. Never stay silent.
 - When the answer is not available in the hotel data, do not invent facts; politely say reception can confirm it.
 - Transactional actions such as placing food orders, changing payment status, assigning rooms, or approving ID verification are handled by the backend.
+- You may append exactly one private BOT_ACTION marker when a real backend action is needed: [[BOT_ACTION:ORDER_CANCEL]], [[BOT_ACTION:COMPLAINT|HOUSEKEEPING|MAINTENANCE|KITCHEN|RECEPTION]], [[BOT_ACTION:SERVICE|Towel|Soap|Housekeeping / Room Cleaning|Luggage Assistance|Water|TV Remote|Room Service Assistance|General Assistance]], [[BOT_ACTION:FOOD_ORDER|2 x Exact Menu Name, 1 x Exact Menu Name]], or [[BOT_ACTION:RECEPTION|brief reason]]. Never claim an action is complete before backend execution; FOOD_ORDER names must exactly match HOTEL DATA.
 - Room service, kitchen orders, food delivery, and housekeeping are available ONLY when the backend identifies the user as an in-house guest.
 - For a non-in-house guest asking for room service or kitchen delivery, politely refuse and invite them to check in or contact reception.
 - If a delivered food/item complaint is mentioned, treat it as a complaint and say staff will be informed.
@@ -1791,11 +1807,51 @@ Important:
 
 
 def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
-    """Generic AI gateway: Gemini primary, Groq fallback, never hotel-specific."""
-    reply = ask_gemini_chat(user_text, guest_info, sender_phone)
-    if reply:
-        return reply
-    return ask_groq_chat(user_text, guest_info, sender_phone)
+    """One conversational gateway: Gemini -> Groq -> optional OpenRouter free."""
+    reply=ask_gemini_chat(user_text,guest_info,sender_phone)
+    if reply: return reply
+    reply=ask_groq_chat(user_text,guest_info,sender_phone)
+    if reply: return reply
+    return ask_openrouter_chat(user_text,guest_info,sender_phone)
+
+
+def _openrouter_circuit_open():
+    with OPENROUTER_LOCK:
+        return time.time() < OPENROUTER_UNAVAILABLE_UNTIL
+
+
+def _openrouter_set_circuit_breaker(seconds, reason):
+    global OPENROUTER_UNAVAILABLE_UNTIL
+    with OPENROUTER_LOCK:
+        OPENROUTER_UNAVAILABLE_UNTIL=max(OPENROUTER_UNAVAILABLE_UNTIL,time.time()+max(1,int(seconds)))
+    print(f"OPENROUTER CIRCUIT OPEN: {reason} for ~{int(seconds)}s",flush=True)
+
+
+def ask_openrouter_chat(user_text,guest_info=None,sender_phone=None):
+    if not OPENROUTER_API_KEY or _openrouter_circuit_open(): return None
+    language=get_guest_response_language(sender_phone,user_text) if sender_phone else guest_language(user_text); language_rule=language_instruction(language,user_text)
+    ctx="NEW CUSTOMER"
+    if guest_info and guest_info.get("is_inhouse"): ctx=f"IN-HOUSE GUEST: Room {guest_info.get('room')} | Name: {guest_info.get('name')}"
+    elif guest_info and guest_info.get("status")=="CHECKED_OUT": ctx=f"CHECKED-OUT GUEST: {guest_info.get('name')}"
+    history=get_conversation_history(sender_phone)[-4:] if sender_phone else []
+    history_text="\n".join(f"{x.get('role','user').upper()}: {_compact_ai_text(x.get('content',''),450)}" for x in history) or "No earlier conversation."
+    system=(f"You are the WhatsApp receptionist for {get_hotel_name()}. {language_rule} Be natural, concise and helpful. Understand slang, spelling variations, Hinglish, mixed languages, indirect requests and follow-ups. Use HOTEL DATA as the authoritative source. Never invent prices, payments, availability or unsupported facts. Context: {ctx}\nRecent conversation:\n{history_text}\nHOTEL DATA:\n{_compact_ai_text(get_hotel_data(),5200)}\n\nFor real backend actions you may append exactly one private marker: [[BOT_ACTION:ORDER_CANCEL]], [[BOT_ACTION:COMPLAINT|HOUSEKEEPING|MAINTENANCE|KITCHEN|RECEPTION]], [[BOT_ACTION:SERVICE|Towel|Soap|Housekeeping / Room Cleaning|Luggage Assistance|Water|TV Remote|Room Service Assistance|General Assistance]], [[BOT_ACTION:FOOD_ORDER|2 x Exact Menu Name, 1 x Exact Menu Name]], or [[BOT_ACTION:RECEPTION|brief reason]]. Never claim the backend action is already complete. FOOD_ORDER names must exactly match HOTEL DATA. Do not request food/service actions for non-in-house guests.")
+    messages=[{"role":"system","content":system}] + [{"role":x.get('role'),"content":str(x.get('content',''))} for x in history if x.get('role') in {'user','assistant'} and str(x.get('content','')).strip()] + [{"role":"user","content":str(user_text)}]
+    try:
+        res=requests.post("https://openrouter.ai/api/v1/chat/completions",json={"model":OPENROUTER_MODEL,"messages":messages,"temperature":0.2,"max_tokens":220},headers={"Authorization":f"Bearer {OPENROUTER_API_KEY}","Content-Type":"application/json","HTTP-Referer":RENDER_EXTERNAL_URL,"X-Title":get_hotel_name()+" WhatsApp Receptionist"},timeout=20)
+        if res.status_code==200:
+            return str(((res.json().get("choices") or [{}])[0].get("message") or {}).get("content","")).strip() or None
+        body=res.text[:1000]; print("OPENROUTER CHAT ERROR:",res.status_code,body,flush=True)
+        if res.status_code==429:
+            try: retry=int(float(res.headers.get("retry-after","")))
+            except Exception: retry=OPENROUTER_RATE_LIMIT_COOLDOWN
+            _openrouter_set_circuit_breaker(retry or OPENROUTER_RATE_LIMIT_COOLDOWN,"OpenRouter rate limit")
+        elif res.status_code in {401,402,403,404}:
+            _openrouter_set_circuit_breaker(300,f"OpenRouter HTTP {res.status_code}")
+    except (requests.Timeout,requests.ConnectionError) as exc:
+        print("OPENROUTER NETWORK ERROR:",exc,flush=True); _openrouter_set_circuit_breaker(30,"OpenRouter network failure")
+    except Exception as exc: print("OPENROUTER CHAT EXCEPTION:",exc,flush=True)
+    return None
 
 
 def transcribe_audio_gemini(audio_bytes):
@@ -1910,11 +1966,13 @@ def get_active_groq_model(force=False):
         if res.status_code == 200:
             models = [m.get("id") for m in res.json().get("data", [])]
 
+            # Prefer currently supported Groq production models. Older Llama/Qwen
+            # entries are intentionally not preferred because Groq has deprecated them.
             preferred = [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "qwen/qwen3-32b",
-                "qwen/qwen3-8b",
+                "openai/gpt-oss-20b",
+                "openai/gpt-oss-120b",
+                "qwen/qwen3.6-27b",
+                "qwen/qwen3.8-27b",
             ]
 
             for wanted in preferred:
@@ -2052,7 +2110,7 @@ def ask_groq_chat(user_text, guest_info=None, sender_phone=None):
     if not model:
         return None
 
-    language = guest_language(user_text)
+    language = get_guest_response_language(sender_phone, user_text) if sender_phone else guest_language(user_text)
     language_rule = language_instruction(language, user_text)
 
     guest_context = "NEW CUSTOMER"
@@ -2120,6 +2178,7 @@ Important:
 - If the guest asks for more sightseeing options, give several DIFFERENT relevant places from the guide (normally 3-5), not a reception fallback.
 - If the guest asks for a story/history, give a short relevant story or fact from the guide and label it HISTORY, TRADITION or PAURANIK KATHA as applicable.
 - If the guest asks generally what they can do locally, reason over the configured guide and suggest a useful mini-plan based on the time/preferences mentioned in the conversation.
+- For a genuine backend action, append at most ONE private BOT_ACTION marker: [[BOT_ACTION:ORDER_CANCEL]], [[BOT_ACTION:COMPLAINT|HOUSEKEEPING|MAINTENANCE|KITCHEN|RECEPTION]], [[BOT_ACTION:SERVICE|Towel|Soap|Housekeeping / Room Cleaning|Luggage Assistance|Water|TV Remote|Room Service Assistance|General Assistance]], [[BOT_ACTION:FOOD_ORDER|2 x Exact Menu Name, 1 x Exact Menu Name]], or [[BOT_ACTION:RECEPTION|brief reason]]. Never claim the action is completed before backend execution. FOOD_ORDER names must exactly match HOTEL DATA.
 
 """
 
@@ -2139,6 +2198,7 @@ Important:
         "messages": messages,
         "temperature": 0.2,
         "max_tokens": 180,
+        "reasoning_effort": "low",
     }
 
     try:
@@ -2163,7 +2223,26 @@ Important:
 
         # Never immediately retry a TPM/rate-limit error: that only burns more quota.
         if res.status_code == 429:
-            _groq_set_circuit_breaker(GROQ_RATE_LIMIT_COOLDOWN, "Groq rate limit/TPM reached")
+            # Respect the provider's actual retry timing when present. Groq may
+            # return TPM/RPM or TPD errors; a daily-token error should not be
+            # retried every 60 seconds and burn another request.
+            retry_seconds = 0
+            header_value = res.headers.get("retry-after") or res.headers.get("x-ratelimit-reset-tokens")
+            if header_value:
+                m = re.search(r"(\d+(?:\.\d+)?)", str(header_value))
+                if m:
+                    retry_seconds = int(float(m.group(1)))
+            if not retry_seconds:
+                m = re.search(r"try again in\s+([0-9]+(?:\.[0-9]+)?)s", body, re.I)
+                if m:
+                    retry_seconds = int(float(m.group(1))) + 2
+            if "TPD" in body.upper() or "TOKENS PER DAY" in body.upper():
+                retry_seconds = max(retry_seconds, GROQ_RATE_LIMIT_COOLDOWN)
+                reason = "Groq daily token quota (TPD) reached"
+            else:
+                retry_seconds = max(retry_seconds, GROQ_RATE_LIMIT_COOLDOWN)
+                reason = "Groq rate limit/TPM/RPM reached"
+            _groq_set_circuit_breaker(retry_seconds, reason)
             return None
 
         # A 400 caused by message length gets ONE compact retry, without rediscovering
@@ -2183,6 +2262,7 @@ Important:
                 ],
                 "temperature": 0.2,
                 "max_tokens": 120,
+                "reasoning_effort": "low",
             }
             try:
                 retry = requests.post(url, json=compact_payload, headers=headers, timeout=15)
@@ -2398,16 +2478,9 @@ def format_order(items):
 
 
 def looks_like_food(text):
-    t = normalize_text(text)
-
-    food_markers = set(get_hotel_menu().keys()) | set(get_hotel_config().get("generic_menu", {}).keys()) | {
-        "food", "khana", "order"
-    }
-
-    return any(
-        re.search(rf"\b{re.escape(marker)}\b", t)
-        for marker in food_markers
-    )
+    t=normalize_text(text)
+    markers=set(get_hotel_menu().keys()) | set(get_hotel_config().get("generic_menu",{}).keys())
+    return any(re.search(rf"\b{re.escape(marker)}\b",t) for marker in markers)
 
 
 def explicitly_asks_price(text):
@@ -2621,43 +2694,13 @@ def _parse_ai_json(text):
             return {}
 
 
-def classify_guest_intent(text, guest_info=None, sender_phone=None):
-    """AI semantic intent gate for ambiguous service complaints/cancellations.
-
-    This is deliberately generic: the hotel-specific facts remain in hotel_data.txt.
-    Deterministic rules handle obvious cases; AI handles natural/weird wording.
-    """
-    prompt = f"""
-Classify this hotel guest message for backend routing.
-Return ONLY one JSON object with exactly these keys:
-{{"intent":"COMPLAINT|ORDER_CANCEL|ORDER_SELECTION|ORDER|GENERAL|RECEPTION","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|RECEPTION|NONE","confidence":0.0}}
-
-Guest message: {text}
-Guest context: {guest_info or {}}
-Recent conversation context is available to you. Resolve references such as "that", "it", "same one", "don't send it".
-Rules:
-- COMPLAINT means the guest reports something wrong, missing, damaged, dirty, unsafe, uncomfortable, delayed, or unsatisfactory, even if they never use the word complaint/problem.
-- Examples include pests/animals in room, smell, noise, leaking water, AC not cooling, WiFi failing, dirty room, missing item, cold/wrong food, or dissatisfaction with delivered service.
-- ORDER_CANCEL means the guest wants an existing/pending order stopped or withdrawn, including natural language such as "leave it", "don't send that", "I changed my mind".
-- Do not classify a normal request/question as COMPLAINT.
-- category should be the operational team that should handle a complaint.
-"""
-    try:
-        reply = ask_ai_chat(prompt, guest_info or {}, sender_phone)
-        obj = _parse_ai_json(reply)
-        intent = str(obj.get("intent", "")).strip().upper()
-        category = str(obj.get("category", "NONE")).strip().upper()
-        try:
-            confidence = float(obj.get("confidence", 0))
-        except Exception:
-            confidence = 0.0
-        if intent in {"COMPLAINT", "ORDER_CANCEL", "ORDER_SELECTION", "ORDER", "GENERAL", "RECEPTION"}:
-            if category not in {"HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "RECEPTION"}:
-                category = "NONE"
-            return {"intent": intent, "category": category, "confidence": max(0.0, min(1.0, confidence))}
-    except Exception as exc:
-        print("AI INTENT ERROR:", exc, flush=True)
-    return {"intent": "", "category": "NONE", "confidence": 0.0}
+def classify_guest_intent(text,guest_info=None,sender_phone=None):
+    """Compatibility helper; never calls AI. Conversational interpretation is done once by the main AI turn."""
+    t=normalize_text(text)
+    if any(x in t for x in ["cancel","rehne do","nahi chahiye","mat bhejo","dont send","don't send","change my mind"]):
+        return {"intent":"ORDER_CANCEL","category":"NONE","confidence":0.95}
+    if looks_like_complaint(text): return {"intent":"COMPLAINT","category":_complaint_role(text).upper(),"confidence":0.95}
+    return {"intent":"","category":"NONE","confidence":0.0}
 
 
 def _recent_pending_kitchen_order(room, max_minutes=5):
@@ -2787,12 +2830,21 @@ def looks_like_complaint(text):
     t = normalize_text(text)
     complaint_words = [
         "complaint", "problem", "issue", "dikkat", "kharab",
-        "thandi", "cold", "late", "nahi aaya", "wrong order",
+        "thandi", "cold", "nahi aaya", "wrong order",
         "dirty", "ganda", "safai nahi", "towel nahi",
-        "soap nahi", "remote nahi", "mouse", "help", "not working",
-        "not working", "connect nahi", "nahi chal", "kaam nahi", "no internet"
+        "soap nahi", "remote nahi", "mouse", "not working",
+        "connect nahi", "nahi chal", "kaam nahi", "no internet"
     ]
-    return any(w in t for w in complaint_words)
+    for w in complaint_words:
+        if " " in w:
+            if w in t: return True
+        elif re.search(rf"\b{re.escape(w)}\b", t):
+            return True
+    # "late" is only a complaint when it refers to delayed service/order,
+    # not words such as "plate".
+    if re.search(r"\b(late|der|delay|delayed)\b", t) and any(x in t for x in ["order", "delivery", "food", "khana", "chai", "coffee", "staff", "room"]):
+        return True
+    return False
 
 
 def service_type(text):
@@ -3131,6 +3183,88 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
         print("RECEPTION NOTIFY ERROR:", exc, flush=True)
         return False
 
+def _extract_bot_action(reply):
+    raw=str(reply or "").strip()
+    m=re.search(r"\[\[BOT_ACTION\s*:\s*([A-Z_]+)(?:\|([^\]]*))?\s*\]\]",raw,re.I|re.S)
+    if not m: return None,"",raw
+    action=str(m.group(1) or "").strip().upper(); payload=str(m.group(2) or "").strip()
+    clean=re.sub(r"\[\[BOT_ACTION\s*:\s*.*?\]\]","",raw,flags=re.I|re.S).strip()
+    return action,payload,clean
+
+
+def _parse_ai_food_order(payload):
+    menu=get_hotel_menu(); items=[]
+    for part in [x.strip() for x in re.split(r"[,;\n]+",str(payload or "")) if x.strip()]:
+        m=re.match(r"^(\d+)\s*x\s*(.+?)$",part,re.I)
+        if not m: return None
+        qty=max(1,int(m.group(1))); wanted=normalize_text(m.group(2)); exact=menu.get(wanted)
+        if not exact:
+            matches=[v for v in menu.values() if normalize_text(v[0])==wanted]
+            if len(matches)!=1: return None
+            exact=matches[0]
+        name,price=exact; items.append({"name":name,"qty":qty,"unit_price":price,"amount":qty*price})
+    return {"items":items,"total":sum(x["amount"] for x in items),"order":format_order(items)} if items else None
+
+
+def _send_ai_complaint_workflow(sender_phone,guest_info,user_text,category="Reception"):
+    room=guest_info.get("room","") if guest_info else ""; name=guest_info.get("name","Guest") if guest_info else "Guest"
+    if not room: send_whatsapp_message(sender_phone,"Ji, complaint register karne ke liye kripya room number bata dein."); return True
+    rec=_append_complaint(room,name,sender_phone,user_text)
+    if not rec:
+        send_staff_alert(room=room,role="Reception",message=f"⚠️ COMPLAINT REGISTRATION FAILED\nRoom: {room}\nGuest: {name}\nComplaint: {user_text}",fallback_phone=STAFF_PHONE)
+        send_whatsapp_message(sender_phone,"Ji, complaint receive ho gayi hai. Reception ko alert kar diya hai."); return True
+    role={"HOUSEKEEPING":"Housekeeping","MAINTENANCE":"Maintenance","KITCHEN":"Kitchen","RECEPTION":"Reception"}.get(str(category or "").upper(),rec.get("category") or _complaint_role(user_text))
+    _update_complaint(rec.get("row_number",0),{"Category":role,"Last Updated":now_ist().strftime("%d-%b-%Y %I:%M %p")})
+    ok=send_staff_alert(room=room,role=role,message=f"🚨 COMPLAINT REGISTERED\nRoom: {room}\nGuest: {name}\nCategory: {role}\nComplaint: {user_text}\nPhone: +{sender_phone}",fallback_phone=STAFF_PHONE)
+    send_whatsapp_message(sender_phone,f"Ji {name} ji, aapki complaint register ho gayi hai. {('Staff ko alert kar diya hai.' if ok else 'Reception ko alert kar diya hai.')} Main 30 minute baad follow-up karunga. 🙏"); return True
+
+
+def _cancel_ai_order(sender_phone,guest_info):
+    if not guest_info or not guest_info.get("is_inhouse"): send_whatsapp_message(sender_phone,"Ji, room-service order cancellation ke liye in-house guest record zaroori hai."); return True
+    with state_lock: pending=order_sessions.get(sender_phone); duplicate=duplicate_order_sessions.get(sender_phone); active=active_orders.get(sender_phone)
+    if pending and pending.get("order"):
+        with state_lock: order_sessions.pop(sender_phone,None)
+        send_whatsapp_message(sender_phone,"Ji bilkul, pending order cancel kar diya gaya hai. 🙏"); return True
+    if duplicate:
+        with state_lock: duplicate_order_sessions.pop(sender_phone,None)
+        send_whatsapp_message(sender_phone,"Ji bilkul, duplicate confirmation cancel kar diya gaya hai; koi extra charge wala order nahi banega. 🙏"); return True
+    if not active: active=_recent_pending_kitchen_order(guest_info.get("room",""),30)
+    if not active: send_whatsapp_message(sender_phone,"Ji, mujhe koi active/pending order nahi mil raha jise cancel kiya ja sake. 🙏"); return True
+    age=max(0,time.time()-float(active.get("time",time.time())))
+    if age>300:
+        send_whatsapp_message(sender_phone,f"Ji {guest_info.get('name','Guest')} ji, order ko 5 minute se zyada ho gaye hain, isliye main cancellation confirm nahi kar sakta. Kitchen mein processing shuru ho chuki ho sakti hai. 🙏"); return True
+    ok=update_kitchen_order_status(guest_info.get("room",""),active.get("order",""),"CANCELLED")
+    if ok:
+        send_staff_alert(room=guest_info.get("room",""),role="Kitchen",message=f"ऑर्डर रद्द\nRoom: {guest_info.get('room','')} ({guest_info.get('name','Guest')})\nOrder: {active.get('order','')}",fallback_phone=KITCHEN_PHONE)
+        send_whatsapp_message(sender_phone,f"Ji {guest_info.get('name','Guest')} ji, samajh gaya. {active.get('order','')} ka order cancel kar diya gaya hai. 🙏")
+        with state_lock: active_orders.pop(sender_phone,None)
+    else: send_whatsapp_message(sender_phone,"Ji, order abhi cancel nahi ho paaya. Main reception se confirm karwane mein help karta hoon.")
+    return True
+
+
+def _execute_ai_action(action_type,payload,sender_phone,guest_info,user_text):
+    action=str(action_type or "").upper().strip()
+    if action=="ORDER_CANCEL": return _cancel_ai_order(sender_phone,guest_info)
+    if action=="COMPLAINT": return _send_ai_complaint_workflow(sender_phone,guest_info,user_text,payload or "Reception")
+    if action=="SERVICE":
+        allowed={"Towel","Soap","Housekeeping / Room Cleaning","Luggage Assistance","Water","TV Remote","Room Service Assistance","General Assistance"}; service=payload.strip()
+        if service not in allowed: return False
+        if not guest_info or not guest_info.get("is_inhouse"): send_whatsapp_message(sender_phone,"Ji, room service aur housekeeping sirf in-house guests ke liye available hai."); return True
+        role="Room Service" if service=="Room Service Assistance" else "Housekeeping"
+        ok=send_staff_alert(room=guest_info.get("room",""),role=role,message=f"स्टाफ अलर्ट\nRoom: {guest_info.get('room','')}\nGuest: {guest_info.get('name','Guest')}\nTask: {service}\nDetails: {user_text}\nPhone: +{sender_phone}",fallback_phone=STAFF_PHONE)
+        send_whatsapp_message(sender_phone,f"Ji {guest_info.get('name','Guest')} ji, {service} request note kar li hai. {('Staff ko inform kar diya gaya hai.' if ok else 'Reception ko alert kar diya gaya hai.')} 🙏"); return True
+    if action=="FOOD_ORDER":
+        if not guest_info or not guest_info.get("is_inhouse"): send_whatsapp_message(sender_phone,"Sorry, room service sirf in-house guests ke liye available hai."); return True
+        parsed=_parse_ai_food_order(payload)
+        if not parsed: return False
+        recent=_recent_matching_kitchen_order(guest_info.get("room",""),parsed["order"],RECENT_DUPLICATE_ORDER_MINUTES)
+        if recent:
+            with state_lock: duplicate_order_sessions[sender_phone]={"order":parsed["order"],"total":parsed["total"],"recent":recent,"created":time.time()}
+            send_whatsapp_message(sender_phone,_duplicate_order_message(guest_info.get("name","Guest"),guest_info.get("room",""),recent,get_guest_response_language(sender_phone))); return True
+        with state_lock: order_sessions[sender_phone]={"order":parsed["order"],"total":parsed["total"],"created":time.time()}
+        send_whatsapp_message(sender_phone,f"Ji {guest_info.get('name','Guest')} ji, {parsed['order']} Room {guest_info.get('room','')} ke liye note kiya hai. Confirm kar dein?"); return True
+    if action=="RECEPTION": notify_reception_request(sender_phone,guest_info,payload or user_text,"ai_reception_action"); return True
+    return False
 
 def process_and_reply(message, sender_phone, msg_type):
     user_text = ""
@@ -3224,13 +3358,6 @@ def process_and_reply(message, sender_phone, msg_type):
         "change my mind", "change of mind"
     ]
     cancellation_intent = bool(active and any(x in t for x in cancellation_phrases))
-    if not cancellation_intent:
-        # Let AI resolve less predictable change-of-mind language, with or without
-        # an in-memory order record. This also lets the bot explain a >5-minute
-        # cancellation safely instead of falling through to a generic reply.
-        cancel_ai = classify_guest_intent(user_text, guest_info, sender_phone)
-        cancellation_intent = cancel_ai.get("intent") == "ORDER_CANCEL" and cancel_ai.get("confidence", 0) >= 0.55
-
     if cancellation_intent:
         if not is_inhouse:
             with state_lock:
@@ -3361,9 +3488,6 @@ def process_and_reply(message, sender_phone, msg_type):
     # Obvious complaints are fast-pathed; ambiguous natural language goes to AI.
     complaint_detected = looks_like_complaint(user_text)
     ai_intent = {"intent": "", "category": "NONE", "confidence": 0.0}
-    if not complaint_detected:
-        ai_intent = classify_guest_intent(user_text, guest_info, sender_phone)
-        complaint_detected = ai_intent.get("intent") == "COMPLAINT" and ai_intent.get("confidence", 0) >= 0.55
 
     if complaint_detected:
         room = guest_info["room"] if is_inhouse else extract_room_number(user_text)
@@ -3385,11 +3509,6 @@ def process_and_reply(message, sender_phone, msg_type):
             return
 
         role = rec.get("category", _complaint_role(user_text))
-        if ai_intent.get("category") in {"HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "RECEPTION"}:
-            role = ai_intent["category"].title()
-            # Keep the stored operational category aligned with AI classification.
-            _update_complaint(rec.get("row_number", 0), {"Category": role, "Last Updated": now_ist().strftime("%d-%b-%Y %I:%M %p")})
-
         staff_ok = send_staff_alert(
             room=room, role=role,
             message=(f"🚨 COMPLAINT REGISTERED\nRoom: {room}\nGuest: {name}\nCategory: {role}\n"
@@ -4076,42 +4195,34 @@ def process_and_reply(message, sender_phone, msg_type):
 
     # ========================================================
     # 16. GENERAL AI
-    # ========================================================
-    remember_guest_language(sender_phone, user_text)
-    # The AI always receives the complete hotel_data.txt, so no hotel-specific
-    # location/topic list is required in Python.
-    ai_reply = ask_ai_chat(user_text, guest_info, sender_phone)
-    if not ai_reply and is_guide_followup(user_text):
-        ai_reply = build_guide_fallback(user_text, sender_phone)
-
+    # One conversational AI turn for messages not handled by a safety-critical workflow.
+    remember_guest_language(sender_phone,user_text)
+    with state_lock:
+        operational_context={"active_order":active_orders.get(sender_phone),"pending_order":order_sessions.get(sender_phone),"duplicate_confirmation":duplicate_order_sessions.get(sender_phone)}
+    ai_input=(f"Guest message: {user_text}\nOperational context: {json.dumps(operational_context,ensure_ascii=False,default=str)}\n"
+              "Understand the intended meaning from conversation context, slang, spelling, mixed language and indirect wording. "
+              "Answer naturally from hotel_data.txt. If a backend action is genuinely needed, append exactly one private BOT_ACTION marker. "
+              "Never claim an action is completed before backend execution.")
+    ai_reply=ask_ai_chat(ai_input,guest_info,sender_phone)
     if ai_reply:
-        # Never allow accidental internal tags to reach the guest.
-        ai_reply = re.sub(
-            r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]",
-            "",
-            ai_reply
-        ).strip()
-        ai_reply = attach_google_maps_links(ai_reply).strip()
-
-        if ai_reply:
-            # AI may explicitly request a reception handoff with a private marker.
-            reception_marker = re.search(r"\[\[RECEPTION_NOTIFY\s*:\s*(.*?)\s*\]\]", ai_reply, re.I | re.S)
-            marker_reason = reception_marker.group(1).strip() if reception_marker else ""
-            if reception_marker:
-                ai_reply = re.sub(r"\[\[RECEPTION_NOTIFY\s*:\s*.*?\s*\]\]", "", ai_reply, flags=re.I | re.S).strip()
-
-            send_whatsapp_message(sender_phone, ai_reply)
-            low_ai = normalize_text(ai_reply)
-            reception_action = bool(marker_reason) or any(x in low_ai for x in [
-                "reception se confirm", "reception se share", "reception se karwa",
-                "reception can confirm", "reception will confirm", "i’ll have reception",
-                "i'll have reception", "reception ko bata", "reception ko bol"
-            ])
-            if reception_action:
-                notify_reception_request(sender_phone, guest_info, marker_reason or user_text, "ai_reception_action")
-            remember_conversation(sender_phone, "user", user_text)
-            remember_conversation(sender_phone, "assistant", ai_reply)
+        action_type,action_payload,clean_reply=_extract_bot_action(ai_reply)
+        clean_reply=re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]","",clean_reply).strip()
+        reception_marker=re.search(r"\[\[RECEPTION_NOTIFY\s*:\s*(.*?)\s*\]\]",clean_reply,re.I|re.S)
+        marker_reason=reception_marker.group(1).strip() if reception_marker else ""
+        if reception_marker: clean_reply=re.sub(r"\[\[RECEPTION_NOTIFY\s*:\s*.*?\s*\]\]","",clean_reply,flags=re.I|re.S).strip()
+        clean_reply=attach_google_maps_links(clean_reply).strip()
+        if action_type and _execute_ai_action(action_type,action_payload,sender_phone,guest_info or {},user_text):
+            # Transactional helpers send the authoritative acknowledgement after
+            # validation/execution. Do not send the model's draft again (avoids two replies).
+            if action_type.upper() == "RECEPTION" and clean_reply:
+                send_whatsapp_message(sender_phone,clean_reply)
+                remember_conversation(sender_phone,"assistant",clean_reply)
+            remember_conversation(sender_phone,"user",user_text)
             return
+        if clean_reply:
+            send_whatsapp_message(sender_phone,clean_reply)
+            if marker_reason: notify_reception_request(sender_phone,guest_info,marker_reason,"ai_reception_action")
+            remember_conversation(sender_phone,"user",user_text); remember_conversation(sender_phone,"assistant",clean_reply); return
 
     # ========================================================
     # 17. RECEPTION SAFETY NET
@@ -4151,15 +4262,11 @@ def handle_incoming_async(message, sender_phone, msg_type):
 
 # CORE LIFECYCLE — DO NOT MOVE INTO HOTEL DATA
 
-def build_full_bill_paid_message(name, room, fin, language):
-    total = int(fin.get("grand_total", 0))
-    prompt = (
-        "Write one short WhatsApp confirmation that a hotel guest's complete bill is paid. "
-        f"Guest: {name}. Room: {room}. Total paid: Rs.{total:,}. Balance: Rs.0. "
-        f"Language: {language}. Use only these facts. Return only the message."
-    )
-    reply = ask_ai_chat(prompt, {"name": name, "room": room, "status": "CHECKED_OUT"}, None)
-    return reply or f"✅ Thank you {name} ji. Room {room} ka complete bill ₹{total:,} paid ho gaya hai. Balance ₹0. 🙏"
+def build_full_bill_paid_message(name,room,fin,language):
+    total=int(fin.get("grand_total",0)); lang=str(language or "english").lower()
+    if lang=="hindi": return f"✅ धन्यवाद {name} जी। Room {room} का पूरा bill ₹{total:,} paid हो गया है। Balance ₹0 है। 🙏"
+    if lang=="hinglish": return f"✅ Thank you {name} ji. Room {room} ka complete bill ₹{total:,} paid ho gaya hai. Balance ₹0 hai. 🙏"
+    return f"✅ Thank you {name} ji. The complete bill for Room {room} (₹{total:,}) has been paid. Balance ₹0. 🙏"
 
 
 def process_full_bill_paid_notifications(rows):
@@ -4263,9 +4370,18 @@ def _room_lifecycle_columns():
     }
 
 def _mark_room_lifecycle_cell(row_number, col_index, value):
-    """Persist lifecycle marker in the dedicated Lifecycle_Automation sheet."""
+    """Persist a lifecycle marker remotely and mirror it locally immediately."""
     if col_index < 0:
         return False
+    # Always update the local marker first so a transient Sheets 429 cannot cause
+    # the same WhatsApp notification to be sent again on the next polling cycle.
+    with state_lock:
+        rows=shared_store.get("lifecycle_rows",[])
+        idx=row_number-2
+        if 0<=idx<len(rows):
+            row=rows[idx]
+            while len(row)<=col_index: row.append("")
+            row[col_index]=value
     try:
         client = get_gspread_client()
         if not client:
@@ -4562,23 +4678,55 @@ def update_owner_daily_revenue(send_message=False):
         return False
 
 
+OWNER_REPORT_LOG_SHEET="Owner_Report_Log"
+
+def _owner_report_persisted_key_exists(key):
+    try:
+        client=get_gspread_client()
+        if not client: return False
+        sh=client.open_by_key(SHEET_ID)
+        try: sheet=sh.worksheet(OWNER_REPORT_LOG_SHEET)
+        except Exception: return False
+        vals=sheet.get_all_values()
+        return any(row and str(row[0]).strip()==key for row in vals[1:])
+    except Exception as exc:
+        print("OWNER REPORT LOG READ ERROR:",exc,flush=True); return False
+
+
+def _owner_report_persist_key(key,slot,sent_at):
+    try:
+        client=get_gspread_client()
+        if not client: return False
+        sh=client.open_by_key(SHEET_ID)
+        try: sheet=sh.worksheet(OWNER_REPORT_LOG_SHEET)
+        except Exception:
+            sheet=sh.add_worksheet(title=OWNER_REPORT_LOG_SHEET,rows=500,cols=3); sheet.append_row(["KEY","SLOT","SENT AT"])
+        sheet.append_row([key,slot,sent_at]); return True
+    except Exception as exc:
+        print("OWNER REPORT LOG WRITE ERROR:",exc,flush=True); return False
+
+
 def maybe_send_owner_report(current):
-    if not OWNER_PHONE or not OWNER_REPORT_TIMES:
-        return
-    slot = current.strftime("%H:%M")
-    if slot not in OWNER_REPORT_TIMES:
-        return
-    key = f"{current.date().isoformat()}:{slot}"
+    if not OWNER_PHONE or not OWNER_REPORT_TIMES: return
+    matched=None
+    for slot in OWNER_REPORT_TIMES:
+        try:
+            hh,mm=(int(x) for x in slot.split(":",1)); scheduled=current.replace(hour=hh,minute=mm,second=0,microsecond=0)
+            delta=(current-scheduled).total_seconds()/60.0
+            if 0<=delta<=OWNER_REPORT_GRACE_MINUTES: matched=slot; break
+        except Exception: continue
+    if not matched: return
+    key=f"{current.date().isoformat()}:{matched}"
     with state_lock:
-        sent = shared_store.setdefault("owner_report_sent", set())
-        if key in sent:
-            return
-        sent.add(key)
-    # Live refresh before calculating the owner's figures.
+        sent=shared_store.setdefault("owner_report_sent",set())
+        if key in sent: return
+    if _owner_report_persisted_key_exists(key):
+        with state_lock: sent.add(key)
+        return
     fetch_sheet_data_sync()
-    if not update_owner_daily_revenue(send_message=True):
-        with state_lock:
-            shared_store.get("owner_report_sent", set()).discard(key)
+    if update_owner_daily_revenue(send_message=True):
+        with state_lock: sent.add(key)
+        _owner_report_persist_key(key,matched,current.strftime("%d-%b-%Y %I:%M %p"))
 
 def monitor_guest_status_lifecycle():
     """
@@ -4704,13 +4852,16 @@ def monitor_guest_status_lifecycle():
                         if welcome_text and send_whatsapp_message(phone, welcome_text):
                             _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                    # 30-minute message uses the actual Sheet IN TIME.
-                    if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
-                        if current >= check_in_at + timedelta(minutes=30):
-                            lang = get_guest_response_language(phone)
-                            thirty_text = get_ai_lifecycle_message("30_MINUTE", lang, name, room, {"name": name, "room": room, "status": status})
-                            if thirty_text and send_whatsapp_message(phone, thirty_text):
-                                _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
+                    # 30-minute message uses Rooms IN TIME; if missing, use WELCOME SENT.
+                    thirty_base=check_in_at
+                    if not thirty_base and cols["welcome_sent"]>=0 and len(row)>cols["welcome_sent"]:
+                        thirty_base=_parse_sheet_datetime(row[cols["welcome_sent"]])
+                    if thirty_base and not _lifecycle_sent(row, cols["thirty_sent"]):
+                        if current >= thirty_base + timedelta(minutes=30):
+                            lang=get_guest_response_language(phone)
+                            thirty_text=get_ai_lifecycle_message("30_MINUTE",lang,name,room,{"name":name,"room":room,"status":status})
+                            if thirty_text and send_whatsapp_message(phone,thirty_text):
+                                _mark_room_lifecycle_cell(row_index,cols["thirty_sent"],current.strftime("%d-%b-%Y %I:%M %p"))
 
                     # Meal reminders remain time-window based and persist their sent date.
                     if breakfast_window and not _lifecycle_sent(row, cols["breakfast_sent"]):
@@ -4768,6 +4919,12 @@ def index():
 
 @app.route("/health", methods=["GET"])
 def health():
+    # A health hit also gives the in-process owner scheduler a chance to catch
+    # a configured report slot that falls within the grace window.
+    try:
+        maybe_send_owner_report(now_ist())
+    except Exception as exc:
+        print("HEALTH OWNER REPORT ERROR:", exc, flush=True)
     with state_lock:
         synced = shared_store.get("last_synced", 0)
 
@@ -4777,6 +4934,7 @@ def health():
         "hotel": get_hotel_name(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,
+        "owner_report_times": list(OWNER_REPORT_TIMES),
         "time_ist": now_ist().isoformat(),
     }), 200
 
@@ -4802,6 +4960,13 @@ def webhook():
         return "Invalid signature", 403
 
     try:
+        # Meta traffic keeps the web service awake during real guest activity;
+        # use it as an additional opportunity to catch an owner-report slot.
+        try:
+            maybe_send_owner_report(now_ist())
+        except Exception as report_exc:
+            print("WEBHOOK OWNER REPORT ERROR:", report_exc, flush=True)
+
         data = request.get_json(silent=True) or {}
 
         for entry in data.get("entry", []):

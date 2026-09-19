@@ -75,6 +75,9 @@ CEREBRAS_UNAVAILABLE_UNTIL = 0.0
 CEREBRAS_UNAVAILABLE_REASON = ""
 CEREBRAS_LOCK = threading.RLock()
 CEREBRAS_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("CEREBRAS_RATE_LIMIT_COOLDOWN", "60")))
+# HTTP 402/payment_required is a configuration/account state, not a transient
+# model failure. Do not hammer the provider on every guest message.
+CEREBRAS_PAYMENT_COOLDOWN = max(3600, int(os.getenv("CEREBRAS_PAYMENT_COOLDOWN", "86400")))
 
 # Fifth AI provider: Cohere trial/free API.
 # Command A+ supports multilingual chat and structured JSON responses.
@@ -101,7 +104,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V20-MULTI-AI-FINAL"
+APP_VERSION = "HOTEL-AI-GENERIC-V22-PROVIDER-FAILOVER-FINAL"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -2129,6 +2132,50 @@ def _cerebras_set_circuit_breaker(seconds, reason):
     print(f"CEREBRAS CIRCUIT OPEN: {CEREBRAS_UNAVAILABLE_REASON} for ~{int(seconds)}s", flush=True)
 
 
+def _cohere_extract_text(data):
+    """Extract Cohere V2 assistant text across documented/content-block response shapes."""
+    if not isinstance(data, dict):
+        return ""
+    message = data.get("message")
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if text:
+                        parts.append(str(text))
+                elif isinstance(block, str):
+                    parts.append(block)
+            if parts:
+                return "".join(parts).strip()
+        # Defensive support for SDK-like nested content objects.
+        text = message.get("text")
+        if text:
+            return str(text).strip()
+    # Defensive compatibility with OpenAI-style wrappers/proxies.
+    choices = data.get("choices")
+    if isinstance(choices, list) and choices:
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        msg = choice.get("message") if isinstance(choice, dict) else {}
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("text"):
+                        parts.append(str(block.get("text")))
+                if parts:
+                    return "".join(parts).strip()
+    text = data.get("text")
+    return str(text).strip() if text else ""
+
+
 def ask_cerebras_chat(user_text, guest_info=None, sender_phone=None, structured=False):
     """Fourth conversational AI fallback through Cerebras Inference."""
     if not CEREBRAS_API_KEY or _cerebras_circuit_open():
@@ -2210,6 +2257,14 @@ Hotel knowledge:\n{hotel_db}
 
         body = res.text[:1200]
         print(f"CEREBRAS CHAT ERROR: status={res.status_code} {body}", flush=True)
+        if res.status_code == 402:
+            # Payment-required is not transient. Open a long circuit so every
+            # guest message does not trigger another paid-provider request.
+            _cerebras_set_circuit_breaker(
+                CEREBRAS_PAYMENT_COOLDOWN,
+                "Cerebras payment required; provider disabled until cooldown expires"
+            )
+            return None
         if res.status_code == 429:
             wait = _rate_limit_retry_seconds(res, CEREBRAS_RATE_LIMIT_COOLDOWN)
             _cerebras_set_circuit_breaker(wait, "Cerebras rate limit reached")
@@ -2314,13 +2369,16 @@ Hotel knowledge:\n{hotel_db}
         )
         if res.status_code == 200:
             data = res.json() or {}
-            message = data.get("message") or {}
-            content = message.get("content") or ""
+            content = _cohere_extract_text(data)
             usable = _ai_content_is_usable(content, "Cohere")
             if usable:
                 print(f"COHERE SUCCESS: model={COHERE_MODEL}", flush=True)
                 return usable
-            print("COHERE EMPTY/INVALID OUTPUT", flush=True)
+            finish_reason = ((data.get("finish_reason") if isinstance(data, dict) else "") or "").strip()
+            print(f"COHERE EMPTY/INVALID OUTPUT: finish_reason={finish_reason or 'unknown'} response_keys={list(data.keys())[:12] if isinstance(data, dict) else []}", flush=True)
+            # A 200 response with no usable assistant text is not a reason to
+            # keep hammering Cohere for this request. Let the next provider
+            # handle it immediately. A later request can try Cohere again.
             return None
 
         body = res.text[:1200]

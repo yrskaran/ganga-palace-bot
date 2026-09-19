@@ -2302,7 +2302,14 @@ def _cohere_set_circuit_breaker(seconds, reason):
 
 
 def ask_cohere_chat(user_text, guest_info=None, sender_phone=None, structured=False):
-    """Fifth conversational AI fallback through Cohere Chat V2."""
+    """Fifth conversational AI fallback through Cohere's OpenAI-compatible Chat API.
+
+    Command A+ was returning HTTP 422 INVALID_TOOL_GENERATION through the direct
+    V2 path even though this receptionist request supplies no tools. Cohere
+    officially exposes an OpenAI-compatible Chat endpoint; use that plain text
+    interface here so the model is not pushed into an accidental tool-generation
+    path. The application itself remains responsible for transactional actions.
+    """
     if not COHERE_API_KEY or _cohere_circuit_open():
         return None
 
@@ -2346,17 +2353,15 @@ Hotel knowledge:\n{hotel_db}
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": str(user_text)})
 
-    # Command A+ is a reasoning-capable model. For this hotel receptionist we
-    # want the model to understand the conversation, but we do not need its
-    # internal reasoning tokens to consume the small reply budget. Cohere
-    # documents that reasoning is enabled by default and that a low
-    # max_tokens value can end with MAX_TOKENS before final text is emitted.
+    # Use Cohere's documented OpenAI-compatible endpoint. Unlike the direct V2
+    # request, this request intentionally sends NO tools and NO tool_choice.
+    # Command A+ remains the configured model and still understands context and
+    # multilingual guest messages; backend code continues to own transactions.
     payload = {
         "model": COHERE_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 800 if structured else 600,
-        "thinking": {"type": "disabled"},
+        "max_tokens": 800 if structured else 700,
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}
@@ -2365,58 +2370,66 @@ Hotel knowledge:\n{hotel_db}
         "Authorization": f"Bearer {COHERE_API_KEY}",
         "Content-Type": "application/json",
     }
-    try:
-        print(f"COHERE TRY: model={COHERE_MODEL} structured={structured}", flush=True)
-        res = requests.post(
-            "https://api.cohere.com/v2/chat",
-            json=payload,
+
+    def _post_cohere(p, timeout):
+        return requests.post(
+            "https://api.cohere.ai/compatibility/v1/chat/completions",
+            json=p,
             headers=headers,
-            timeout=25,
+            timeout=timeout,
         )
+
+    try:
+        print(f"COHERE TRY: model={COHERE_MODEL} structured={structured} endpoint=compat", flush=True)
+        res = _post_cohere(payload, 25)
+
         if res.status_code == 200:
             data = res.json() or {}
             content = _cohere_extract_text(data)
             usable = _ai_content_is_usable(content, "Cohere")
-            if usable:
-                print(f"COHERE SUCCESS: model={COHERE_MODEL}", flush=True)
-                return usable
-            finish_reason = ((data.get("finish_reason") if isinstance(data, dict) else "") or "").strip().upper()
-            print(f"COHERE EMPTY/INVALID OUTPUT: finish_reason={finish_reason or 'unknown'} response_keys={list(data.keys())[:12] if isinstance(data, dict) else []}", flush=True)
+            finish_reason = ""
+            choices = data.get("choices") if isinstance(data, dict) else None
+            if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                finish_reason = str(choices[0].get("finish_reason") or "").strip().upper()
 
-            # Command A+ can return MAX_TOKENS when the generation budget is
-            # too small. Retry once with a larger reply budget rather than
-            # immediately abandoning a healthy Cohere provider. Keep thinking
-            # disabled on the retry as well so the budget is reserved for the
-            # guest-facing answer.
+            if usable:
+                print(f"COHERE SUCCESS: model={COHERE_MODEL} finish_reason={finish_reason or 'unknown'}", flush=True)
+                return usable
+
+            print(
+                f"COHERE EMPTY/INVALID OUTPUT: finish_reason={finish_reason or 'unknown'} "
+                f"response_keys={list(data.keys())[:12] if isinstance(data, dict) else []}",
+                flush=True,
+            )
+
+            # If the provider stopped at the output ceiling, retry once with a
+            # larger guest-response budget. No tools are introduced on retry.
             if finish_reason == "MAX_TOKENS":
                 retry_payload = dict(payload)
-                retry_payload["max_tokens"] = 1400 if structured else 1000
+                retry_payload["max_tokens"] = 1400 if structured else 1100
                 try:
-                    print(f"COHERE RETRY: reason=MAX_TOKENS max_tokens={retry_payload['max_tokens']}", flush=True)
-                    retry_res = requests.post(
-                        "https://api.cohere.com/v2/chat",
-                        json=retry_payload,
-                        headers=headers,
-                        timeout=30,
+                    print(
+                        f"COHERE RETRY: reason=MAX_TOKENS max_tokens={retry_payload['max_tokens']} endpoint=compat",
+                        flush=True,
                     )
+                    retry_res = _post_cohere(retry_payload, 30)
                     if retry_res.status_code == 200:
                         retry_data = retry_res.json() or {}
                         retry_content = _cohere_extract_text(retry_data)
                         retry_usable = _ai_content_is_usable(retry_content, "Cohere")
                         if retry_usable:
-                            print(f"COHERE RETRY SUCCESS: model={COHERE_MODEL}", flush=True)
+                            print(f"COHERE RETRY SUCCESS: model={COHERE_MODEL} endpoint=compat", flush=True)
                             return retry_usable
-                        retry_reason = ((retry_data.get("finish_reason") if isinstance(retry_data, dict) else "") or "").strip()
-                        print(f"COHERE RETRY EMPTY/INVALID: finish_reason={retry_reason or 'unknown'}", flush=True)
+                        print(
+                            f"COHERE RETRY EMPTY/INVALID: response_keys={list(retry_data.keys())[:12] if isinstance(retry_data, dict) else []}",
+                            flush=True,
+                        )
                     else:
                         print(f"COHERE RETRY ERROR: status={retry_res.status_code} {retry_res.text[:800]}", flush=True)
                 except (requests.Timeout, requests.ConnectionError) as exc:
                     print(f"COHERE RETRY NETWORK ERROR: {exc}", flush=True)
                 except Exception as exc:
                     print(f"COHERE RETRY EXCEPTION: {exc}", flush=True)
-
-            # A 200 response with no usable assistant text after the targeted
-            # MAX_TOKENS retry should fall through to the next provider.
             return None
 
         body = res.text[:1200]
@@ -2430,6 +2443,12 @@ Hotel knowledge:\n{hotel_db}
             return None
         if res.status_code in {400, 404}:
             _cohere_set_circuit_breaker(600, f"Cohere HTTP {res.status_code}")
+            return None
+        # 422 INVALID_TOOL_GENERATION should no longer occur because this path
+        # sends no tools. Treat any unexpected 422 as a provider failure and
+        # fall through rather than retrying the same bad request.
+        if res.status_code == 422:
+            print("COHERE 422: compatibility endpoint rejected request; falling through", flush=True)
             return None
         return None
     except (requests.Timeout, requests.ConnectionError) as exc:

@@ -4278,11 +4278,11 @@ def _local_hotel_fallback(sender_phone, user_text):
 
     # 2) Explicit full-menu request. Do not spend an AI call for a static menu.
     if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
-        msg = menu_message(include_prices=price_requested, sender_phone=sender_phone)
-        send_whatsapp_message(sender_phone, msg)
+        msgs = send_full_menu_presentation(sender_phone, include_prices=price_requested)
         remember_conversation(sender_phone, "user", user_text)
-        remember_conversation(sender_phone, "assistant", msg)
-        print(f"LOCAL HOTEL PRE-AI: full_menu prices={price_requested}", flush=True)
+        if msgs:
+            remember_conversation(sender_phone, "assistant", "\n\n".join(msgs))
+        print(f"LOCAL HOTEL PRE-AI: full_menu_presentation messages={len(msgs)} prices={price_requested}", flush=True)
         return True
 
     # 3) Explicit room photo request. Ambiguous/contextual photo wording still
@@ -4495,7 +4495,90 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     return False
 
 
-def _menu_section_message(section_name, include_prices=False, sender_phone=None):
+def _full_menu_presentation_messages(include_prices=False, sender_phone=None):
+    """Build a customer-facing full menu as short, clean WhatsApp sections.
+
+    A full 45-item menu should not be sent as one giant text bubble. WhatsApp
+    supports lightweight bold/bullets, but long walls of text remain visually
+    heavy on a phone. We therefore group the configured sections into a few
+    readable bubbles while keeping every item data-driven from hotel_data.txt.
+    """
+    groups = [
+        ("☀️", "Breakfast & Beverages", ["BREAKFAST", "BEVERAGES & DRINKS"]),
+        ("🥪", "Snacks & Light Bites", ["SNACKS / LIGHT BITES"]),
+        ("🍲", "Main Course", ["DAL", "PANEER / MAIN COURSE OPTIONS", "VEGETABLE MAIN COURSE"]),
+        ("🫓", "Breads", ["BREADS"]),
+        ("🍚", "Rice • Sides • Thali", ["RICE", "SIDES / ACCOMPANIMENTS", "THALI"]),
+        ("🍮", "Sweets & Desserts", ["SWEETS & DESSERTS"]),
+    ]
+    messages = []
+    first = True
+    globally_seen_items = set()
+    for icon, title, sections in groups:
+        blocks = []
+        for section in sections:
+            block = _menu_section_message(section, include_prices=include_prices, sender_phone=sender_phone, include_cta=False)
+            if block:
+                # Remove the section's own title so the grouped card has one clean heading.
+                lines = block.splitlines()
+                if lines and lines[0].startswith(("☀️", "🍛", "🌙", "☕", "🥪", "🥣", "🍲", "🫓", "🍚", "🥗", "🍽️", "🍮")):
+                    lines = lines[1:]
+                while lines and lines[0].strip() == "━━━━━━━━━━━━━━━━":
+                    lines = lines[1:]
+                cleaned = []
+                for x in lines:
+                    sx = x.strip()
+                    # hotel_data may contain operational MENU RESPONSE RULES immediately
+                    # after the last menu section. Never leak those internal rules to guests.
+                    if (re.match(r"^[•-]? ?\*[A-Z][A-Z /&-]{2,}:\*$", sx) or re.match(r"^[A-Z][A-Z /&-]{2,}:$", sx) or
+                        sx.startswith("📝 *To order") or sx.startswith("📲 *How to order") or
+                        sx.startswith("Send item name") or sx.startswith("Item name + quantity") or
+                        sx.startswith("Example: 2 Poha") or sx.startswith("*Guest:") or
+                        sx.startswith("• *Guest:") or sx.startswith("• *If the guest") or
+                        sx.startswith("• *Prices should") or sx.startswith("• *Food ordering") or
+                        sx.startswith("• *Never invent") or sx.startswith("• *No sweets") or
+                        sx.startswith("• *If the guest asks")):
+                        continue
+                    # Deduplicate overlapping categories such as chai/coffee appearing
+                    # in both BREAKFAST and BEVERAGES.
+                    m_item = re.match(r"^[•-] \*(.+?)\*(?: — ₹[\d,]+)?$", sx)
+                    if m_item:
+                        item_key = normalize_text(m_item.group(1))
+                        if item_key in globally_seen_items:
+                            continue
+                        globally_seen_items.add(item_key)
+                    cleaned.append(x)
+                lines = cleaned
+                while lines and not lines[-1].strip():
+                    lines.pop()
+                if lines:
+                    blocks.append("\n".join(lines))
+        if not blocks:
+            continue
+        heading = f"{icon} *{get_hotel_name()} — {title}*" if first else f"{icon} *{title}*"
+        msg = heading + "\n━━━━━━━━━━━━━━━━\n" + "\n".join(blocks)
+        messages.append(msg)
+        first = False
+
+    if messages:
+        lang = get_guest_response_language(sender_phone) if sender_phone else "english"
+        if lang == "english":
+            cta = "\n\n📝 *To order:* Send item name + quantity.\nExample: 2 Poha + 1 Masala Chai"
+        else:
+            cta = "\n\n📝 *Order karna ho?* Item name + quantity bhej dein.\nExample: 2 Poha + 1 Masala Chai"
+        messages[-1] += cta
+    return messages
+
+
+def send_full_menu_presentation(sender_phone, include_prices=False):
+    """Send the complete menu as multiple polished, scannable WhatsApp bubbles."""
+    messages = _full_menu_presentation_messages(include_prices=include_prices, sender_phone=sender_phone)
+    for msg in messages:
+        send_whatsapp_message(sender_phone, msg)
+    return messages
+
+
+def _menu_section_message(section_name, include_prices=False, sender_phone=None, include_cta=True):
     """Return a polished, data-driven guest-facing menu section.
 
     Prices are hidden unless the guest explicitly asked for price/rate/cost, matching
@@ -4553,6 +4636,8 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None)
         up = stripped.upper()
         if up.startswith("=================================================="):
             break
+        if up.startswith(("MENU RESPONSE RULES", "FOOD ORDERING RULES", "SECTION TRIGGERS", "PHOTO BEHAVIOUR", "AI GUIDE BEHAVIOUR")):
+            break
         if re.match(r"^[A-Z][A-Z /&-]{2,}$", stripped) and not stripped.startswith(("-", "•")):
             break
         formatted = _format_menu_item_line(stripped, include_prices=include_prices)
@@ -4562,11 +4647,12 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None)
 
     if item_count == 0:
         return None
-    lang = get_guest_response_language(sender_phone) if sender_phone else "english"
-    if lang == "english":
-        out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
-    else:
-        out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
+    if include_cta:
+        lang = get_guest_response_language(sender_phone) if sender_phone else "english"
+        if lang == "english":
+            out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
+        else:
+            out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
     return "\n".join(out)
 
 
@@ -5241,11 +5327,17 @@ def process_and_reply(message, sender_phone, msg_type):
 
         if ai_action == "SHOW_MENU":
             section = ai_understanding.get("menu_section") or "full"
-            msg = _menu_section_message(section, include_prices=explicitly_asks_price(user_text), sender_phone=sender_phone)
-            if msg:
-                send_whatsapp_message(sender_phone, msg)
+            if str(section).strip().upper() == "FULL":
+                msgs = send_full_menu_presentation(sender_phone, include_prices=explicitly_asks_price(user_text))
+                remember_conversation(sender_phone, "user", user_text)
+                if msgs:
+                    remember_conversation(sender_phone, "assistant", "\n\n".join(msgs))
             else:
-                send_whatsapp_message(sender_phone, menu_message(include_prices=True))
+                msg = _menu_section_message(section, include_prices=explicitly_asks_price(user_text), sender_phone=sender_phone)
+                if msg:
+                    send_whatsapp_message(sender_phone, msg)
+                else:
+                    send_full_menu_presentation(sender_phone, include_prices=explicitly_asks_price(user_text))
             return
 
         if ai_action == "SERVICE":
@@ -5499,10 +5591,7 @@ def process_and_reply(message, sender_phone, msg_type):
     # 9. MENU
     # ========================================================
     if t in {"menu", "food menu", "menu dikhao", "food list"}:
-        send_whatsapp_message(
-            sender_phone,
-            menu_message(include_prices=True)
-        )
+        send_full_menu_presentation(sender_phone, include_prices=explicitly_asks_price(user_text))
         return
 
     # ========================================================

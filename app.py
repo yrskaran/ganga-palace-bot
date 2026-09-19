@@ -83,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.6-AI-FIRST-LOCAL-HOTEL-FALLBACK"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.7-V17-POLISHED-SMART-FALLBACK"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -470,10 +470,13 @@ def _parse_hotel_config(raw):
 
         upper = line.upper()
 
-        if "ROOM CATEGORIES" in upper or "ROOM CATEGORIES & TARIFFS" in upper:
+        # Only treat actual major section headings as parser switches. Do not
+        # react to ordinary FAQ sentences such as "Room categories and published...".
+        if re.match(r"^(?:\d+\.\s*)?ROOM CATEGORIES(?:\s*&\s*TARIFFS)?\s*$", upper):
             section = "rooms"
             continue
-        if "HOTEL FOOD MENU & RATES" in upper or "RESTAURANT MENU" in upper:
+        if (re.match(r"^(?:\d+\.\s*)?HOTEL FOOD MENU & RATES\b", upper) or
+                re.match(r"^(?:\d+\.\s*)?RESTAURANT MENU\b", upper)):
             section = "menu"
             continue
 
@@ -1976,6 +1979,51 @@ def _openrouter_content_is_usable(content):
     return text
 
 
+def _openrouter_rate_limit_cooldown(response, body=""):
+    """Return a provider-aware cooldown for OpenRouter 429 responses.
+
+    In particular, OpenRouter free-model daily exhaustion should NOT reopen a
+    45-second circuit and retry every 45 seconds for hours. The response headers
+    expose the remaining allowance/reset timestamp, so use those when available.
+    """
+    text = str(body or "").lower()
+    try:
+        headers = getattr(response, "headers", {}) or {}
+        remaining = str(headers.get("x-ratelimit-remaining", "")).strip()
+        reset_raw = str(headers.get("x-ratelimit-reset", "")).strip()
+    except Exception:
+        remaining = ""
+        reset_raw = ""
+
+    daily_markers = (
+        "free-models-per-day",
+        "openrouter_free_tier_daily",
+        "free tier daily",
+        "free-model daily",
+        "free model requests per day",
+    )
+    is_daily = any(marker in text for marker in daily_markers)
+    if remaining == "0" and (is_daily or reset_raw):
+        wait = None
+        try:
+            if reset_raw:
+                value = float(reset_raw)
+                if value > 100000000000:   # epoch milliseconds
+                    value /= 1000.0
+                if value > 1000000000:     # epoch timestamp
+                    wait = max(60, int(value - time.time() + 30))
+                elif value > 0:
+                    wait = max(60, int(value + 30))
+        except Exception:
+            wait = None
+        if wait is None:
+            wait = 6 * 3600
+        return wait, "OpenRouter free-model daily/rate limit exhausted"
+
+    # Generic/provider-side 429: give other explicitly configured models a chance.
+    return 0, "OpenRouter model-side rate limit; trying next model"
+
+
 def ask_openrouter_chat(user_text, guest_info=None, sender_phone=None, structured=False):
     """Third conversational AI fallback using explicit OpenRouter free chat models."""
     if not OPENROUTER_API_KEY or _openrouter_circuit_open():
@@ -2066,9 +2114,12 @@ Hotel knowledge:
             body = res.text[:1200]
             print(f"OPENROUTER CHAT ERROR: model={model} status={res.status_code} {body}", flush=True)
             if res.status_code == 429:
-                # Do not keep hammering the same free endpoint. Move to the next
-                # explicit model; only open the shared circuit after the fallback
-                # candidates are exhausted.
+                wait_seconds, reason = _openrouter_rate_limit_cooldown(res, body)
+                if wait_seconds:
+                    _openrouter_set_circuit_breaker(wait_seconds, reason)
+                    return None
+                # A model-side/upstream 429 without account-wide exhaustion:
+                # move to the next explicitly configured conversational model.
                 continue
             if res.status_code in {401, 403}:
                 _openrouter_set_circuit_breaker(300, f"OpenRouter HTTP {res.status_code}")
@@ -2865,19 +2916,64 @@ def explicitly_asks_price(text):
     return any(m in t for m in markers)
 
 
-def menu_message(include_prices=True):
-    if include_prices:
-        cuisine = get_hotel_value("Cuisine", "")
-        title = f"{get_hotel_name()} Menu" + (f" ({cuisine})" if cuisine else "")
-        lines = [title]
-        for name, price in sorted(
-            {v[0]: v[1] for v in get_hotel_menu().values()}.items()
-        ):
-            lines.append(f"- {name}: Rs.{price}")
-        return "\n".join(lines)
+def _menu_display_title(section_name):
+    titles = {
+        "BREAKFAST": ("☀️", "Breakfast"),
+        "LUNCH": ("🍛", "Lunch"),
+        "DINNER": ("🌙", "Dinner"),
+        "BEVERAGES & DRINKS": ("☕", "Beverages & Drinks"),
+        "SNACKS / LIGHT BITES": ("🥪", "Snacks & Light Bites"),
+        "DAL": ("🥣", "Dal"),
+        "PANEER / MAIN COURSE OPTIONS": ("🍲", "Paneer & Main Course"),
+        "BREADS": ("🫓", "Breads"),
+        "RICE": ("🍚", "Rice"),
+        "SIDES / ACCOMPANIMENTS": ("🥗", "Sides & Accompaniments"),
+        "THALI": ("🍽️", "Thali"),
+        "SWEETS & DESSERTS": ("🍮", "Sweets & Desserts"),
+        "FULL": ("📋", "Complete Menu"),
+    }
+    return titles.get(str(section_name or "").strip().upper(), ("🍽️", str(section_name or "Menu").title()))
 
+
+def _format_menu_item_line(line, include_prices=False):
+    stripped = str(line or "").strip()
+    stripped = re.sub(r"^[-•]\s*", "", stripped)
+    if not stripped:
+        return None
+    m = re.match(r"^(.*?)\s*:\s*(?:Rs\.?|₹)\s*([\d,]+)(?:\s+.*)?$", stripped, re.I)
+    if m:
+        name = m.group(1).strip()
+        price = int(m.group(2).replace(",", ""))
+        return f"• {name} — ₹{price}" if include_prices else f"• {name}"
+    return f"• {stripped}"
+
+
+def menu_message(include_prices=True, sender_phone=None):
     cuisine = get_hotel_value("Cuisine", "")
-    return f"Ji, hamare kitchen ki cuisine: {cuisine}. Menu dekhne ke liye 'menu' type karein." if cuisine else "Ji, menu dekhne ke liye 'menu' type karein."
+    hotel = get_hotel_name()
+    icon, title = _menu_display_title("FULL")
+    lines = [f"{icon} *{hotel} — {title}*"]
+    if cuisine:
+        lines.append(f"🥗 Cuisine: {cuisine}")
+    lines.append("━━━━━━━━━━━━━━━━")
+
+    seen = set()
+    for name, price in get_hotel_menu().values():
+        key = normalize_text(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        lines.append(f"• {name}" + (f" — ₹{price}" if include_prices else ""))
+
+    if len(lines) > 4:
+        lang = get_guest_response_language(sender_phone) if sender_phone else "english"
+        if lang == "english":
+            cta = ["", "📲 *How to order*", "Send item name + quantity", "Example: 2 Poha + 1 Masala Chai"]
+        else:
+            cta = ["", "📲 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"]
+        lines.extend(cta)
+    return "\n".join(lines)
+
 
 
 # ============================================================
@@ -3235,7 +3331,7 @@ def looks_like_complaint(text):
         "complaint", "problem", "issue", "dikkat", "kharab",
         "thandi", "cold", "late", "nahi aaya", "wrong order",
         "dirty", "ganda", "safai nahi", "towel nahi",
-        "soap nahi", "remote nahi", "mouse", "help", "not working",
+        "soap nahi", "remote nahi", "mouse", "not working",
         "not working", "connect nahi", "nahi chal", "kaam nahi", "no internet"
     ]
     return any(w in t for w in complaint_words)
@@ -3831,23 +3927,125 @@ def _local_menu_section_from_text(text):
 
 
 def _local_hotel_fallback(sender_phone, user_text):
-    """Answer safe, configured hotel questions when all AI providers are unavailable.
+    """Serve safe, configured hotel answers BEFORE spending an AI call.
 
-    This is deliberately narrow: it serves deterministic hotel-data/menu answers and
-    contextual follow-ups. It does not invent availability, authorize service, create
-    orders, or bypass the normal backend safety checks.
+    This is the main AI-quota protection layer: common, deterministic hotel
+    questions are answered directly from hotel_data.txt. AI is reserved for
+    ambiguous, contextual or creative requests where semantic reasoning adds value.
     """
+    t = normalize_text(user_text)
+    price_requested = explicitly_asks_price(user_text)
+
+    # 1) Specific menu section / breakfast / lunch / dinner etc.
     section = _local_menu_section_from_text(user_text)
     if section:
-        msg = _menu_section_message(section)
+        msg = _menu_section_message(section, include_prices=price_requested, sender_phone=sender_phone)
         if msg:
             send_whatsapp_message(sender_phone, msg)
             remember_conversation(sender_phone, "user", user_text)
             remember_conversation(sender_phone, "assistant", msg)
-            print(f"LOCAL HOTEL FALLBACK: menu_section={section!r}", flush=True)
+            print(f"LOCAL HOTEL PRE-AI: menu_section={section!r} prices={price_requested}", flush=True)
             return True
 
-    # Resolve short follow-ups from the most recent conversation context.
+    # 2) Explicit full-menu request. Do not spend an AI call for a static menu.
+    if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
+        msg = menu_message(include_prices=price_requested, sender_phone=sender_phone)
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print(f"LOCAL HOTEL PRE-AI: full_menu prices={price_requested}", flush=True)
+        return True
+
+    # 3) Explicit room photo request. Ambiguous/contextual photo wording still
+    # goes to the AI route. Do not steal mixed photo+price questions.
+    photo_intent = any(x in t for x in [
+        "room photo", "room photos", "room dikhao", "room pic", "room ki photo",
+        "photos", "photo", "hotel front", "hotel photo", "exterior", "outside"
+    ])
+    mixed_photo_price = any(x in t for x in ["price", "rate", "tariff", "rent", "cost", "kitne ka", "kitna ka"])
+    if photo_intent and not mixed_photo_price:
+        requested = resolve_requested_photo(user_text)
+        if requested:
+            photo_url = get_hotel_photo(requested)
+            with state_lock:
+                photo_sessions.pop(sender_phone, None)
+            print(f"LOCAL HOTEL PRE-AI: photo={requested!r} url={photo_url!r}", flush=True)
+            if requested == "exterior":
+                if photo_url:
+                    send_whatsapp_image(sender_phone, photo_url, f"🏨 {get_hotel_name()} — Hotel Front")
+                else:
+                    send_whatsapp_message(sender_phone, "Ji, hotel front photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
+                    notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
+                return True
+            exterior = get_hotel_photo("exterior")
+            if exterior:
+                send_whatsapp_image(sender_phone, exterior, f"🏨 {get_hotel_name()} — Hotel Front")
+            if photo_url:
+                send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
+            else:
+                send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
+                notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
+            return True
+
+    # 4) Static room categories/rates and general availability wording. Live
+    # availability is still never fabricated.
+    room_rate = ("room" in t and any(x in t for x in ["price", "rate", "tariff", "rent", "cost", "kitne ka", "kitna ka"])) or t in {"tariff", "room rates", "room rate", "room price", "room rent"}
+    if room_rate:
+        categories = list(get_room_categories().values())
+        if categories:
+            lines = [f"🏨 *{get_hotel_name()} — Room Tariff*", "━━━━━━━━━━━━━━━━"]
+            for item in categories:
+                if item.get("name") and item.get("rate") is not None:
+                    lines.append(f"• {item['name']} — ₹{item['rate']} / night")
+            lines.append("\n📅 Live availability ke liye dates aur number of guests bhej dein.")
+            msg = "\n".join(lines)
+            send_whatsapp_message(sender_phone, msg)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", msg)
+            print("LOCAL HOTEL PRE-AI: room_rates", flush=True)
+            return True
+
+    availability = any(x in t for x in ["room hai", "room available", "room availability", "vacancy", "rooms available", "room chahiye"])
+    if availability:
+        categories = list(get_room_categories().values())
+        names = [x.get("name") for x in categories if x.get("name")]
+        if names:
+            msg = "🏨 *Room Categories*\n━━━━━━━━━━━━━━━━\n" + "\n".join(f"• {name}" for name in names) + "\n\n📅 Live availability check ke liye dates aur number of guests bhej dein."
+            send_whatsapp_message(sender_phone, msg)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", msg)
+            print("LOCAL HOTEL PRE-AI: room_availability_categories", flush=True)
+            return True
+
+    # 5) Very common static hotel facts: read the value from hotel_data.txt;
+    # AI remains available for natural/ambiguous versions.
+    basic_fact = None
+    if any(x in t for x in ["reception", "front desk"]) and any(x in t for x in ["time", "timing", "hours", "kab", "when", "24/7", "open"]):
+        v = get_hotel_value("Reception / Front Desk", "")
+        if v: basic_fact = f"🛎️ *Reception / Front Desk:* {v}"
+    elif ("check in" in t or "check-in" in t) and any(x in t for x in ["time", "timing", "kab", "when"]):
+        v = get_hotel_value("Check-in", "")
+        if v: basic_fact = f"🕛 *Check-in:* {v}"
+    elif "checkout" in t and any(x in t for x in ["time", "timing", "kab", "when"]):
+        v = get_hotel_value("Check-out", "")
+        if v: basic_fact = f"🕚 *Check-out:* {v}"
+    elif ("wifi" in t or "wi fi" in t) and any(x in t for x in ["available", "hai", "free", "complimentary", "is there", "have"]):
+        v = get_hotel_value("Amenities", "")
+        if v and ("wi-fi" in v.lower() or "wifi" in v.lower()):
+            basic_fact = f"📶 {v}"
+    elif "parking" in t:
+        v = get_hotel_value("Amenities", "")
+        if v and "parking" in v.lower():
+            basic_fact = f"🚗 {v}"
+
+    if basic_fact:
+        send_whatsapp_message(sender_phone, basic_fact)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", basic_fact)
+        print("LOCAL HOTEL PRE-AI: basic_fact", flush=True)
+        return True
+
+    # 6) Contextual local menu follow-up, only after no explicit section was found.
     history = get_conversation_history(sender_phone)
     if history:
         recent_user = ""
@@ -3868,7 +4066,7 @@ def _local_hotel_fallback(sender_phone, user_text):
                 m = re.search(r"\b(BREAKFAST|LUNCH|DINNER|BEVERAGES & DRINKS|SNACKS / LIGHT BITES|DAL|PANEER / MAIN COURSE OPTIONS|BREADS|RICE|SIDES / ACCOMPANIMENTS|THALI|SWEETS & DESSERTS)\b", recent_assistant.upper())
                 previous_section = m.group(1) if m else None
             if previous_section:
-                msg = _menu_section_message(previous_section)
+                msg = _menu_section_message(previous_section, include_prices=price_requested, sender_phone=sender_phone)
                 if msg:
                     send_whatsapp_message(sender_phone, msg)
                     remember_conversation(sender_phone, "user", user_text)
@@ -3878,14 +4076,18 @@ def _local_hotel_fallback(sender_phone, user_text):
     return False
 
 
-def _menu_section_message(section_name):
-    """Return the exact configured guest-facing menu section from hotel_data.txt."""
+def _menu_section_message(section_name, include_prices=False, sender_phone=None):
+    """Return a polished, data-driven guest-facing menu section.
+
+    Prices are hidden unless the guest explicitly asked for price/rate/cost, matching
+    the FOOD RULES in hotel_data.txt.
+    """
     raw = str(get_hotel_data() or "")
     target = normalize_text(section_name or "").strip()
     if not target:
         return None
     if target == "full":
-        return menu_message(include_prices=True)
+        return menu_message(include_prices=include_prices, sender_phone=sender_phone)
 
     aliases = {
         "breakfast": "breakfast menu",
@@ -3906,44 +4108,47 @@ def _menu_section_message(section_name):
     }
     wanted = normalize_text(aliases.get(target, target))
     lines = raw.splitlines()
-    start = None
-    heading = ""
+    start_idx = None
     for i, line in enumerate(lines):
         compact = normalize_text(line).strip()
         if compact == wanted or compact == wanted + ":":
-            start = i
-            heading = line.strip()
+            start_idx = i
             break
-    if start is None:
-        # Match a heading containing the requested section as a last generic fallback.
+    if start_idx is None:
         for i, line in enumerate(lines):
             compact = normalize_text(line).strip()
             if wanted and wanted in compact and len(compact) < 80:
-                start = i
-                heading = line.strip()
+                start_idx = i
                 break
-    if start is None:
+    if start_idx is None:
         return None
 
-    out = [heading]
-    for line in lines[start + 1:]:
+    target_upper = str(section_name or "").strip().upper()
+    icon, title = _menu_display_title(target_upper)
+    out = [f"{icon} *{get_hotel_name()} — {title}*", "━━━━━━━━━━━━━━━━"]
+    item_count = 0
+    for line in lines[start_idx + 1:]:
         stripped = line.strip()
         if not stripped:
-            if len(out) > 1:
-                # keep scanning through a small blank gap inside a section
-                continue
             continue
         up = stripped.upper()
         if up.startswith("=================================================="):
             break
         if re.match(r"^[A-Z][A-Z /&-]{2,}$", stripped) and not stripped.startswith(("-", "•")):
-            if stripped != heading.upper():
-                break
-        if re.match(r"^(?:[-•])\s+", stripped):
-            out.append(stripped)
-        elif ":" in stripped and len(out) > 1 and stripped.upper().endswith(("HOT / WARM:", "COLD / REFRESHING:", "WATER:")):
-            out.append(stripped)
-    return "\n".join(out) if len(out) > 1 else None
+            break
+        formatted = _format_menu_item_line(stripped, include_prices=include_prices)
+        if formatted:
+            out.append(formatted)
+            item_count += 1
+
+    if item_count == 0:
+        return None
+    lang = get_guest_response_language(sender_phone) if sender_phone else "english"
+    if lang == "english":
+        out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
+    else:
+        out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
+    return "\n".join(out)
 
 
 def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
@@ -4098,8 +4303,9 @@ def process_and_reply(message, sender_phone, msg_type):
         guest_info and guest_info.get("status") == "CHECKED_OUT"
     )
 
-    # One semantic AI pass for the whole guest turn. Stateful confirmation/check-in
-    # messages remain deterministic so they do not waste an AI call.
+    # One semantic AI pass for the whole guest turn. First consume a safe local
+    # hotel-data route for common deterministic questions; this dramatically reduces
+    # free-tier AI usage without weakening semantic AI for ambiguous requests.
     ai_understanding = None
     with state_lock:
         _dup_pending_now = duplicate_order_sessions.get(sender_phone)
@@ -4107,13 +4313,18 @@ def process_and_reply(message, sender_phone, msg_type):
         _checkin_now = checkin_sessions.get(sender_phone)
     _skip_semantic_ai = bool(_checkin_now) or bool((_dup_pending_now or _order_pending_now) and (is_yes(user_text) or is_no(user_text)))
     semantic_ai_unavailable = False
+
+    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text):
+        return
+
     if not _skip_semantic_ai:
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
-    # If every AI provider is temporarily unavailable, do not route known
-    # hotel-data questions to reception. Serve safe configured facts locally,
-    # then continue through the normal deterministic backend for actions.
+    # If semantic AI is unavailable, run the same safe local fallback once more
+    # for contextual questions that can only be resolved after recent conversation
+    # state has been considered. Normally this returns False because the pre-AI
+    # pass above already handled deterministic requests.
     if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text):
         return
 
@@ -4608,7 +4819,7 @@ def process_and_reply(message, sender_phone, msg_type):
 
         if ai_action == "SHOW_MENU":
             section = ai_understanding.get("menu_section") or "full"
-            msg = _menu_section_message(section)
+            msg = _menu_section_message(section, include_prices=explicitly_asks_price(user_text), sender_phone=sender_phone)
             if msg:
                 send_whatsapp_message(sender_phone, msg)
             else:

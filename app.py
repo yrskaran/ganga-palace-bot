@@ -4315,6 +4315,101 @@ def _ai_match_menu_items(ai_result, original_text):
 
 
 
+def _phrase_in_normalized_text(text, phrase):
+    """Match a whole word/phrase, never a substring such as PRICE -> RICE."""
+    t = normalize_text(text)
+    p = normalize_text(phrase)
+    if not t or not p:
+        return False
+    return bool(re.search(rf"(?<!\w){re.escape(p)}(?!\w)", t))
+
+
+def _has_menu_section_request_intent(text, trigger_phrases):
+    """Return True only when the section mention is actually a menu request.
+
+    This is deliberately intent-level rather than item/phrase-level. Natural
+    conversational questions, definitions, comparisons, negations and meta
+    comments are left for the semantic AI.
+    """
+    t = normalize_text(text)
+    if not t:
+        return False
+
+    # A standalone section name/trigger is unambiguous.
+    if any(t == normalize_text(p) for p in trigger_phrases if normalize_text(p)):
+        return True
+
+    # Language/meta/comparison questions are not menu requests even when they
+    # contain a menu section word.
+    non_menu_intent = (
+        "meaning", "matlab", "arth", "ka matlab", "what does", "what do you mean",
+        "pronunciation", "pronounce", "spell", "spelling", "define", "definition",
+        "difference", "different", "fark", "compare", "comparison", "versus", "vs",
+        "why do you think", "why did you think", "kyu samjhta", "kyon samjhta",
+        "kyu samjha", "kyon samjha", "galat samj", "mistake", "explain", "explanation",
+        "not asking", "not looking for", "example only", "just an example", "word", "term",
+        "joke", "story about", "translate", "translation",
+    )
+    if any(_phrase_in_normalized_text(t, cue) for cue in non_menu_intent):
+        return False
+
+    # Negation/meta intent should go to AI.
+    negations = (
+        "not asking for", "not looking for", "i am not asking", "main nahi pooch",
+        "mai nahi puch", "nahi chahiye", "nahin chahiye", "mat dikhao", "mat bhejo",
+        "don't want", "do not want", "dont want", "no need",
+    )
+    if any(_phrase_in_normalized_text(t, cue) for cue in negations):
+        return False
+
+    # Generic direct-menu cues. Avoid short ambiguous verbs such as "do".
+    request_cues = (
+        "batao", "bataiye", "dikhao", "show", "menu", "list", "options",
+        "available", "chahiye", "ke items", "me kya", "mein kya", "kya kya", "kaun se",
+        "what do you have", "what's in", "whats in", "can i see", "give me", "send me",
+        "which ones", "what are the", "tell me the",
+    )
+    return any(_phrase_in_normalized_text(t, cue) for cue in request_cues)
+
+
+def _looks_like_contextual_price_request(text):
+    """Identify a short price follow-up without hijacking meta/conversational text.
+
+    A message such as "price bhi to batao" should reuse the previously shown
+    menu section. A message such as "tu price ko rice kyo samjhta hai?" should
+    go to the AI because it is a conversational question, not a price request.
+    """
+    t = normalize_text(text)
+    if not t:
+        return False
+
+    price_markers = (
+        "price", "rate", "tariff", "cost", "how much",
+        "kitne ka", "kitna ka", "kitne ke", "paiso", "paise",
+    )
+    if not any(_phrase_in_normalized_text(t, marker) for marker in price_markers):
+        return False
+
+    # Explicit conversational/meta language means the guest is asking about the
+    # conversation itself, not requesting the menu prices. Let the AI handle it.
+    meta_markers = (
+        "samjhta", "samjha", "samjhi", "samjhi", "understand", "understood",
+        "thought", "mistake", "galat samj", "kyu samj", "kyon samj",
+    )
+    if any(_phrase_in_normalized_text(t, marker) for marker in meta_markers):
+        return False
+
+    # Very short price prompts are unambiguous and safe for contextual reuse.
+    if len(t.split()) <= 3:
+        return True
+
+    request_cues = (
+        "bata", "batao", "bataiye", "dikhao", "show", "please",
+        "paiso", "paise", "kitne ka", "kitna ka", "kitne ke",
+    )
+    return any(_phrase_in_normalized_text(t, cue) for cue in request_cues)
+
+
 def _local_menu_section_from_text(text):
     """Resolve an explicit menu section from hotel_data.txt without AI.
 
@@ -4348,7 +4443,7 @@ def _local_menu_section_from_text(text):
         candidates = re.findall(r'"([^"]+)"', left)
         if not candidates:
             candidates = [x.strip() for x in re.split(r",|/", left.lstrip("-• ")) if x.strip()]
-        if any(normalize_text(c) == t or normalize_text(c) in t for c in candidates):
+        if any(_phrase_in_normalized_text(t, c) for c in candidates) and _has_menu_section_request_intent(t, candidates):
             return section
 
     # Generic compatibility fallback for older hotel_data files.
@@ -4365,12 +4460,12 @@ def _local_menu_section_from_text(text):
         ("thali", "THALI"),
     ]
     for trigger, section in generic:
-        if trigger in t:
+        if _phrase_in_normalized_text(t, trigger) and _has_menu_section_request_intent(t, [trigger]):
             return section
     return None
 
 
-def _local_hotel_fallback(sender_phone, user_text):
+def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     """Serve safe, configured hotel answers BEFORE spending an AI call.
 
     This is the main AI-quota protection layer: common, deterministic hotel
@@ -4381,15 +4476,26 @@ def _local_hotel_fallback(sender_phone, user_text):
     price_requested = explicitly_asks_price(user_text)
 
     # 1) Specific menu section / breakfast / lunch / dinner etc.
+    # Natural-language section requests are intentionally NOT consumed before
+    # semantic AI. We only use a conservative direct/static path here; when AI
+    # is unavailable the caller enables allow_broad_menu=True so the hotel-data
+    # fallback can still answer common menu requests.
     section = _local_menu_section_from_text(user_text)
     if section:
-        msg = _menu_section_message(section, include_prices=price_requested, sender_phone=sender_phone)
-        if msg:
-            send_whatsapp_message(sender_phone, msg)
-            remember_conversation(sender_phone, "user", user_text)
-            remember_conversation(sender_phone, "assistant", msg)
-            print(f"LOCAL HOTEL PRE-AI: menu_section={section!r} prices={price_requested}", flush=True)
-            return True
+        direct_static = normalize_text(user_text) in {
+            "breakfast", "lunch", "dinner", "snacks", "snacks / light bites",
+            "beverages", "drinks", "dal", "paneer", "breads", "rice", "chawal",
+            "raita", "salad", "thali", "sweets", "dessert", "subah ka nashta",
+            "dopahar ka khana", "raat ka khana",
+        }
+        if direct_static or allow_broad_menu:
+            msg = _menu_section_message(section, include_prices=price_requested, sender_phone=sender_phone)
+            if msg:
+                send_whatsapp_message(sender_phone, msg)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", msg)
+                print(f"LOCAL HOTEL FALLBACK: menu_section={section!r} prices={price_requested} broad={allow_broad_menu}", flush=True)
+                return True
 
     # 2) Explicit full-menu request. Do not spend an AI call for a static menu.
     if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
@@ -4523,8 +4629,14 @@ def _local_hotel_fallback(sender_phone, user_text):
 
         # Price follow-up has priority over generic AI interpretation when a
         # previous menu section is clearly present.
-        price_followup = price_requested and bool(previous_section) and not any(
-            x in t for x in ["room price", "room rate", "room tariff", "room rent", "room cost"]
+        price_followup = (
+            price_requested
+            and _looks_like_contextual_price_request(user_text)
+            and bool(previous_section)
+            and not any(
+                _phrase_in_normalized_text(t, x)
+                for x in ["room price", "room rate", "room tariff", "room rent", "room cost"]
+            )
         )
         if price_followup:
             msg = _menu_section_message(previous_section, include_prices=True, sender_phone=sender_phone)
@@ -4962,7 +5074,7 @@ def process_and_reply(message, sender_phone, msg_type):
     _skip_semantic_ai = bool(_checkin_now) or bool((_dup_pending_now or _order_pending_now) and (is_yes(user_text) or is_no(user_text)))
     semantic_ai_unavailable = False
 
-    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text):
+    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         return
 
     if not _skip_semantic_ai and _local_conversation_fallback(sender_phone, user_text, guest_info):
@@ -4976,7 +5088,7 @@ def process_and_reply(message, sender_phone, msg_type):
     # for contextual questions that can only be resolved after recent conversation
     # state has been considered. Normally this returns False because the pre-AI
     # pass above already handled deterministic requests.
-    if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text):
+    if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
         return
 
     # ========================================================

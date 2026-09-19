@@ -83,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.5-AI-FIRST-PHOTO-RESOLVE-FIX"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.6-AI-FIRST-LOCAL-HOTEL-FALLBACK"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -3774,6 +3774,110 @@ def _ai_match_menu_items(ai_result, original_text):
     return {"generic": None, "items": found, "total": sum(x["amount"] for x in found)}
 
 
+
+def _local_menu_section_from_text(text):
+    """Resolve an explicit menu section from hotel_data.txt without AI.
+
+    Preferred source is the editable SECTION TRIGGERS block (if present). A small
+    generic fallback keeps the engine useful with older hotel_data files that do
+    not contain that optional block. This is intentionally section-level, not an
+    item-by-item keyword router.
+    """
+    raw = str(get_hotel_data() or "")
+    t = normalize_text(text)
+    if not t:
+        return None
+
+    # Data-driven: hotel_data.txt may define lines such as
+    # - "Breakfast", "subah ka nashta" -> BREAKFAST
+    in_triggers = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        upper = stripped.upper()
+        if upper.startswith("SECTION TRIGGERS"):
+            in_triggers = True
+            continue
+        if in_triggers and upper.startswith(("BREAKFAST MENU", "LUNCH MENU", "DINNER MENU", "BEVERAGES", "SNACKS", "DAL", "PANEER", "BREADS", "RICE", "SIDES", "THALI", "SWEETS")):
+            in_triggers = False
+        if not in_triggers or "->" not in stripped:
+            continue
+        left, right = stripped.split("->", 1)
+        section = right.strip().upper()
+        if section not in {"BREAKFAST", "LUNCH", "DINNER", "BEVERAGES & DRINKS", "SNACKS / LIGHT BITES", "DAL", "PANEER / MAIN COURSE OPTIONS", "BREADS", "RICE", "SIDES / ACCOMPANIMENTS", "THALI", "SWEETS & DESSERTS", "FULL"}:
+            continue
+        candidates = re.findall(r'"([^"]+)"', left)
+        if not candidates:
+            candidates = [x.strip() for x in re.split(r",|/", left.lstrip("-• ")) if x.strip()]
+        if any(normalize_text(c) == t or normalize_text(c) in t for c in candidates):
+            return section
+
+    # Generic compatibility fallback for older hotel_data files.
+    generic = [
+        ("breakfast", "BREAKFAST"), ("subah ka nashta", "BREAKFAST"), ("morning food", "BREAKFAST"),
+        ("lunch", "LUNCH"), ("dopahar ka khana", "LUNCH"),
+        ("dinner", "DINNER"), ("raat ka khana", "DINNER"),
+        ("drinks", "BEVERAGES & DRINKS"), ("beverages", "BEVERAGES & DRINKS"), ("peene ko", "BEVERAGES & DRINKS"),
+        ("sweets", "SWEETS & DESSERTS"), ("dessert", "SWEETS & DESSERTS"), ("meetha", "SWEETS & DESSERTS"),
+        ("snacks", "SNACKS / LIGHT BITES"), ("starter", "SNACKS / LIGHT BITES"), ("kuch halka", "SNACKS / LIGHT BITES"),
+        ("dal", "DAL"), ("paneer", "PANEER / MAIN COURSE OPTIONS"),
+        ("roti", "BREADS"), ("naan", "BREADS"), ("bread", "BREADS"),
+        ("rice", "RICE"), ("chawal", "RICE"), ("raita", "SIDES / ACCOMPANIMENTS"), ("salad", "SIDES / ACCOMPANIMENTS"),
+        ("thali", "THALI"),
+    ]
+    for trigger, section in generic:
+        if trigger in t:
+            return section
+    return None
+
+
+def _local_hotel_fallback(sender_phone, user_text):
+    """Answer safe, configured hotel questions when all AI providers are unavailable.
+
+    This is deliberately narrow: it serves deterministic hotel-data/menu answers and
+    contextual follow-ups. It does not invent availability, authorize service, create
+    orders, or bypass the normal backend safety checks.
+    """
+    section = _local_menu_section_from_text(user_text)
+    if section:
+        msg = _menu_section_message(section)
+        if msg:
+            send_whatsapp_message(sender_phone, msg)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", msg)
+            print(f"LOCAL HOTEL FALLBACK: menu_section={section!r}", flush=True)
+            return True
+
+    # Resolve short follow-ups from the most recent conversation context.
+    history = get_conversation_history(sender_phone)
+    if history:
+        recent_user = ""
+        recent_assistant = ""
+        for item in reversed(history):
+            if not recent_user and item.get("role") == "user":
+                recent_user = str(item.get("content", ""))
+            if not recent_assistant and item.get("role") == "assistant":
+                recent_assistant = str(item.get("content", ""))
+            if recent_user and recent_assistant:
+                break
+        followup = normalize_text(user_text)
+        is_more = followup in {"more", "more options", "anything else", "what else", "tell me more", "aur batao", "aur bataiye", "aur options", "aur kya", "aur kya hai"}
+        is_more = is_more or (followup.startswith("aur ") and any(x in followup for x in {"btao", "batao", "bataiye", "options", "kya hai"}))
+        if is_more:
+            previous_section = _local_menu_section_from_text(recent_user)
+            if not previous_section:
+                m = re.search(r"\b(BREAKFAST|LUNCH|DINNER|BEVERAGES & DRINKS|SNACKS / LIGHT BITES|DAL|PANEER / MAIN COURSE OPTIONS|BREADS|RICE|SIDES / ACCOMPANIMENTS|THALI|SWEETS & DESSERTS)\b", recent_assistant.upper())
+                previous_section = m.group(1) if m else None
+            if previous_section:
+                msg = _menu_section_message(previous_section)
+                if msg:
+                    send_whatsapp_message(sender_phone, msg)
+                    remember_conversation(sender_phone, "user", user_text)
+                    remember_conversation(sender_phone, "assistant", msg)
+                    print(f"LOCAL HOTEL FALLBACK: contextual_menu_section={previous_section!r}", flush=True)
+                    return True
+    return False
+
+
 def _menu_section_message(section_name):
     """Return the exact configured guest-facing menu section from hotel_data.txt."""
     raw = str(get_hotel_data() or "")
@@ -4002,8 +4106,16 @@ def process_and_reply(message, sender_phone, msg_type):
         _order_pending_now = order_sessions.get(sender_phone)
         _checkin_now = checkin_sessions.get(sender_phone)
     _skip_semantic_ai = bool(_checkin_now) or bool((_dup_pending_now or _order_pending_now) and (is_yes(user_text) or is_no(user_text)))
+    semantic_ai_unavailable = False
     if not _skip_semantic_ai:
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
+        semantic_ai_unavailable = ai_understanding is None
+
+    # If every AI provider is temporarily unavailable, do not route known
+    # hotel-data questions to reception. Serve safe configured facts locally,
+    # then continue through the normal deterministic backend for actions.
+    if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text):
+        return
 
     # ========================================================
     # ACTIVE COMPLAINT FEEDBACK
@@ -4034,7 +4146,7 @@ def process_and_reply(message, sender_phone, msg_type):
         # Let AI resolve less predictable change-of-mind language, with or without
         # an in-memory order record. This also lets the bot explain a >5-minute
         # cancellation safely instead of falling through to a generic reply.
-        cancel_ai = ai_understanding or classify_guest_intent(user_text, guest_info, sender_phone)
+        cancel_ai = ai_understanding or (None if semantic_ai_unavailable else classify_guest_intent(user_text, guest_info, sender_phone)) or {}
         cancellation_intent = cancel_ai.get("action", cancel_ai.get("intent")) == "ORDER_CANCEL" and cancel_ai.get("confidence", 0) >= 0.55
 
     if cancellation_intent:
@@ -4168,7 +4280,7 @@ def process_and_reply(message, sender_phone, msg_type):
     complaint_detected = looks_like_complaint(user_text)
     ai_intent = {"intent": "", "category": "NONE", "confidence": 0.0}
     if not complaint_detected:
-        ai_intent = ai_understanding or classify_guest_intent(user_text, guest_info, sender_phone)
+        ai_intent = ai_understanding or (None if semantic_ai_unavailable else classify_guest_intent(user_text, guest_info, sender_phone)) or {"intent":"","category":"NONE","confidence":0.0}
         complaint_detected = ai_intent.get("action", ai_intent.get("intent")) == "COMPLAINT" and ai_intent.get("confidence", 0) >= 0.55
 
     if complaint_detected:
@@ -4611,7 +4723,9 @@ def process_and_reply(message, sender_phone, msg_type):
                 wifi_text += f" | Password: {wifi_password}"
             send_whatsapp_message(sender_phone, wifi_text)
         else:
-            ai = ((ai_understanding or {}).get("reply", "").strip() if ai_understanding else "") or ask_ai_chat(user_text, guest_info, sender_phone)
+            ai = ((ai_understanding or {}).get("reply", "").strip() if ai_understanding else "")
+            if not ai and not semantic_ai_unavailable:
+                ai = ask_ai_chat(user_text, guest_info, sender_phone)
             if ai:
                 send_whatsapp_message(sender_phone, ai)
                 if any(x in normalize_text(ai) for x in ["reception se confirm", "reception se karwa", "reception can confirm", "reception will confirm"]):
@@ -4794,7 +4908,9 @@ def process_and_reply(message, sender_phone, msg_type):
             rates = ", ".join(f"{x['name']} Rs.{x['rate']} per night" for x in categories if x.get('rate'))
             send_whatsapp_message(sender_phone, rates + ".")
         else:
-            ai = ask_ai_chat(user_text, guest_info, sender_phone)
+            ai = ""
+            if not semantic_ai_unavailable:
+                ai = ask_ai_chat(user_text, guest_info, sender_phone)
             if ai:
                 send_whatsapp_message(sender_phone, ai)
                 if any(x in normalize_text(ai) for x in ["reception se confirm", "reception se karwa", "reception can confirm", "reception will confirm"]):
@@ -4814,7 +4930,7 @@ def process_and_reply(message, sender_phone, msg_type):
         "tourist", "temple", "darshan", "restaurant", "food place"
     ]) or is_guide_followup(user_text):
         guide_reply = ((ai_understanding or {}).get("reply", "").strip() if ai_understanding else "")
-        if not guide_reply:
+        if not guide_reply and not semantic_ai_unavailable:
             guide_reply = ask_ai_chat(user_text, guest_info, sender_phone)
         if not guide_reply:
             guide_reply = build_guide_fallback(user_text, sender_phone)
@@ -5029,7 +5145,7 @@ def process_and_reply(message, sender_phone, msg_type):
     # Reuse the one-pass semantic AI reply first. Only call the generic chat gateway
     # when the semantic pass was unavailable or malformed.
     ai_reply = (ai_understanding or {}).get("reply", "").strip() if ai_understanding else ""
-    if not ai_reply:
+    if not ai_reply and not semantic_ai_unavailable:
         ai_reply = ask_ai_chat(user_text, guest_info, sender_phone)
     if not ai_reply and is_guide_followup(user_text):
         ai_reply = build_guide_fallback(user_text, sender_phone)

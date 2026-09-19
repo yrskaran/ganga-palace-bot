@@ -83,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.7-V17-POLISHED-SMART-FALLBACK"
+APP_VERSION = "HOTEL-AI-GENERIC-V7.8-V18-WEBHOOK-REPLY-RELIABILITY"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -5411,17 +5411,28 @@ def process_and_reply(message, sender_phone, msg_type):
     notify_reception_request(sender_phone, guest_info, user_text, "reception_safety_net")
 
 
+def _safe_mark_message_as_read(message_id):
+    """Mark a WhatsApp message as read without blocking message processing."""
+    try:
+        mark_message_as_read(message_id)
+    except Exception as exc:
+        print(f"MARK-READ ERROR: message_id={message_id!r}: {exc}", flush=True)
+
+
 def handle_incoming_async(message, sender_phone, msg_type):
     try:
+        print(f"[INCOMING ASYNC START] phone={sender_phone} type={msg_type}", flush=True)
         process_and_reply(message, sender_phone, msg_type)
+        print(f"[INCOMING ASYNC DONE] phone={sender_phone} type={msg_type}", flush=True)
     except Exception as exc:
         print("PROCESS ERROR:", exc, flush=True)
         traceback.print_exc()
         try:
-            send_whatsapp_message(
+            sent = send_whatsapp_message(
                 sender_phone,
                 "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; main reception se confirm karwa deta hoon. 🙏"
             )
+            print(f"SAFETY REPLY RESULT: phone={sender_phone} sent={sent}", flush=True)
         except Exception as reply_exc:
             print("SAFETY REPLY ERROR:", reply_exc, flush=True)
 
@@ -6093,29 +6104,58 @@ def webhook():
     signature = request.headers.get("X-Hub-Signature-256", "")
 
     if not verify_meta_signature(raw_body, signature):
+        print("WEBHOOK REJECTED: invalid signature", flush=True)
         return "Invalid signature", 403
 
     try:
         data = request.get_json(silent=True) or {}
+        entries = data.get("entry", []) or []
+        print(
+            f"WEBHOOK RECEIVED: object={data.get('object')!r} entries={len(entries)}",
+            flush=True,
+        )
+        dispatched = 0
+        status_only = 0
 
-        for entry in data.get("entry", []):
-            for change in entry.get("changes", []):
-                value = change.get("value", {})
+        for entry in entries:
+            changes = entry.get("changes", []) or []
+            for change in changes:
+                value = change.get("value", {}) or {}
+                messages = value.get("messages", []) or []
+                statuses = value.get("statuses", []) or []
+                print(
+                    f"WEBHOOK CHANGE: field={change.get('field')!r} messages={len(messages)} statuses={len(statuses)}",
+                    flush=True,
+                )
 
-                # Status webhooks are acknowledged but not processed as messages.
-                if value.get("statuses") and not value.get("messages"):
+                # Status-only callbacks are acknowledged but do not enter the
+                # guest-message processing path. This log makes that explicit.
+                if not messages and statuses:
+                    status_only += len(statuses)
                     continue
 
-                for msg in value.get("messages", []):
+                if not messages:
+                    print(
+                        f"WEBHOOK NO-MESSAGE PAYLOAD: value_keys={list(value.keys())}",
+                        flush=True,
+                    )
+                    continue
+
+                for msg in messages:
                     msg_id = msg.get("id")
                     sender = msg.get("from")
                     msg_type = msg.get("type")
 
                     if not msg_id or not sender:
+                        print(
+                            f"WEBHOOK MESSAGE SKIPPED: missing id/from | type={msg_type!r} keys={list(msg.keys())}",
+                            flush=True,
+                        )
                         continue
 
                     with state_lock:
                         if msg_id in processed_msg_ids:
+                            print(f"WEBHOOK DUPLICATE MESSAGE IGNORED: id={msg_id}", flush=True)
                             continue
 
                         processed_msg_ids.add(msg_id)
@@ -6125,15 +6165,34 @@ def webhook():
                             processed_msg_ids.clear()
                             processed_msg_ids.add(msg_id)
 
-                    mark_message_as_read(msg_id)
+                    dispatched += 1
+                    print(
+                        f"WEBHOOK MESSAGE DISPATCH: id={msg_id} from={sender} type={msg_type}",
+                        flush=True,
+                    )
 
+                    # Read acknowledgement must never delay or prevent the actual
+                    # guest-reply worker. Run it separately.
                     threading.Thread(
-                        target=handle_incoming_async,
-                        args=(msg, sender, msg_type),
-                        daemon=True
+                        target=_safe_mark_message_as_read,
+                        args=(msg_id,),
+                        daemon=True,
+                        name=f"wa-read-{msg_id[-8:]}",
                     ).start()
 
-        return jsonify({"status": "success"}), 200
+                    worker = threading.Thread(
+                        target=handle_incoming_async,
+                        args=(msg, sender, msg_type),
+                        daemon=True,
+                        name=f"wa-msg-{msg_id[-8:]}",
+                    )
+                    worker.start()
+
+        print(
+            f"WEBHOOK COMPLETE: dispatched={dispatched} status_only={status_only}",
+            flush=True,
+        )
+        return jsonify({"status": "success", "messages_dispatched": dispatched}), 200
 
     except Exception as exc:
         print("WEBHOOK ERROR:", exc, flush=True)

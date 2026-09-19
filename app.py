@@ -2346,11 +2346,17 @@ Hotel knowledge:\n{hotel_db}
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": str(user_text)})
 
+    # Command A+ is a reasoning-capable model. For this hotel receptionist we
+    # want the model to understand the conversation, but we do not need its
+    # internal reasoning tokens to consume the small reply budget. Cohere
+    # documents that reasoning is enabled by default and that a low
+    # max_tokens value can end with MAX_TOKENS before final text is emitted.
     payload = {
         "model": COHERE_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 360 if structured else 220,
+        "max_tokens": 800 if structured else 600,
+        "thinking": {"type": "disabled"},
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}
@@ -2374,11 +2380,43 @@ Hotel knowledge:\n{hotel_db}
             if usable:
                 print(f"COHERE SUCCESS: model={COHERE_MODEL}", flush=True)
                 return usable
-            finish_reason = ((data.get("finish_reason") if isinstance(data, dict) else "") or "").strip()
+            finish_reason = ((data.get("finish_reason") if isinstance(data, dict) else "") or "").strip().upper()
             print(f"COHERE EMPTY/INVALID OUTPUT: finish_reason={finish_reason or 'unknown'} response_keys={list(data.keys())[:12] if isinstance(data, dict) else []}", flush=True)
-            # A 200 response with no usable assistant text is not a reason to
-            # keep hammering Cohere for this request. Let the next provider
-            # handle it immediately. A later request can try Cohere again.
+
+            # Command A+ can return MAX_TOKENS when the generation budget is
+            # too small. Retry once with a larger reply budget rather than
+            # immediately abandoning a healthy Cohere provider. Keep thinking
+            # disabled on the retry as well so the budget is reserved for the
+            # guest-facing answer.
+            if finish_reason == "MAX_TOKENS":
+                retry_payload = dict(payload)
+                retry_payload["max_tokens"] = 1400 if structured else 1000
+                try:
+                    print(f"COHERE RETRY: reason=MAX_TOKENS max_tokens={retry_payload['max_tokens']}", flush=True)
+                    retry_res = requests.post(
+                        "https://api.cohere.com/v2/chat",
+                        json=retry_payload,
+                        headers=headers,
+                        timeout=30,
+                    )
+                    if retry_res.status_code == 200:
+                        retry_data = retry_res.json() or {}
+                        retry_content = _cohere_extract_text(retry_data)
+                        retry_usable = _ai_content_is_usable(retry_content, "Cohere")
+                        if retry_usable:
+                            print(f"COHERE RETRY SUCCESS: model={COHERE_MODEL}", flush=True)
+                            return retry_usable
+                        retry_reason = ((retry_data.get("finish_reason") if isinstance(retry_data, dict) else "") or "").strip()
+                        print(f"COHERE RETRY EMPTY/INVALID: finish_reason={retry_reason or 'unknown'}", flush=True)
+                    else:
+                        print(f"COHERE RETRY ERROR: status={retry_res.status_code} {retry_res.text[:800]}", flush=True)
+                except (requests.Timeout, requests.ConnectionError) as exc:
+                    print(f"COHERE RETRY NETWORK ERROR: {exc}", flush=True)
+                except Exception as exc:
+                    print(f"COHERE RETRY EXCEPTION: {exc}", flush=True)
+
+            # A 200 response with no usable assistant text after the targeted
+            # MAX_TOKENS retry should fall through to the next provider.
             return None
 
         body = res.text[:1200]
@@ -4433,6 +4471,11 @@ def _local_hotel_fallback(sender_phone, user_text):
         return True
 
     # 6) Contextual local menu follow-up, only after no explicit section was found.
+    # If the guest first asks for a section and then says something like
+    # "price kyo nahi bata rhe ho", keep the immediately previous menu section
+    # instead of sending the AI a context-free price query. This prevents
+    # accidental routing such as "price" -> RICE and ensures prices are added
+    # to the section the guest was actually viewing.
     history = get_conversation_history(sender_phone)
     if history:
         recent_user = ""
@@ -4444,24 +4487,47 @@ def _local_hotel_fallback(sender_phone, user_text):
                 recent_assistant = str(item.get("content", ""))
             if recent_user and recent_assistant:
                 break
+
+        previous_section = _local_menu_section_from_text(recent_user)
+        if not previous_section:
+            m = re.search(
+                r"\b(BREAKFAST|LUNCH|DINNER|BEVERAGES & DRINKS|SNACKS & LIGHT BITES|SNACKS / LIGHT BITES|DAL|PANEER & MAIN COURSE|PANEER / MAIN COURSE OPTIONS|BREADS|RICE|SIDES & ACCOMPANIMENTS|SIDES / ACCOMPANIMENTS|THALI|SWEETS & DESSERTS)\b",
+                recent_assistant.upper(),
+            )
+            if m:
+                section_map = {
+                    "SNACKS & LIGHT BITES": "SNACKS / LIGHT BITES",
+                    "PANEER & MAIN COURSE": "PANEER / MAIN COURSE OPTIONS",
+                    "SIDES & ACCOMPANIMENTS": "SIDES / ACCOMPANIMENTS",
+                }
+                previous_section = section_map.get(m.group(1), m.group(1))
+
+        # Price follow-up has priority over generic AI interpretation when a
+        # previous menu section is clearly present.
+        price_followup = price_requested and bool(previous_section) and not any(
+            x in t for x in ["room price", "room rate", "room tariff", "room rent", "room cost"]
+        )
+        if price_followup:
+            msg = _menu_section_message(previous_section, include_prices=True, sender_phone=sender_phone)
+            if msg:
+                send_whatsapp_message(sender_phone, msg)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", msg)
+                print(f"LOCAL HOTEL FALLBACK: contextual_menu_price_section={previous_section!r}", flush=True)
+                return True
+
         followup = normalize_text(user_text)
         is_more = followup in {"more", "more options", "anything else", "what else", "tell me more", "aur batao", "aur bataiye", "aur options", "aur kya", "aur kya hai"}
         is_more = is_more or (followup.startswith("aur ") and any(x in followup for x in {"btao", "batao", "bataiye", "options", "kya hai"}))
-        if is_more:
-            previous_section = _local_menu_section_from_text(recent_user)
-            if not previous_section:
-                m = re.search(r"\b(BREAKFAST|LUNCH|DINNER|BEVERAGES & DRINKS|SNACKS / LIGHT BITES|DAL|PANEER / MAIN COURSE OPTIONS|BREADS|RICE|SIDES / ACCOMPANIMENTS|THALI|SWEETS & DESSERTS)\b", recent_assistant.upper())
-                previous_section = m.group(1) if m else None
-            if previous_section:
-                msg = _menu_section_message(previous_section, include_prices=price_requested, sender_phone=sender_phone)
-                if msg:
-                    send_whatsapp_message(sender_phone, msg)
-                    remember_conversation(sender_phone, "user", user_text)
-                    remember_conversation(sender_phone, "assistant", msg)
-                    print(f"LOCAL HOTEL FALLBACK: contextual_menu_section={previous_section!r}", flush=True)
-                    return True
+        if is_more and previous_section:
+            msg = _menu_section_message(previous_section, include_prices=price_requested, sender_phone=sender_phone)
+            if msg:
+                send_whatsapp_message(sender_phone, msg)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", msg)
+                print(f"LOCAL HOTEL FALLBACK: contextual_menu_section={previous_section!r}", flush=True)
+                return True
     return False
-
 
 def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     """Handle low-risk conversational turns without consuming any AI quota.

@@ -83,7 +83,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V7.8-V18-WEBHOOK-REPLY-RELIABILITY"
+APP_VERSION = "HOTEL-AI-GENERIC-V19-FINAL-STABLE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -373,8 +373,25 @@ def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
 
 
 def remember_guest_language(sender_phone,text):
-    lang=guest_language(text)
-    with state_lock: guest_language_cache[sender_phone]=lang
+    detected = guest_language(text)
+    raw = normalize_text(text)
+    short_neutral = raw in {
+        "hi", "hello", "hlo", "hey", "namaste", "thanks", "thank you", "thankyou",
+        "thank u", "thx", "ty", "ok", "okay", "ok ji", "sure", "great", "nice",
+        "perfect", "bye", "goodbye", "good night", "gn", "tata", "dhanyavad",
+        "dhanyavaad", "shukriya"
+    }
+    with state_lock:
+        previous = guest_language_cache.get(sender_phone)
+        # Courtesy/acknowledgement words in Roman script do not reliably identify
+        # a new language. Preserve the established guest language for these very
+        # short neutral turns so a Hinglish guest saying "Thankyou" does not
+        # suddenly receive an English reply.
+        if previous and short_neutral and guest_script(text) == "roman":
+            lang = previous
+        else:
+            lang = detected
+        guest_language_cache[sender_phone]=lang
     return lang
 
 def get_guest_response_language(sender_phone,text=None):
@@ -2944,8 +2961,8 @@ def _format_menu_item_line(line, include_prices=False):
     if m:
         name = m.group(1).strip()
         price = int(m.group(2).replace(",", ""))
-        return f"• {name} — ₹{price}" if include_prices else f"• {name}"
-    return f"• {stripped}"
+        return f"• *{name}* — ₹{price}" if include_prices else f"• *{name}*"
+    return f"• *{stripped}*"
 
 
 def menu_message(include_prices=True, sender_phone=None):
@@ -3581,9 +3598,7 @@ def format_bill_message(fin, room, guest_name):
         f"Advance Paid: {_money(fin.get('room_advance', 0))}\n\n"
 
         "🍽️ *FOOD*\n"
-        f"Food Total: *{_money(fin.get('kitchen_total', 0))}*\n"
-        f"Food Paid: {_money(fin.get('kitchen_paid', 0))}\n"
-        f"Food Due: {_money(fin.get('kitchen_pending', 0))}\n\n"
+        f"Food Total: *{_money(fin.get('kitchen_total', 0))}*\n\n"
 
         "━━━━━━━━━━━━━━━━━━━━\n"
         f"💰 *GRAND TOTAL*   {_money(fin.get('grand_total', 0))}\n"
@@ -4076,6 +4091,96 @@ def _local_hotel_fallback(sender_phone, user_text):
     return False
 
 
+def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
+    """Handle low-risk conversational turns without consuming any AI quota.
+
+    These are language-level acknowledgements, not hotel-specific facts. They keep
+    the guest experience natural even when every external AI provider is rate-limited.
+    """
+    t = normalize_text(user_text)
+    compact = re.sub(r"[^a-z0-9 ]", "", t).strip()
+    lang = get_guest_response_language(sender_phone, user_text)
+    name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
+
+    thanks = {
+        "thanks", "thank you", "thankyou", "thx", "ty", "thanks ji",
+        "thank you ji", "thankyou ji", "dhanyavad", "dhanyavaad",
+        "shukriya", "bahut shukriya", "bahut dhanyavad",
+    }
+    if compact in thanks:
+        if lang == "english":
+            msg = f"You're most welcome, {name} ji! 😊 Kisi bhi help ki zarurat ho to yahin message karein."
+        elif lang == "hindi" and guest_script(user_text) == "devanagari":
+            msg = f"आपका स्वागत है {name} जी! 😊 किसी भी सहायता की ज़रूरत हो तो यहीं संदेश करें।"
+        else:
+            msg = f"Aapka swagat hai {name} ji! 😊 Kisi bhi help ki zarurat ho to yahin message karein."
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: gratitude", flush=True)
+        return True
+
+    goodbye = {"bye", "goodbye", "see you", "see you soon", "good night", "gn", "tata"}
+    if compact in goodbye:
+        if compact in {"good night", "gn"}:
+            msg = f"Good night, {name} ji! 🌙 Have a comfortable stay."
+        elif lang == "english":
+            msg = f"Goodbye, {name} ji! 🙏 Have a pleasant stay."
+        else:
+            msg = f"Bye {name} ji! 🙏 Aapka stay comfortable rahe."
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: goodbye", flush=True)
+        return True
+
+    acknowledgements = {"ok", "okay", "ok ji", "theek hai", "thik hai", "alright", "sure", "great", "nice", "perfect"}
+    if compact in acknowledgements:
+        if lang == "english":
+            msg = "Sure ji 👍 I'm here whenever you need anything."
+        else:
+            msg = "Ji bilkul 👍 Jab bhi kisi help ki zarurat ho, yahin message karein."
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: acknowledgement", flush=True)
+        return True
+
+    capability_queries = {
+        "help", "madad", "madad karo", "meri help karo", "can you help",
+        "how can you help", "what can you do", "kya kar sakte ho",
+        "kya kya kar sakte ho", "aap kya kya kar sakte ho",
+    }
+    if compact in capability_queries:
+        if lang == "english":
+            msg = (
+                "🤝 *I can help you with:*\n"
+                "• 🍽️ Menu & food orders\n"
+                "• 🛏️ Room photos & room rates\n"
+                "• 📶 Wi-Fi & hotel timings\n"
+                "• 📍 Haridwar places & local guide\n"
+                "• 🧹 Housekeeping / room service\n"
+                "• 🧾 Bill & payment details"
+            )
+        else:
+            msg = (
+                "🤝 *Main aapki help kar sakta hoon:*\n"
+                "• 🍽️ Menu aur food orders\n"
+                "• 🛏️ Room photos aur room rates\n"
+                "• 📶 Wi-Fi aur hotel timings\n"
+                "• 📍 Haridwar places aur local guide\n"
+                "• 🧹 Housekeeping / room service\n"
+                "• 🧾 Bill aur payment details"
+            )
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: capability_help", flush=True)
+        return True
+
+    return False
+
+
 def _menu_section_message(section_name, include_prices=False, sender_phone=None):
     """Return a polished, data-driven guest-facing menu section.
 
@@ -4315,6 +4420,9 @@ def process_and_reply(message, sender_phone, msg_type):
     semantic_ai_unavailable = False
 
     if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text):
+        return
+
+    if not _skip_semantic_ai and _local_conversation_fallback(sender_phone, user_text, guest_info):
         return
 
     if not _skip_semantic_ai:
@@ -5392,6 +5500,11 @@ def process_and_reply(message, sender_phone, msg_type):
 
     # ========================================================
     # 17. RECEPTION SAFETY NET
+    # Low-risk conversational turns have one last non-AI guardrail so they never
+    # get misrouted to Reception simply because all AI providers are unavailable.
+    if _local_conversation_fallback(sender_phone, user_text, guest_info):
+        return
+
     # Never leave an ordinary guest question unanswered.
     # ========================================================
     fallback_lang = get_guest_response_language(sender_phone)

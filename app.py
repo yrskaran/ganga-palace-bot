@@ -36,6 +36,20 @@ PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "").strip()
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN", "").strip()
 APP_SECRET = os.getenv("WHATSAPP_APP_SECRET", "").strip()
 
+# Paid primary AI provider: OpenAI.
+# The semantic router and normal conversational gateway both use this provider
+# when an API key is configured. Hotel facts still come from hotel_data.txt.
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna").strip()
+OPENAI_REASONING_EFFORT = os.getenv("OPENAI_REASONING_EFFORT", "none").strip() or "none"
+OPENAI_API_URL = os.getenv("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions").strip()
+OPENAI_UNAVAILABLE_UNTIL = 0.0
+OPENAI_UNAVAILABLE_REASON = ""
+OPENAI_LOCK = threading.RLock()
+OPENAI_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("OPENAI_RATE_LIMIT_COOLDOWN", "60")))
+OPENAI_AUTH_COOLDOWN = max(900, int(os.getenv("OPENAI_AUTH_COOLDOWN", "3600")))
+OPENAI_CONFIG_COOLDOWN = max(120, int(os.getenv("OPENAI_CONFIG_COOLDOWN", "600")))
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GEMINI_FALLBACK_MODELS = [
@@ -104,7 +118,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V22-PROVIDER-FAILOVER-FINAL"
+APP_VERSION = "HOTEL-AI-GENERIC-V29-SEMANTIC-RECEPTION-FINAL"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -1743,6 +1757,299 @@ def download_whatsapp_media(media_id):
 
 
 # ============================================================
+# OPENAI / AI
+# ============================================================
+
+def _openai_circuit_open():
+    with OPENAI_LOCK:
+        return time.time() < OPENAI_UNAVAILABLE_UNTIL
+
+
+def _openai_set_circuit_breaker(seconds, reason):
+    global OPENAI_UNAVAILABLE_UNTIL, OPENAI_UNAVAILABLE_REASON
+    with OPENAI_LOCK:
+        OPENAI_UNAVAILABLE_UNTIL = max(
+            OPENAI_UNAVAILABLE_UNTIL,
+            time.time() + max(1, int(seconds))
+        )
+        OPENAI_UNAVAILABLE_REASON = str(reason or "temporary OpenAI failure")[:300]
+    print(f"OPENAI CIRCUIT OPEN: {OPENAI_UNAVAILABLE_REASON} for ~{int(seconds)}s", flush=True)
+
+
+def _openai_extract_message_text(data):
+    """Extract assistant text from a Chat Completions response safely."""
+    if not isinstance(data, dict):
+        return ""
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message") if isinstance(choice, dict) else {}
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                value = block.get("text")
+                if value:
+                    parts.append(str(value))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts).strip()
+    return ""
+
+
+def _openai_semantic_schema():
+    """Strict schema used by the one-pass semantic receptionist router."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "ANSWER", "SHOW_PHOTO", "SHOW_MENU", "ORDER", "ORDER_SELECTION",
+                    "ORDER_CANCEL", "COMPLAINT", "SERVICE", "CHECKIN", "BILL",
+                    "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE",
+                    "RECEPTION", "NONE"
+                ],
+            },
+            "category": {
+                "type": "string",
+                "enum": ["HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "ROOM_SERVICE", "RECEPTION", "NONE"],
+            },
+            "photo_target": {"type": "string"},
+            "menu_section": {"type": "string"},
+            "generic": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "name": {"type": "string"},
+                        "qty": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["name", "qty"],
+                },
+            },
+            "service": {"type": "string"},
+            "needs_reception": {"type": "boolean"},
+            "reply": {"type": "string"},
+            "confidence": {"type": "number"},
+        },
+        "required": [
+            "action", "category", "photo_target", "menu_section", "generic", "items",
+            "service", "needs_reception", "reply", "confidence"
+        ],
+    }
+
+
+def _openai_messages(user_text, guest_info=None, sender_phone=None, structured=False):
+    language = guest_language(user_text)
+    language_rule = language_instruction(language, user_text)
+    guest_context = "NEW CUSTOMER"
+    if guest_info:
+        if guest_info.get("is_inhouse"):
+            guest_context = (
+                f"IN-HOUSE GUEST: Room {guest_info.get('room')} | "
+                f"Name: {guest_info.get('name')}"
+            )
+        elif guest_info.get("status") == "CHECKED_OUT":
+            guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
+
+    # GPT-5.6 Luna is the paid semantic primary, so give it the complete current
+    # hotel_data file whenever it fits rather than the older truncated 8-10k copy.
+    hotel_db = _ai_knowledge_snapshot(19000) if structured else _compact_ai_text(get_hotel_data(), 9000)
+    history = get_conversation_history(sender_phone) if sender_phone else []
+    history_text = "\n".join(
+        f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 900)}"
+        for item in history[-8:]
+    ) or "No earlier conversation."
+
+    system_prompt = f"""
+You are the primary semantic AI receptionist for {get_hotel_name()} on WhatsApp.
+
+{language_rule}
+
+{ai_time_context()}
+
+{"Return ONLY the structured JSON object required by the schema. Never add markdown or commentary." if structured else ""}
+
+CORE JOB:
+Understand what the guest MEANS, not merely which words appear in the message.
+The guest may write Hindi, Roman Hindi/Hinglish, English, slang, shorthand, spelling
+mistakes, voice-transcription errors, indirect questions, jokes, comparisons,
+negations, examples, or incomplete follow-ups. Resolve meaning using conversation
+context. The CURRENT guest message has priority over stale context.
+
+CRITICAL DISTINCTIONS:
+- Mentioning a word is NOT the same as requesting that topic.
+- A meaning/translation/pronunciation question is NOT a hotel menu request.
+- A comparison/argument/negation is NOT a menu request merely because it contains
+  words such as rice, dinner, snacks, breakfast or price.
+- "price" and "rice" must be distinguished by meaning and context.
+- If the guest says they are only chatting or gives an example sentence, answer the
+  actual sentence instead of triggering a matching hotel action.
+- If a short message is ambiguous, use prior conversation context and infer the most
+  likely intent; do not default to a generic failure response when a safe hotel-data
+  answer is available.
+
+HOTEL FACT SAFETY:
+- hotel_data.txt is the source of truth for hotel facts, menu, room categories, rates,
+  facilities, policies, photos and local-guide information.
+- Never invent live room availability, booking status, payment status, identity
+  verification, discounts, unsupported facilities, or precise facts absent from data.
+- For a question requiring live records, choose the appropriate backend action and
+  leave the factual calculation/lookup to the backend.
+
+GUEST STATUS:
+- Public hotel information, room information, photos, menu information and booking
+  inquiries are available to any guest, whether checked in or not.
+- Operational in-room services, kitchen/room-service orders, housekeeping,
+  complaints about a current stay, and guest-specific bills require backend validation
+  and are not authorized by the AI alone.
+
+NATURAL-LANGUAGE FOOD UNDERSTANDING:
+- "mood hai", "mann hai", "kuch halka", "kuch tasty", "bhook lagi", "kuch khane ko",
+  and similar phrases describe what the guest wants to eat; reason over the authoritative
+  menu rather than requiring a keyword.
+- A broad food request without a specific item should produce ORDER_SELECTION/generic.
+- A specific food order should map only to exact authoritative menu item names.
+- Never invent food items.
+
+CONVERSATION:
+- Resolve follow-ups like "haan", "nahi", "masala", "wahi", "aur?", "more",
+  "price bhi", "photo wala", "family", "jo pehle tha" from recent context when safe.
+- Do not let prior assistant wording override what the guest is actually asking now.
+- Keep replies short and natural, normally 1-3 sentences.
+
+Guest context: {guest_context}
+Recent conversation:
+{history_text}
+
+Hotel knowledge:
+{hotel_db}
+
+Structured local guide:
+{_compact_ai_text(local_guide_context(), 5000)}
+"""
+
+    messages = [{"role": "developer", "content": system_prompt}]
+    for item in history[-CONVERSATION_MEMORY_LIMIT:]:
+        role = item.get("role", "user")
+        content = str(item.get("content", "")).strip()
+        if role in {"user", "assistant"} and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": str(user_text)})
+    return messages
+
+
+def ask_openai_chat(user_text, guest_info=None, sender_phone=None, structured=False):
+    """Primary paid AI through OpenAI Chat Completions, with strict JSON for routing."""
+    if not OPENAI_API_KEY or _openai_circuit_open():
+        return None
+
+    messages = _openai_messages(user_text, guest_info, sender_phone, structured=structured)
+    payload = {
+        "model": OPENAI_MODEL,
+        "messages": messages,
+        "max_completion_tokens": 900 if structured else 350,
+        "stream": False,
+    }
+    # This model family supports configurable reasoning effort. Keep it at none for
+    # receptionist latency/cost and do not expose any hidden reasoning to guests.
+    if OPENAI_REASONING_EFFORT:
+        payload["reasoning_effort"] = OPENAI_REASONING_EFFORT
+
+    if structured:
+        payload["response_format"] = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "hotel_reception_semantic_v1",
+                "strict": True,
+                "schema": _openai_semantic_schema(),
+            },
+        }
+
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    print(f"OPENAI TRY: model={OPENAI_MODEL} structured={structured}", flush=True)
+    try:
+        res = requests.post(
+            OPENAI_API_URL,
+            json=payload,
+            headers=headers,
+            timeout=22,
+        )
+        if res.status_code == 200:
+            data = res.json() or {}
+            text = _openai_extract_message_text(data)
+            usable = _ai_content_is_usable(text, "OpenAI")
+            if usable:
+                usage = data.get("usage") or {}
+                print(
+                    f"OPENAI SUCCESS: model={OPENAI_MODEL} structured={structured} "
+                    f"input_tokens={usage.get('prompt_tokens', usage.get('input_tokens','?'))} "
+                    f"output_tokens={usage.get('completion_tokens', usage.get('output_tokens','?'))}",
+                    flush=True,
+                )
+                return usable
+            print(f"OPENAI EMPTY/INVALID OUTPUT: structured={structured}", flush=True)
+            return None
+
+        body = res.text[:1800]
+        print(f"OPENAI CHAT ERROR: status={res.status_code} {body}", flush=True)
+
+        if res.status_code == 429:
+            wait = _rate_limit_retry_seconds(res, OPENAI_RATE_LIMIT_COOLDOWN)
+            _openai_set_circuit_breaker(wait, "OpenAI rate limit reached")
+            return None
+        if res.status_code in {401, 403}:
+            _openai_set_circuit_breaker(OPENAI_AUTH_COOLDOWN, f"OpenAI HTTP {res.status_code}")
+            return None
+        if res.status_code in {400, 404}:
+            # A malformed/unsupported structured response_format should not kill the
+            # whole semantic brain. Retry ONCE in plain JSON mode, still without tools.
+            if structured and ("response_format" in body.lower() or "json_schema" in body.lower()):
+                retry_payload = dict(payload)
+                retry_payload["response_format"] = {"type": "json_object"}
+                print("OPENAI STRUCTURED RETRY: legacy json_object mode", flush=True)
+                retry = requests.post(
+                    OPENAI_API_URL,
+                    json=retry_payload,
+                    headers=headers,
+                    timeout=18,
+                )
+                if retry.status_code == 200:
+                    retry_data = retry.json() or {}
+                    retry_text = _openai_extract_message_text(retry_data)
+                    usable = _ai_content_is_usable(retry_text, "OpenAI")
+                    if usable:
+                        print("OPENAI JSON-MODE SUCCESS", flush=True)
+                        return usable
+            _openai_set_circuit_breaker(OPENAI_CONFIG_COOLDOWN, f"OpenAI HTTP {res.status_code}")
+            return None
+        if res.status_code >= 500:
+            _openai_set_circuit_breaker(45, f"OpenAI HTTP {res.status_code}")
+            return None
+        return None
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        print(f"OPENAI NETWORK ERROR: {exc}", flush=True)
+        _openai_set_circuit_breaker(30, "OpenAI network timeout/connection failure")
+        return None
+    except Exception as exc:
+        print(f"OPENAI CHAT EXCEPTION: {exc}", flush=True)
+        return None
+
+
+# ============================================================
 # GEMINI / AI
 # ============================================================
 
@@ -2601,8 +2908,9 @@ Hotel knowledge:
     return None
 
 def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
-    """Generic AI gateway: Gemini -> Groq -> Cerebras -> Cohere -> OpenRouter."""
+    """Generic AI gateway: OpenAI -> Gemini -> Groq -> Cerebras -> Cohere -> OpenRouter."""
     providers = (
+        ("openai", ask_openai_chat),
         ("gemini", ask_gemini_chat),
         ("groq", ask_groq_chat),
         ("cerebras", ask_cerebras_chat),
@@ -4121,7 +4429,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
 # ONE-PASS AI UNDERSTANDING / ROUTER
 # ============================================================
 
-def _ai_knowledge_snapshot(max_chars=10500):
+def _ai_knowledge_snapshot(max_chars=19000):
     """Build a compact but coverage-oriented hotel brain for the semantic router."""
     raw = str(get_hotel_data() or "").strip()
     if len(raw) <= max_chars:
@@ -4179,6 +4487,13 @@ Recent conversation:
 
 The provider system context contains the configured hotel knowledge, menu items, FAQ/policy data, local guide and photo keys. Use that context as the source of truth.
 
+IMPORTANT SEMANTIC RULES:
+- Understand meaning, not keyword presence.
+- Word mentions in examples, comparisons, translations, pronunciation questions, negations, complaints about the previous answer, or casual chat must NOT be treated as a request for that menu/topic.
+- The current guest message is the strongest evidence; use conversation history to resolve only references and follow-ups.
+- If the guest asks a normal hotel question in an indirect or unusual way, still answer it from hotel_data when the fact is available.
+- Do not return an outage-style generic reply when a safe answer can be produced from the configured data.
+
 Return ONLY one JSON object with exactly these keys:
 {{
   "action": "ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE",
@@ -4216,6 +4531,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
     """One semantic AI pass reused by photo/menu/order/service/FAQ routing."""
     prompt = _ai_understanding_prompt(user_text, guest_info, sender_phone)
     providers = (
+        ("openai", ask_openai_chat),
         ("gemini", ask_gemini_chat),
         ("groq", ask_groq_chat),
         ("cerebras", ask_cerebras_chat),
@@ -4357,7 +4673,8 @@ def _has_menu_section_request_intent(text, trigger_phrases):
     negations = (
         "not asking for", "not looking for", "i am not asking", "main nahi pooch",
         "mai nahi puch", "nahi chahiye", "nahin chahiye", "mat dikhao", "mat bhejo",
-        "don't want", "do not want", "dont want", "no need",
+        "don't want", "do not want", "dont want", "no need", "do not send", "dont send",
+        "don't send", "please do not", "please dont", "no need to show", "show me nothing",
     )
     if any(_phrase_in_normalized_text(t, cue) for cue in negations):
         return False
@@ -4455,7 +4772,7 @@ def _local_menu_section_from_text(text):
         ("sweets", "SWEETS & DESSERTS"), ("dessert", "SWEETS & DESSERTS"), ("meetha", "SWEETS & DESSERTS"),
         ("snacks", "SNACKS / LIGHT BITES"), ("starter", "SNACKS / LIGHT BITES"), ("kuch halka", "SNACKS / LIGHT BITES"),
         ("dal", "DAL"), ("paneer", "PANEER / MAIN COURSE OPTIONS"),
-        ("roti", "BREADS"), ("naan", "BREADS"), ("bread", "BREADS"),
+        ("roti", "BREADS"), ("naan", "BREADS"), ("bread", "BREADS"), ("breads", "BREADS"),
         ("rice", "RICE"), ("chawal", "RICE"), ("raita", "SIDES / ACCOMPANIMENTS"), ("salad", "SIDES / ACCOMPANIMENTS"),
         ("thali", "THALI"),
     ]
@@ -4833,6 +5150,80 @@ def send_full_menu_presentation(sender_phone, include_prices=False):
     return messages
 
 
+def _derived_menu_items_for_section(section_name):
+    """Derive a menu section from authoritative item names when hotel_data has no section headings.
+
+    This is a generic classification layer, not hotel-specific item data. Explicit
+    section headings in hotel_data.txt still take priority when present.
+    """
+    section = str(section_name or "").strip().upper()
+    menu = get_hotel_menu()
+    items = []
+    seen = set()
+    for _, value in menu.items():
+        if not isinstance(value, (tuple, list)) or len(value) < 2:
+            continue
+        name, price = str(value[0]).strip(), value[1]
+        key = normalize_text(name)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append((name, price))
+
+    def has_any(name, words):
+        n = normalize_text(name)
+        return any(_phrase_in_normalized_text(n, w) for w in words)
+
+    def is_breakfast(name):
+        return has_any(name, ("toast", "poha", "chilla", "paratha", "puri bhaji", "chole bhature"))
+
+    def is_beverage(name):
+        return has_any(name, ("chai", "coffee", "milk", "lassi", "mineral water", "water"))
+
+    def is_snack(name):
+        return has_any(name, ("pakoda", "fries", "sandwich", "maggi"))
+
+    def is_dal(name):
+        return normalize_text(name).startswith("dal ") or normalize_text(name) == "dal"
+
+    def is_paneer_main(name):
+        n = normalize_text(name)
+        return any(_phrase_in_normalized_text(n, w) for w in (
+            "matar paneer", "shahi paneer", "kadhai paneer", "paneer butter masala"
+        ))
+
+    def is_bread(name):
+        return has_any(name, ("tawa roti", "naan"))
+
+    def is_rice(name):
+        return has_any(name, ("rice", "pulao"))
+
+    def is_side(name):
+        return has_any(name, ("raita", "salad"))
+
+    def is_thali(name):
+        return has_any(name, ("thali",))
+
+    selectors = {
+        "BREAKFAST": is_breakfast,
+        "BEVERAGES & DRINKS": is_beverage,
+        "SNACKS / LIGHT BITES": is_snack,
+        "DAL": is_dal,
+        "PANEER / MAIN COURSE OPTIONS": is_paneer_main,
+        "BREADS": is_bread,
+        "RICE": is_rice,
+        "SIDES / ACCOMPANIMENTS": is_side,
+        "THALI": is_thali,
+        "SWEETS & DESSERTS": lambda name: has_any(name, ("sweet", "dessert", "halwa", "gulab jamun", "rasgulla")),
+        "LUNCH": lambda name: is_dal(name) or is_paneer_main(name) or has_any(name, ("aloo jeera", "mix veg")),
+        "DINNER": lambda name: is_dal(name) or is_paneer_main(name) or has_any(name, ("aloo jeera", "mix veg")) or is_bread(name) or is_rice(name) or is_side(name),
+    }
+    selector = selectors.get(section)
+    if not selector:
+        return []
+    return [item for item in items if selector(item[0])]
+
+
 def _menu_section_message(section_name, include_prices=False, sender_phone=None, include_cta=True):
     """Return a polished, data-driven guest-facing menu section.
 
@@ -4871,14 +5262,32 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
         if compact == wanted or compact == wanted + ":":
             start_idx = i
             break
+    # Do not use loose substring matching here. A food-rule sentence such as
+    # "If guest says only ... rice ..." is not a menu-section heading.
+    # Section headings must match exactly (with an optional trailing colon);
+    # otherwise we fall back to deriving the section from authoritative item names.
     if start_idx is None:
-        for i, line in enumerate(lines):
-            compact = normalize_text(line).strip()
-            if wanted and wanted in compact and len(compact) < 80:
-                start_idx = i
-                break
-    if start_idx is None:
-        return None
+        # Older/minimal hotel_data files may list an authoritative menu without
+        # explicit section headings. Derive the requested section from the actual
+        # item names so semantic SHOW_MENU actions still produce the correct list.
+        target_upper = str(section_name or "").strip().upper()
+        derived = _derived_menu_items_for_section(target_upper)
+        if not derived:
+            return None
+        icon, title = _menu_display_title(target_upper)
+        out = [f"{icon} *{get_hotel_name()} — {title}*", "━━━━━━━━━━━━━━━━"]
+        for name, price in derived:
+            if include_prices:
+                out.append(f"• {name} — ₹{int(price):,}")
+            else:
+                out.append(f"• {name}")
+        if include_cta:
+            lang = get_guest_response_language(sender_phone) if sender_phone else "english"
+            if lang == "english":
+                out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
+            else:
+                out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
+        return "\n".join(out)
 
     target_upper = str(section_name or "").strip().upper()
     icon, title = _menu_display_title(target_upper)
@@ -5313,6 +5722,13 @@ def process_and_reply(message, sender_phone, msg_type):
     with state_lock:
         pending_selection = order_sessions.get(sender_phone)
 
+    # A pending in-house selection must not survive a status change (for example,
+    # checkout). Clear stale transactional state before handling a public question.
+    if pending_selection and pending_selection.get("selection_pending") and not is_inhouse:
+        with state_lock:
+            order_sessions.pop(sender_phone, None)
+        pending_selection = None
+
     if pending_selection and pending_selection.get("selection_pending"):
         # A guest can change their mind before choosing a specific item.
         # Treat natural phrases such as "chai rehne do" as cancellation.
@@ -5599,7 +6015,66 @@ def process_and_reply(message, sender_phone, msg_type):
             _handle_ai_service_route(sender_phone, guest_info, ai_understanding, user_text, is_inhouse)
             return
 
+        if ai_action == "ORDER_SELECTION":
+            # ORDER_SELECTION means the guest has expressed what they feel like eating
+            # but has not selected an exact item yet. It is safe for public inquiry
+            # and becomes an in-house selection flow only after status validation.
+            generic = normalize_text(str(ai_understanding.get("generic", "")))
+            generic_aliases = {
+                "chai": "chai", "tea": "chai", "coffee": "coffee",
+                "dal": "dal", "paneer": "paneer", "rice": "rice", "chawal": "rice",
+                "roti": "roti", "naan": "naan", "lassi": "lassi", "thali": "thali",
+            }
+            generic = generic_aliases.get(generic, generic)
+            choices_list = get_hotel_config().get("generic_menu", {}).get(generic, [])
+            if choices_list:
+                choices = ", ".join(choices_list)
+                if not is_inhouse:
+                    reply = (
+                        f"Ji, {generic} me available options: {choices}. 😊 "
+                        "Room-service order ke liye guest ka in-house check-in active hona zaroori hai."
+                    )
+                else:
+                    try:
+                        qty = max(1, int(float((ai_understanding.get("items") or [{}])[0].get("qty", 1))))
+                    except Exception:
+                        qty = 1
+                    with state_lock:
+                        order_sessions[sender_phone] = {
+                            "selection_pending": True,
+                            "generic": generic,
+                            "qty": qty,
+                            "created": time.time(),
+                        }
+                    reply = f"Ji {guest_info['name']} ji, {generic} me se kaunsa chahiye: {choices}?"
+                send_whatsapp_message(sender_phone, reply)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", reply)
+                return
+
+            section = str(ai_understanding.get("menu_section", "")).strip().upper()
+            if section and not is_inhouse:
+                msg = _menu_section_message(section, include_prices=explicitly_asks_price(user_text), sender_phone=sender_phone)
+                if msg:
+                    send_whatsapp_message(sender_phone, msg)
+                    remember_conversation(sender_phone, "user", user_text)
+                    remember_conversation(sender_phone, "assistant", msg)
+                    return
+
+            # Do not let an unresolved public ORDER_SELECTION fall into the
+            # transactional parser. Prefer its semantic reply; otherwise continue
+            # to the normal conversation gateway below.
+            if not is_inhouse:
+                reply = ai_understanding.get("reply", "").strip()
+                if reply:
+                    send_whatsapp_message(sender_phone, reply)
+                    remember_conversation(sender_phone, "user", user_text)
+                    remember_conversation(sender_phone, "assistant", reply)
+                    return
+
         if ai_action == "ORDER":
+            # A specific ORDER is a transactional action and requires an in-house
+            # guest. The backend confirmation flow remains unchanged.
             if not is_inhouse:
                 send_whatsapp_message(sender_phone, bilingual_text(
                     sender_phone,
@@ -5608,6 +6083,7 @@ def process_and_reply(message, sender_phone, msg_type):
                     "Sorry, room service sirf in-house guests ke liye available hai. Booking ke liye 'check in' type karein."
                 ))
                 return
+
             parsed = _ai_match_menu_items(ai_understanding, user_text)
             if parsed.get("generic"):
                 generic = parsed["generic"]
@@ -6119,10 +6595,12 @@ def process_and_reply(message, sender_phone, msg_type):
     # 16. GENERAL AI
     # ========================================================
     remember_guest_language(sender_phone, user_text)
-    # Reuse the one-pass semantic AI reply first. Only call the generic chat gateway
-    # when the semantic pass was unavailable or malformed.
+    # Reuse the one-pass semantic AI reply first. If the semantic/structured
+    # pass is unavailable, ALWAYS give the normal conversational AI gateway a
+    # chance before declaring an AI outage. This is important because a provider
+    # can reject structured JSON while still successfully answering plain chat.
     ai_reply = (ai_understanding or {}).get("reply", "").strip() if ai_understanding else ""
-    if not ai_reply and not semantic_ai_unavailable:
+    if not ai_reply:
         ai_reply = ask_ai_chat(user_text, guest_info, sender_phone)
     if not ai_reply and is_guide_followup(user_text):
         ai_reply = build_guide_fallback(user_text, sender_phone)
@@ -6183,7 +6661,7 @@ def process_and_reply(message, sender_phone, msg_type):
         send_whatsapp_message(sender_phone, fallback_in)
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", fallback_in)
-        print("AI OUTAGE FALLBACK: guest replied without Reception routing", flush=True)
+        print("AI OUTAGE FALLBACK: all semantic/conversational providers unavailable; no Reception auto-ticket", flush=True)
         return
 
     if fallback_lang == "english":
@@ -7000,6 +7478,7 @@ def startup():
     print(f"========== {APP_VERSION} STARTING ==========", flush=True)
     configured = [
         name for name, key in (
+            ("OpenAI", OPENAI_API_KEY),
             ("Gemini", GEMINI_API_KEY),
             ("Groq", GROQ_API_KEY),
             ("Cerebras", CEREBRAS_API_KEY),

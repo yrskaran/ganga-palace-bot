@@ -4800,7 +4800,40 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     t = normalize_text(user_text)
     price_requested = explicitly_asks_price(user_text)
 
-    # 1) Specific menu section / breakfast / lunch / dinner etc.
+    # 1) Breakfast timing: answer from hotel_data.txt before spending an AI call.
+    # Prefer an explicitly configured service timing; otherwise expose the configured
+    # breakfast prompt window and clearly distinguish it from exact kitchen hours.
+    timing_words = (
+        "time", "timing", "hours", "kab", "when", "baje", "bajay",
+        "kitne baje", "kis time", "kis samay", "subah kab"
+    )
+    breakfast_topic = (
+        "breakfast" in t
+        or "subah ka nashta" in t
+        or "nashta" in t
+        or "morning food" in t
+    )
+    breakfast_timing_question = breakfast_topic and any(x in t for x in timing_words)
+    if breakfast_timing_question:
+        exact = get_hotel_value("Breakfast Service Timing", "").strip().rstrip(".")
+        prompt_window = get_hotel_value("Breakfast prompt window", "").strip().rstrip(".")
+        # Do not expose placeholder configuration as if it were a real value.
+        if exact and "[add " not in exact.lower():
+            msg = f"☀️ *Breakfast timing:* {exact}."
+        elif prompt_window:
+            msg = (
+                f"☀️ *Breakfast reminder window:* {prompt_window}.\n"
+                "Exact kitchen serving timing abhi configured nahi hai; reception se confirm karwa sakte hain."
+            )
+        else:
+            msg = "Ji, breakfast timing reception se confirm karwa deta hoon."
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL HOTEL PRE-AI: breakfast_timing", flush=True)
+        return True
+
+    # 2) Specific menu section / breakfast / lunch / dinner etc.
     # Natural-language section requests are intentionally NOT consumed before
     # semantic AI. We only use a conservative direct/static path here; when AI
     # is unavailable the caller enables allow_broad_menu=True so the hotel-data
@@ -4822,7 +4855,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 print(f"LOCAL HOTEL FALLBACK: menu_section={section!r} prices={price_requested} broad={allow_broad_menu}", flush=True)
                 return True
 
-    # 2) Explicit full-menu request. Do not spend an AI call for a static menu.
+    # 3) Explicit full-menu request. Do not spend an AI call for a static menu.
     if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
         msgs = send_full_menu_presentation(sender_phone, include_prices=price_requested)
         remember_conversation(sender_phone, "user", user_text)
@@ -4831,7 +4864,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         print(f"LOCAL HOTEL PRE-AI: full_menu_presentation messages={len(msgs)} prices={price_requested}", flush=True)
         return True
 
-    # 3) Explicit room photo request. Ambiguous/contextual photo wording still
+    # 4) Explicit room photo request. Ambiguous/contextual photo wording still
     # goes to the AI route. Do not steal mixed photo+price questions.
     photo_intent = any(x in t for x in [
         "room photo", "room photos", "room dikhao", "room pic", "room ki photo",
@@ -4862,7 +4895,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
             return True
 
-    # 4) Static room categories/rates and general availability wording. Live
+    # 5) Static room categories/rates and general availability wording. Live
     # availability is still never fabricated.
     room_rate = ("room" in t and any(x in t for x in ["price", "rate", "tariff", "rent", "cost", "kitne ka", "kitna ka"])) or t in {"tariff", "room rates", "room rate", "room price", "room rent"}
     if room_rate:
@@ -4892,7 +4925,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
             print("LOCAL HOTEL PRE-AI: room_availability_categories", flush=True)
             return True
 
-    # 5) Very common static hotel facts: read the value from hotel_data.txt;
+    # 6) Very common static hotel facts: read the value from hotel_data.txt;
     # AI remains available for natural/ambiguous versions.
     basic_fact = None
     if any(x in t for x in ["reception", "front desk"]) and any(x in t for x in ["time", "timing", "hours", "kab", "when", "24/7", "open"]):
@@ -4920,7 +4953,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         print("LOCAL HOTEL PRE-AI: basic_fact", flush=True)
         return True
 
-    # 6) Contextual local menu follow-up, only after no explicit section was found.
+    # 7) Contextual local menu follow-up, only after no explicit section was found.
     # If the guest first asks for a section and then says something like
     # "price kyo nahi bata rhe ho", keep the immediately previous menu section
     # instead of sending the AI a context-free price query. This prevents

@@ -125,6 +125,17 @@ SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")
 LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
 GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
 
+# Central provider order. OpenAI remains first when configured; OpenRouter is
+# deliberately ahead of Groq because the current deployment is using Groq's
+# relatively small daily token allowance for demo traffic. Providers that have
+# no key or an open circuit are skipped by their own functions.
+AI_PROVIDER_ORDER = tuple(
+    x.strip().lower() for x in os.getenv(
+        "AI_PROVIDER_ORDER",
+        "openai,gemini,openrouter,groq,cerebras,cohere"
+    ).split(",") if x.strip()
+)
+
 # -----------------------------
 # HOTEL DATA
 # -----------------------------
@@ -2129,7 +2140,7 @@ def ask_gemini_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(10500) if structured else get_hotel_data()
+    hotel_db = _ai_knowledge_snapshot(9000) if structured else _compact_ai_text(get_hotel_data(), 5000)
     history = get_conversation_history(sender_phone) if sender_phone else []
     time_context = ai_time_context()
     system_prompt = f"""
@@ -2783,7 +2794,7 @@ def ask_openrouter_chat(user_text, guest_info=None, sender_phone=None, structure
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(10500) if structured else _compact_ai_text(get_hotel_data(), 6200)
+    hotel_db = _ai_knowledge_snapshot(9000) if structured else _compact_ai_text(get_hotel_data(), 5000)
     history = get_conversation_history(sender_phone) if sender_phone else []
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 700)}"
@@ -2907,17 +2918,22 @@ Hotel knowledge:
     _openrouter_set_circuit_breaker(45, "OpenRouter free conversational models unavailable")
     return None
 
+def _ai_provider_functions():
+    """Return the configured provider functions in one consistent order."""
+    functions = {
+        "openai": ask_openai_chat,
+        "gemini": ask_gemini_chat,
+        "groq": ask_groq_chat,
+        "cerebras": ask_cerebras_chat,
+        "cohere": ask_cohere_chat,
+        "openrouter": ask_openrouter_chat,
+    }
+    return [(name, functions[name]) for name in AI_PROVIDER_ORDER if name in functions]
+
+
 def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
-    """Generic AI gateway: OpenAI -> Gemini -> Groq -> Cerebras -> Cohere -> OpenRouter."""
-    providers = (
-        ("openai", ask_openai_chat),
-        ("gemini", ask_gemini_chat),
-        ("groq", ask_groq_chat),
-        ("cerebras", ask_cerebras_chat),
-        ("cohere", ask_cohere_chat),
-        ("openrouter", ask_openrouter_chat),
-    )
-    for provider_name, provider_fn in providers:
+    """Resilient conversational gateway using the same provider order everywhere."""
+    for provider_name, provider_fn in _ai_provider_functions():
         try:
             reply = provider_fn(user_text, guest_info, sender_phone)
             if reply:
@@ -4429,7 +4445,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
 # ONE-PASS AI UNDERSTANDING / ROUTER
 # ============================================================
 
-def _ai_knowledge_snapshot(max_chars=19000):
+def _ai_knowledge_snapshot(max_chars=9000):
     """Build a compact but coverage-oriented hotel brain for the semantic router."""
     raw = str(get_hotel_data() or "").strip()
     if len(raw) <= max_chars:
@@ -4530,15 +4546,7 @@ Rules:
 def understand_guest_request(user_text, guest_info=None, sender_phone=None):
     """One semantic AI pass reused by photo/menu/order/service/FAQ routing."""
     prompt = _ai_understanding_prompt(user_text, guest_info, sender_phone)
-    providers = (
-        ("openai", ask_openai_chat),
-        ("gemini", ask_gemini_chat),
-        ("groq", ask_groq_chat),
-        ("cerebras", ask_cerebras_chat),
-        ("cohere", ask_cohere_chat),
-        ("openrouter", ask_openrouter_chat),
-    )
-    for provider_name, fn in providers:
+    for provider_name, fn in _ai_provider_functions():
         try:
             raw = fn(prompt, guest_info, sender_phone, structured=True)
             obj = _parse_ai_json(raw)
@@ -5030,6 +5038,18 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
         print("LOCAL CONVERSATION: acknowledgement", flush=True)
+        return True
+
+    greetings = {"hi", "hello", "hey", "namaste", "namaskar", "sat sri akal", "good morning", "good afternoon", "good evening"}
+    if compact in greetings:
+        if lang == "english":
+            msg = f"Welcome to {get_hotel_name()}, {name} ji! 😊 How may I assist you?"
+        else:
+            msg = f"Welcome to {get_hotel_name()}, {name} ji! 😊 Main aapki kis tarah help kar sakta hoon?"
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: greeting", flush=True)
         return True
 
     capability_queries = {

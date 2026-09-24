@@ -362,7 +362,7 @@ C. EXTRA BED / MATTRESS / OCCUPANCY
 D. BREAKFAST / FOOD SERVICE
 - Breakfast prompt window: 8:00 AM to 10:00 AM.
 - Breakfast complimentary status: NOT CONFIGURED. Do not say free or paid unless this file is updated or the current booking/rate record explicitly confirms it.
-- Breakfast exact service hours: Only the prompt window is configured (8:00 AM to 10:00 AM). Do not invent kitchen serving hours beyond this window.
+- Breakfast exact service hours: 8:00 AM to 10:00 AM.
 - Room service: Available for in-house guests.
 - 24/7 room-service availability: NOT CONFIGURED. Do not claim 24/7 availability.
 - Current food menu and prices are authoritative in section 3 above.
@@ -721,7 +721,7 @@ Fill these values here when the hotel confirms them:
 - Extra Bed Charge: [ADD AMOUNT]
 - Extra Mattress Charge: [ADD AMOUNT]
 - Breakfast Complimentary: [YES / NO]
-- Breakfast Service Timing: [ADD EXACT TIMING]
+- Breakfast Service Timing: 8:00 AM to 10:00 AM
 - Room Service Timing: [ADD EXACT TIMING / 24x7 IF TRUE]
 - Hot Water Timing: [ADD EXACT TIMING / 24x7 IF TRUE]
 - Swimming Pool: [YES / NO] | Timing: [ADD]
@@ -743,4 +743,3 @@ Fill these values here when the hotel confirms them:
 IMPORTANT:
 - Until a value above is filled, the AI must not guess it.
 - Editing this section should be enough for these hotel-specific FAQs; do not add separate Python rules for every wording variant.
-

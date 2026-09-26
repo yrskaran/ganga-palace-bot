@@ -106,6 +106,7 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip
 SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
+RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", "").strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
@@ -1207,9 +1208,17 @@ def send_staff_alert(room, role, message, fallback_phone=None):
     If no roster match exists, fall back to the legacy role phone number.
     """
     staff = find_on_duty_staff(room, role)
-    target = staff["phone"] if staff and staff.get("phone") else fallback_phone
+
+    # Reception is a separate destination from general staff and kitchen.
+    # Use the dedicated RECEPTION_PHONE first; keep Staff_Roster/fallback behavior
+    # only for backward compatibility when the dedicated number is not configured.
+    if normalize_text(role) == "reception":
+        target = RECEPTION_PHONE or (staff["phone"] if staff and staff.get("phone") else fallback_phone)
+    else:
+        target = staff["phone"] if staff and staff.get("phone") else fallback_phone
+
     if not target:
-        print(f"STAFF ROUTING: no on-duty recipient for role={role} room={room}", flush=True)
+        print(f"STAFF ROUTING: no recipient for role={role} room={room}", flush=True)
         return False
     ok = send_whatsapp_message(target, message)
     print(
@@ -4369,7 +4378,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
             f"Room: {room or 'Not assigned'}\nStatus: {status or 'Unknown'}\n"
             f"Request: {str(request_text or '').strip()[:1000]}"
         )
-        return send_staff_alert(room=room, role="Reception", message=message, fallback_phone=STAFF_PHONE)
+        return send_staff_alert(room=room, role="Reception", message=message, fallback_phone=None)
     except Exception as exc:
         print("RECEPTION NOTIFY ERROR:", exc, flush=True)
         return False

@@ -7030,7 +7030,7 @@ def reconcile_lifecycle_from_room_sheet():
                 changed = True
             else:
                 row_num = rec["row"]
-                life.getRange(row_num, 1, 1, 4).setValues([[room, name, phone, status]])
+                life.update(f"A{row_num}:D{row_num}", [[room, name, phone, status]])
                 changed = True
 
             row_num = rec["row"]

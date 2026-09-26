@@ -7074,11 +7074,7 @@ def _parse_sheet_datetime(value):
 
 
 def _room_lifecycle_columns():
-    """Lifecycle_Automation stores sent markers only.
-
-    Rooms is the single source of truth for guest identity, status, address,
-    ID proof and CHECK IN TIME / CHECK OUT TIME.
-    """
+    """Resolve Lifecycle_Automation columns, including the per-stay key."""
     return {
         "room": _lifecycle_header_index(("Room",)),
         "name": _lifecycle_header_index(("Guest Name",)),
@@ -7091,7 +7087,75 @@ def _room_lifecycle_columns():
         "aarti_sent": _lifecycle_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),
         "dinner_sent": _lifecycle_header_index(("DINNER SENT",)),
         "checkout_sent": _lifecycle_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
+        "stay_key": _lifecycle_header_index(("STAY KEY",)),
     }
+
+
+def _lifecycle_row_stay_key(row, cols, phone, room, status, check_in_raw="", check_out_raw=""):
+    """Build one deterministic per-stay identity for lifecycle processing.
+
+    Prefer the sheet's explicit STAY KEY. For legacy rows without it, derive
+    the same key from the authoritative Rooms timestamps so duplicate legacy
+    rows collapse to one logical stay during message processing.
+    """
+    try:
+        idx = cols.get("stay_key", -1)
+        if idx is not None and idx >= 0 and idx < len(row):
+            explicit = str(row[idx] or "").strip()
+            if explicit:
+                return explicit
+    except Exception:
+        pass
+
+    state = "OUT" if ("OUT" in str(status).upper()) else "IN"
+    raw = check_out_raw if state == "OUT" else check_in_raw
+    parsed = _parse_sheet_datetime(raw)
+    stamp = parsed.isoformat() if parsed else re.sub(r"\s+", " ", str(raw or "").strip())
+    if phone and room and stamp:
+        return f"{phone}:{room}:{state}:{stamp}"
+    if phone and room:
+        return f"{phone}:{room}:{state}"
+    return ""
+
+
+def _select_one_lifecycle_row_per_stay(rows, cols, room_time_map):
+    """Return lifecycle rows deduplicated by logical stay before sending.
+
+    When duplicate ledger rows exist, keep the row with the most already-recorded
+    sent markers. This preserves sent history and prevents multiple WhatsApp
+    sends even before the sheet-side cleanup finishes.
+    """
+    grouped = {}
+    for row_index, row in enumerate(rows, start=2):
+        if len(row) <= max(cols.values()):
+            continue
+        room = clean_room(row[cols["room"]]) if cols["room"] < len(row) else ""
+        phone = clean_phone(row[cols["phone"]]) if cols["phone"] < len(row) else ""
+        status = str(row[cols["status"]]).upper().strip() if cols["status"] < len(row) else ""
+        if not room or not phone:
+            continue
+
+        check_in_raw, check_out_raw = room_time_map.get(f"{phone}:{room}", ("", ""))
+        stay_key = _lifecycle_row_stay_key(
+            row, cols, phone, room, status, check_in_raw, check_out_raw
+        )
+        if not stay_key:
+            continue
+
+        sent_count = sum(
+            1 for field in (
+                "welcome_sent", "thirty_sent", "breakfast_sent",
+                "lunch_sent", "aarti_sent", "dinner_sent", "checkout_sent"
+            )
+            if cols.get(field, -1) >= 0 and cols[field] < len(row)
+            and str(row[cols[field]] or "").strip()
+        )
+        candidate = (sent_count, -row_index, row)
+        current = grouped.get(stay_key)
+        if current is None or candidate[:2] > current[:2]:
+            grouped[stay_key] = (sent_count, -row_index, row_index, row)
+
+    return [(row_index, row) for _, (_, _, row_index, row) in sorted(grouped.items(), key=lambda x: x[1][2])]
 
 
 def _mark_room_lifecycle_cell(row_number, col_index, value):
@@ -7175,7 +7239,17 @@ def _hide_sheet_column(spreadsheet, worksheet, zero_based_index):
 
 
 def reconcile_lifecycle_from_room_sheet():
-    """Keep exactly one Lifecycle_Automation record per actual Rooms stay."""
+    """Keep exactly one Lifecycle_Automation record per actual Rooms stay.
+
+    Stability rules:
+    - Primary stay identity is PHONE + ROOM + CHECK IN TIME.
+    - When duplicate/current Rooms rows have no check-in time, reuse one shared
+      timestamp for that phone+room active stay instead of generating a new
+      timestamp for every duplicate row.
+    - Legacy lifecycle rows without STAY KEY are reconciled once and collapsed.
+    - Multiple simultaneous CHECKED_IN rows for the same phone+room are treated
+      as duplicates; only the newest/current stay remains.
+    """
     try:
         with state_lock:
             rooms = list(shared_store.get("rooms", []))
@@ -7206,7 +7280,6 @@ def reconcile_lifecycle_from_room_sheet():
         rooms_sheet = sh.get_worksheet(0)
         life = sh.worksheet("Lifecycle_Automation")
 
-        # Rooms owns timestamps and guest identity.
         room_headers = list(rooms_sheet.row_values(1))
         room_upper = [str(x or "").strip().upper() for x in room_headers]
         def ensure_room_header(name):
@@ -7266,19 +7339,51 @@ def reconcile_lifecycle_from_room_sheet():
             "stay_key": find_idx(life_headers, ("STAY KEY",), -1),
         }
 
+        marker_names = ("WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT", "LUNCH SENT", "AARTI SENT", "DINNER SENT", "CHECKOUT SENT")
+        marker_cols = [find_idx(life_headers, (m,), -1) for m in marker_names]
+
         existing_by_key = {}
         legacy_by_identity = {}
+        active_key_by_identity = {}
+        active_rows_by_identity = {}
+        legacy_rows_to_delete = set()
+
         for rn, row in enumerate(life_vals[1:], start=2):
             p = clean_phone(row[lidx["phone"]] if len(row) > lidx["phone"] else "")
             r = clean_room(row[lidx["room"]] if len(row) > lidx["room"] else "")
-            s = str(row[lidx["status"]] if len(row) > lidx["status"] else "").strip().upper()
+            status = str(row[lidx["status"]] if len(row) > lidx["status"] else "").strip().upper()
             k = str(row[lidx["stay_key"]] if lidx["stay_key"] >= 0 and len(row) > lidx["stay_key"] else "").strip()
+            identity = (p, r)
+            if not p or not r:
+                continue
             if k:
                 existing_by_key.setdefault(k, []).append(rn)
-            elif p and r and s:
-                legacy_by_identity.setdefault((p, r, s), []).append(rn)
+                if "IN" in status and "OUT" not in status:
+                    active_key_by_identity.setdefault(identity, k)
+                    active_rows_by_identity.setdefault(identity, []).append(rn)
+            else:
+                legacy_by_identity.setdefault(identity, []).append(rn)
 
+        def marker_value(row_num, col_idx):
+            if col_idx < 0:
+                return ""
+            try:
+                return str(life.cell(row_num, col_idx + 1).value or "").strip()
+            except Exception:
+                return ""
+
+        def merge_marker_rows(keeper_row, duplicate_rows):
+            for dup_row in duplicate_rows:
+                for col in marker_cols:
+                    if col < 0:
+                        continue
+                    if not marker_value(keeper_row, col) and marker_value(dup_row, col):
+                        life.update_cell(keeper_row, col + 1, marker_value(dup_row, col))
+                legacy_rows_to_delete.add(dup_row)
+
+        generated_in_times = {}
         changed = False
+
         for sheet_row_num, rr in enumerate(rooms, start=2):
             room = clean_room(rr[room_idx] if len(rr) > room_idx else "")
             phone = clean_phone(rr[phone_idx] if len(rr) > phone_idx else "")
@@ -7287,15 +7392,34 @@ def reconcile_lifecycle_from_room_sheet():
             if not phone or not status or not room:
                 continue
 
+            identity = (phone, room)
             check_in = str(rooms_sheet.cell(sheet_row_num, room_in_idx + 1).value or "").strip()
             check_out = str(rooms_sheet.cell(sheet_row_num, room_out_idx + 1).value or "").strip()
             in_status = "IN" in status and "OUT" not in status
             out_status = "OUT" in status
 
+            # IMPORTANT: never create a fresh timestamp for every duplicate row.
+            # Reuse the already-known active stay when possible; otherwise create
+            # one timestamp per phone+room active stay and reuse it for this sync.
             if in_status and not check_in:
-                check_in = now_ist().strftime("%d-%b-%Y %I:%M %p")
+                existing_active_key = active_key_by_identity.get(identity)
+                if existing_active_key and existing_active_key.count(":") >= 2:
+                    stamp = existing_active_key.split(":", 2)[2]
+                    check_in = stamp
+                else:
+                    check_in = generated_in_times.get(identity)
+                    if not check_in:
+                        check_in = now_ist().strftime("%d-%b-%Y %I:%M %p")
+                        generated_in_times[identity] = check_in
                 rooms_sheet.update_cell(sheet_row_num, room_in_idx + 1, check_in)
                 changed = True
+
+            if out_status and not check_in:
+                # Reuse the currently active stay key for a checkout row whenever
+                # possible. Do not invent a brand-new checkout stay identity.
+                existing_active_key = active_key_by_identity.get(identity)
+                if existing_active_key and existing_active_key.count(":") >= 2:
+                    check_in = existing_active_key.split(":", 2)[2]
 
             stay_key = _canonical_lifecycle_stay_key(phone, room, check_in)
             if not stay_key:
@@ -7304,9 +7428,12 @@ def reconcile_lifecycle_from_room_sheet():
             row_num = existing_by_key.get(stay_key, [None])[0]
             previous_status = ""
             if row_num is None:
-                legacy_queue = legacy_by_identity.get((phone, room, status), [])
+                legacy_queue = legacy_by_identity.get(identity, [])
                 if legacy_queue:
                     row_num = legacy_queue.pop(0)
+                    if legacy_queue:
+                        merge_marker_rows(row_num, list(legacy_queue))
+                    legacy_by_identity[identity] = []
                     existing_by_key.setdefault(stay_key, []).append(row_num)
                     try:
                         previous_status = str(life.cell(row_num, lidx["status"] + 1).value or "").strip().upper()
@@ -7328,51 +7455,77 @@ def reconcile_lifecycle_from_room_sheet():
                 previous_status = ""
                 changed = True
             else:
-                try:
-                    if not previous_status:
+                if not previous_status:
+                    try:
                         previous_status = str(life.cell(row_num, lidx["status"] + 1).value or "").strip().upper()
-                except Exception:
-                    pass
+                    except Exception:
+                        previous_status = ""
                 life.update_cell(row_num, lidx["room"] + 1, room)
                 life.update_cell(row_num, lidx["name"] + 1, name)
                 life.update_cell(row_num, lidx["phone"] + 1, phone)
                 life.update_cell(row_num, lidx["status"] + 1, status)
                 life.update_cell(row_num, lidx["stay_key"] + 1, stay_key)
-                changed = True
 
-            # Only stamp checkout automatically when the same stay was previously
-            # represented as IN; historical OUT rows are not given a fake current time.
+            # Keep one active stay for an identity. Any simultaneous CHECKED_IN
+            # rows are source duplicates, not separate stays.
+            if in_status:
+                active_key_by_identity[identity] = stay_key
+                active_rows = active_rows_by_identity.setdefault(identity, [])
+                if row_num not in active_rows:
+                    active_rows.append(row_num)
+
             if out_status and not check_out and "IN" in previous_status and "OUT" not in previous_status:
                 check_out = now_ist().strftime("%d-%b-%Y %I:%M %p")
                 rooms_sheet.update_cell(sheet_row_num, room_out_idx + 1, check_out)
                 changed = True
 
-        # Collapse rows that now have the exact same stay key; merge sent markers first.
+        # Collapse duplicate active/in-house rows for the same identity even when
+        # their erroneous keys differ by generated timestamps.
+        live_vals = life.get_all_values()
+        for identity, rows_for_identity in active_rows_by_identity.items():
+            if len(rows_for_identity) <= 1:
+                continue
+            valid = []
+            for rn in rows_for_identity:
+                try:
+                    skey = str(life.cell(rn, lidx["stay_key"] + 1).value or "").strip()
+                    status = str(life.cell(rn, lidx["status"] + 1).value or "").strip().upper()
+                    if skey and "IN" in status and "OUT" not in status:
+                        valid.append(rn)
+                except Exception:
+                    pass
+            if len(valid) <= 1:
+                continue
+            # Keep the newest check-in timestamp; this corresponds to the current
+            # active stay when source rows were duplicated by the earlier bug.
+            def key_stamp(rn):
+                try:
+                    skey = str(life.cell(rn, lidx["stay_key"] + 1).value or "")
+                    stamp = skey.split(":", 2)[2] if skey.count(":") >= 2 else ""
+                    parsed = _parse_sheet_datetime(stamp)
+                    return parsed or datetime.min.replace(tzinfo=IST)
+                except Exception:
+                    return datetime.min.replace(tzinfo=IST)
+            keeper = max(valid, key=key_stamp)
+            dup_rows = [rn for rn in valid if rn != keeper]
+            merge_marker_rows(keeper, dup_rows)
+
+        # Collapse exact duplicate stay keys, including legacy/keyed mixtures.
         life_vals = life.get_all_values()
-        headers_now = list(life_vals[0]) if life_vals else life_headers
-        sk = find_idx(headers_now, ("STAY KEY",), -1)
-        marker_names = ("WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT", "LUNCH SENT", "AARTI SENT", "DINNER SENT", "CHECKOUT SENT")
-        marker_cols = [find_idx(headers_now, (m,), -1) for m in marker_names]
+        sk = lidx["stay_key"]
         groups = {}
         for rn, row in enumerate(life_vals[1:], start=2):
             k = str(row[sk] if sk >= 0 and len(row) > sk else "").strip()
             if k:
                 groups.setdefault(k, []).append(rn)
-        duplicates = []
+        rows_to_delete = set(legacy_rows_to_delete)
         for rows_for_key in groups.values():
             if len(rows_for_key) <= 1:
                 continue
             keeper = rows_for_key[0]
-            for dup in rows_for_key[1:]:
-                for col in marker_cols:
-                    if col < 0:
-                        continue
-                    keep_val = str(life.cell(keeper, col + 1).value or "").strip()
-                    dup_val = str(life.cell(dup, col + 1).value or "").strip()
-                    if not keep_val and dup_val:
-                        life.update_cell(keeper, col + 1, dup_val)
-                duplicates.append(dup)
-        for rn in sorted(duplicates, reverse=True):
+            merge_marker_rows(keeper, rows_for_key[1:])
+
+        for rn in sorted(rows_to_delete, reverse=True):
             life.delete_rows(rn)
             changed = True
 
@@ -7694,10 +7847,11 @@ def monitor_guest_status_lifecycle():
                 rout = rr[room_out_idx] if room_out_idx >= 0 and len(rr) > room_out_idx else ""
                 room_time_map[f"{rphone}:{rroom}"] = (rin, rout)
 
-            for row_index, row in enumerate(rows, start=2):
-                if len(row) <= max(cols.values()):
-                    continue
-
+            # IMPORTANT: The lifecycle sheet may still contain legacy duplicate
+            # rows while Code.gs cleanup catches up. Process exactly ONE ledger row
+            # per logical stay so duplicate rows can never spam WhatsApp.
+            deduped_rows = _select_one_lifecycle_row_per_stay(rows, cols, room_time_map)
+            for row_index, row in deduped_rows:
                 room = clean_room(row[cols["room"]])
                 name = str(row[cols["name"]]).strip() if cols["name"] < len(row) else "Guest"
                 phone = clean_phone(row[cols["phone"]]) if cols["phone"] < len(row) else ""

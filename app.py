@@ -107,10 +107,6 @@ SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
-# Fixed reception handoff number for unknown/unverified guest questions.
-# By default this uses STAFF_PHONE so existing deployments keep working; set
-# RECEPTION_PHONE explicitly when reception has its own WhatsApp number.
-RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", STAFF_PHONE).strip()
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
@@ -3996,7 +3992,9 @@ def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
     A Self_Checkin_IDs audit row is always kept so reception can access the
     document even when the guest has not yet been assigned a room.
     """
-    if not id_link:
+    # Address may still be available even when Drive upload fails. Persist the
+    # address independently so the self-check-in record is not lost.
+    if not id_link and not str(address or '').strip():
         return False
 
     client = get_gspread_client()
@@ -4034,7 +4032,7 @@ def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
                     matched_row = row_num
                     break
 
-        if matched_row:
+        if matched_row and id_link:
             rooms.update_cell(matched_row, id_col, id_link)
 
         # Keep an audit trail even when the room row does not exist yet.
@@ -4063,6 +4061,90 @@ def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
         return False
 
 
+def _extract_address_from_id_image(image_bytes, mime_type="image/jpeg"):
+    """Extract a readable address from a guest's ID image using Gemini vision.
+
+    This is extraction only, not identity verification. Reception/staff remains
+    responsible for checking the original document before approving check-in.
+    """
+    if not GEMINI_API_KEY or not image_bytes or _gemini_circuit_open():
+        return ""
+
+    mime = str(mime_type or "image/jpeg").strip().lower().split(";", 1)[0]
+    if mime not in {"image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"}:
+        mime = "image/jpeg"
+
+    prompt = (
+        "Read this government ID image only to extract the holder's postal address. "
+        "Return ONLY one JSON object with exactly these keys: "
+        '{"address":"","document_type":"","confidence":0}. ' 
+        "Copy the address as it appears on the document as accurately as possible. "
+        "Do not invent missing text. If no readable address is present, return an empty address. "
+        "Do not perform or claim identity verification."
+    )
+
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    payload = {
+        "contents": [{"role": "user", "parts": [
+            {"text": prompt},
+            {"inlineData": {"mimeType": mime, "data": encoded}},
+        ]}],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 300,
+            "responseMimeType": "application/json",
+        },
+    }
+    models = []
+    for model in [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS:
+        if model and model not in models:
+            models.append(model)
+
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+    for model in models:
+        try:
+            res = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                json=payload,
+                headers=headers,
+                timeout=25,
+            )
+            if res.status_code == 200:
+                data = res.json() or {}
+                parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
+                raw = "".join(str(x.get("text", "")) for x in parts if x.get("text")).strip()
+                if raw:
+                    try:
+                        obj = json.loads(raw)
+                    except Exception:
+                        obj = _parse_ai_json(raw)
+                    address = str((obj or {}).get("address", "")).strip()
+                    if address:
+                        print(f"SELF CHECK-IN ADDRESS EXTRACTED: model={model}", flush=True)
+                        return address
+                print(f"SELF CHECK-IN ADDRESS EMPTY: model={model}", flush=True)
+                continue
+
+            body = res.text[:1000]
+            print(f"SELF CHECK-IN ADDRESS ERROR: model={model} status={res.status_code} {body}", flush=True)
+            if res.status_code == 429:
+                if _gemini_429_is_daily_quota(body):
+                    _gemini_set_circuit_breaker(_gemini_daily_reset_cooldown_seconds(), "Gemini daily/free-tier quota exhausted (ID address extraction)")
+                else:
+                    _gemini_set_circuit_breaker(60, "Gemini ID address extraction rate limit exceeded")
+                return ""
+            if res.status_code in {400, 401, 403, 404}:
+                _gemini_set_circuit_breaker(300, f"Gemini ID address extraction HTTP {res.status_code}")
+                return ""
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            print(f"SELF CHECK-IN ADDRESS NETWORK ERROR: model={model}: {exc}", flush=True)
+            continue
+        except Exception as exc:
+            print(f"SELF CHECK-IN ADDRESS EXCEPTION: model={model}: {exc}", flush=True)
+            continue
+    return ""
+
+
 def complete_checkin_with_id(sender_phone, message):
     with state_lock:
         session = checkin_sessions.get(sender_phone)
@@ -4070,7 +4152,9 @@ def complete_checkin_with_id(sender_phone, message):
     if not session:
         return
 
-    image_id = message.get("image", {}).get("id")
+    image_info = message.get("image", {}) or {}
+    image_id = image_info.get("id")
+    mime_type = image_info.get("mime_type", "image/jpeg")
     image_bytes = download_whatsapp_media(image_id)
 
     if not image_bytes:
@@ -4082,8 +4166,28 @@ def complete_checkin_with_id(sender_phone, message):
 
     send_whatsapp_message(
         sender_phone,
-        "ID photo receive ho gayi hai. Reception verification ke baad hi room allot hoga."
+        "ID photo receive ho gayi hai 😊 Main document se address read kar raha hoon. Reception verification ke baad hi room allot hoga."
     )
+
+    # Automatically extract the address from the uploaded ID instead of asking
+    # the guest to type it again. If extraction is not reliable/readable, fall
+    # back to a manual address request so self check-in never gets stuck.
+    extracted_address = _extract_address_from_id_image(image_bytes, mime_type)
+    with state_lock:
+        if extracted_address:
+            session["address"] = extracted_address
+            session["address_source"] = "ID DOCUMENT"
+        else:
+            session["address_source"] = "MANUAL REQUIRED"
+
+    if not extracted_address:
+        send_whatsapp_message(
+            sender_phone,
+            "ID clear hai, lekin address readable nahi mila. Kripya apna poora address (city aur state) bhej dein; uske baad self check-in continue hoga."
+        )
+        with state_lock:
+            session["step"] = "ADDRESS"
+        return
 
     link = upload_image_to_google_drive(
         image_bytes,
@@ -4093,7 +4197,7 @@ def complete_checkin_with_id(sender_phone, message):
     with state_lock:
         session["id_link"] = link
 
-    # Persist the Drive link in Sheets for reception/audit.
+    # Persist the extracted address + Drive link in Sheets for reception/audit.
     save_self_checkin_id_link(
         sender_phone,
         session.get("name", "Guest"),
@@ -4110,12 +4214,20 @@ def complete_checkin_with_id(sender_phone, message):
             "आईडी सत्यापन आवश्यक\n"
             f"Name: {session.get('name','Guest')}\n"
             f"Phone: +{sender_phone}\n"
-            f"Address: {session.get('address','')}\n"
+            f"Address (from ID): {session.get('address','')}\n"
             f"ID Link: {link or 'Upload failed'}\n\n"
             "कृपया मूल/दस्तावेज़ आईडी की मैन्युअल जाँच करके रूम आवंटन की पुष्टि करें।"
         ),
         fallback_phone=STAFF_PHONE,
     )
+
+    send_whatsapp_message(
+        sender_phone,
+        "Ji, ID se address mil gaya hai ✅ Aapki details reception verification ke liye bhej di gayi hain. Verification ke baad room confirmation milega. 🙏"
+    )
+
+    with state_lock:
+        session["step"] = "STAFF_VERIFICATION"
 
     send_whatsapp_message(
         sender_phone,
@@ -4238,33 +4350,11 @@ def format_kitchen_bill_message(fin, room, guest_name):
 # ============================================================
 
 def send_reception_fallback(sender_phone, guest_info, guest_message, request_text, source="reception_fallback"):
-    """Send the guest fallback text AND notify the fixed reception number."""
+    """Send the guest fallback text AND notify reception; never promise an alert silently."""
     sent_guest = send_whatsapp_message(sender_phone, guest_message)
-    notified = notify_reception_direct(sender_phone, guest_info, request_text, source)
+    notified = notify_reception_request(sender_phone, guest_info, request_text, source)
     print(f"RECEPTION FALLBACK: guest_sent={sent_guest} reception_notified={notified} source={source}", flush=True)
     return sent_guest
-
-
-def notify_reception_direct(sender_phone, guest_info, request_text, source="bot_fallback"):
-    """Forward the ORIGINAL guest message directly to the configured reception WhatsApp number."""
-    try:
-        room = (guest_info or {}).get("room", "") if guest_info else ""
-        name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
-        status = (guest_info or {}).get("status", "") if guest_info else ""
-        message = (
-            "RECEPTION REQUEST\n"
-            f"Guest: {name}\nPhone: +{sender_phone}\n"
-            f"Room: {room or 'Not assigned'}\nStatus: {status or 'Unknown'}\n"
-            f"Source: {source}\n"
-            "Original Guest Message:\n"
-            f"{str(request_text or '').strip()[:2000]}"
-        )
-        ok = send_whatsapp_message(RECEPTION_PHONE, message)
-        print(f"RECEPTION DIRECT: number_configured={bool(RECEPTION_PHONE)} sent={ok} source={source}", flush=True)
-        return ok
-    except Exception as exc:
-        print("RECEPTION DIRECT NOTIFY ERROR:", exc, flush=True)
-        return False
 
 
 def notify_reception_request(sender_phone, guest_info, request_text, source="bot_fallback"):
@@ -4389,18 +4479,10 @@ Pending state: {state_hint}
 
 Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend; keep reply concise (normally <=220 characters); return JSON only.
 
-IMPORTANT RECEPTION FALLBACK RULE:
-- First, answer the guest normally whenever the answer is supported by hotel_data, actual Google Sheets/live records, or the conversation context.
-- You may also handle ordinary general conversation naturally when no hotel-specific fact is being claimed.
-- If the requested information/action is NOT known, NOT configured, cannot be verified from current records, or requires a hotel staff decision/confirmation, DO NOT GUESS and DO NOT make up an answer.
-- In that case set action="RECEPTION", needs_reception=true, and provide a warm guest-facing reply saying that the message has been sent to reception for confirmation.
-- The backend will forward the ORIGINAL guest message verbatim to the reception number. Do not replace it with a vague summary.
-- Never say the information is definitely unavailable when it merely needs staff confirmation.
-
 Return exactly this JSON shape (empty strings/array when not applicable):
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 
-For an answerable question, put the actual guest-facing answer in reply. Reply in the same language/script style as the current guest. For an unknown/unverified hotel-specific question, ALWAYS use action="RECEPTION" with needs_reception=true. For follow-ups, resolve the referent from the conversation rather than answering as a standalone message.
+For an answerable question, put the actual guest-facing answer in reply. Reply in the same language/script style as the current guest. Do not return a reception fallback when hotel_data contains the answer. For follow-ups, resolve the referent from the conversation rather than answering as a standalone message.
 """
 
 def understand_guest_request(user_text, guest_info=None, sender_phone=None):
@@ -4446,18 +4528,10 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "generic": str(obj.get("generic", "")).strip(),
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
-                "needs_reception": bool(obj.get("needs_reception", False)) or action == "RECEPTION",
+                "needs_reception": bool(obj.get("needs_reception", False)),
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
-            # A RECEPTION action is the explicit unknown/unverified handoff.
-            # Never let an empty AI reply prevent the reception notification.
-            if action == "RECEPTION" and not result["reply"]:
-                lang = get_guest_response_language(sender_phone)
-                if lang == "english":
-                    result["reply"] = "Ji, I am unable to confirm this right now. I have sent your message to reception, and they will confirm it for you. 🙏"
-                else:
-                    result["reply"] = "Ji, main iski abhi pushti nahi kar pa raha hoon. Aapka message maine reception ko bhej diya hai; woh confirm kar denge. 🙏"
             print(f"AI UNDERSTANDING: provider={provider_name} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
             return result
         except Exception as exc:
@@ -5862,10 +5936,12 @@ def process_and_reply(message, sender_phone, msg_type):
             if len(user_text) >= 3:
                 with state_lock:
                     checkin["name"] = user_text
-                    checkin["step"] = "ADDRESS"
+                    checkin["address"] = ""
+                    checkin["address_source"] = ""
+                    checkin["step"] = "ID"
                 send_whatsapp_message(
                     sender_phone,
-                    "Dhanyawad. Kripya apna poora address (city aur state) bhejein."
+                    "Dhanyawad 😊 Ab apni clear Govt ID photo bhej dijiye. Main ID se address automatically read karke form mein fill kar dunga."
                 )
             else:
                 send_whatsapp_message(
@@ -6052,10 +6128,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 if reply:
                     send_whatsapp_message(sender_phone, reply)
                     if ai_understanding.get("needs_reception") or any(x in normalize_text(reply) for x in ["reception se confirm", "reception can confirm", "reception will confirm", "reception ko bata"]):
-                        if ai_action == "RECEPTION":
-                            notify_reception_direct(sender_phone, guest_info, user_text, "ai_semantic_reception")
-                        else:
-                            notify_reception_request(sender_phone, guest_info, user_text, "ai_semantic_reception")
+                        notify_reception_request(sender_phone, guest_info, user_text, "ai_semantic_reception")
                     remember_conversation(sender_phone, "user", user_text)
                     remember_conversation(sender_phone, "assistant", reply)
                     return
@@ -6566,25 +6639,24 @@ def process_and_reply(message, sender_phone, msg_type):
     # Never leave an ordinary guest question unanswered.
     # ========================================================
     fallback_lang = get_guest_response_language(sender_phone)
-    # If the AI itself is unavailable, the bot cannot safely determine whether
-    # an unsupported question can be answered. Forward the original guest message
-    # to reception rather than leaving the guest waiting or inventing an answer.
+    # When every AI provider is unavailable, do NOT turn an ordinary chat turn
+    # into a Reception ticket. Unknown factual requests can be handed to Reception
+    # only when an AI/local rule explicitly identifies a property-specific handoff.
     if semantic_ai_unavailable:
         if fallback_lang == "english":
             fallback_in = (
-                "Ji, I could not confirm this right now. Your message has been sent directly to reception; "
-                "they will confirm it for you. 🙏"
+                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
+                "main available hote hi turant help karunga."
             )
         else:
             fallback_in = (
-                "Ji, main iski abhi pushti nahi kar pa raha hoon. Aapka message seedha reception ko bhej diya hai; "
-                "woh confirm kar denge. 🙏"
+                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
+                "main available hote hi turant help karunga."
             )
         send_whatsapp_message(sender_phone, fallback_in)
-        notify_reception_direct(sender_phone, guest_info, user_text, "ai_unavailable_reception_fallback")
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", fallback_in)
-        print("AI OUTAGE FALLBACK: all semantic/conversational providers unavailable; original guest message forwarded to Reception", flush=True)
+        print("AI OUTAGE FALLBACK: all semantic/conversational providers unavailable; no Reception auto-ticket", flush=True)
         return
 
     if fallback_lang == "english":
@@ -6625,10 +6697,6 @@ def handle_incoming_async(message, sender_phone, msg_type):
                 "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; main reception se confirm karwa deta hoon. 🙏"
             )
             print(f"SAFETY REPLY RESULT: phone={sender_phone} sent={sent}", flush=True)
-            try:
-                notify_reception_direct(sender_phone, None, message.get("text", {}).get("body", "") if isinstance(message, dict) else "", "process_exception")
-            except Exception as notify_exc:
-                print("EXCEPTION RECEPTION NOTIFY ERROR:", notify_exc, flush=True)
         except Exception as reply_exc:
             print("SAFETY REPLY ERROR:", reply_exc, flush=True)
 
@@ -6730,12 +6798,17 @@ def _parse_sheet_datetime(value):
 
 
 def _room_lifecycle_columns():
-    """Lifecycle_Automation stores only automation markers; timing comes from Rooms."""
+    """Lifecycle_Automation owns lifecycle timestamps and sent markers.
+
+    The main Rooms sheet stays clean (Room/Guest/Phone/Status only).
+    """
     return {
         "room": _lifecycle_header_index(("Room",)),
         "name": _lifecycle_header_index(("Guest Name",)),
         "phone": _lifecycle_header_index(("Phone",)),
         "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
+        "check_in_time": _lifecycle_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
+        "check_out_time": _lifecycle_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
         "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
         "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
         "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
@@ -6802,7 +6875,12 @@ def _room_status_column_index(headers):
 
 
 def reconcile_lifecycle_from_room_sheet():
-    """Mirror guest identity/status into the marker ledger; Rooms owns timestamps."""
+    """Mirror Room identity/status into Lifecycle_Automation.
+
+    Lifecycle_Automation owns CHECK IN TIME / CHECK OUT TIME and all sent markers.
+    This keeps the main Rooms sheet visually clean while preserving restart-safe
+    lifecycle timing.
+    """
     try:
         with state_lock:
             rooms=list(shared_store.get("rooms",[])); rh=list(shared_store.get("room_headers",[]))
@@ -6813,14 +6891,10 @@ def reconcile_lifecycle_from_room_sheet():
         client=get_gspread_client()
         if not client: return False
         sh=client.open_by_key(SHEET_ID); life=sh.worksheet("Lifecycle_Automation")
-        # Rooms owns the actual event timestamps. Apps Script handles manual
-        # edits; this Render-side reconciliation handles API/gspread edits so
-        # checkout/check-in never depends on a staff member opening Sheets.
         try:
             rooms_sheet = sh.get_worksheet(0)
         except Exception:
             rooms_sheet = sh.sheet1
-        room_values = rooms_sheet.get_all_values()
         vals=life.get_all_values(); headers=vals[0] if vals else lifecycle_headers
         hm=_complaint_header_map(headers)
         def find(names, default=-1):
@@ -6828,44 +6902,67 @@ def reconcile_lifecycle_from_room_sheet():
                 k=normalize_text(n).replace(" ","_")
                 if k in hm:return hm[k]
             return default
-        li={"room":find(("Room",),0),"name":find(("Guest Name",),1),"phone":find(("Phone",),2),"status":find(("Status",),3)}
-        room_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)
-        name_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"guest_name_(d)","guest_name","guest"}),3)
-        phone_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"phone_(e)","phone","whatsapp","mobile"}),4)
-        room_in_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_in_time","in_time","check-in_time"}),-1)
-        room_out_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_out_time","out_time","check-out_time"}),-1)
+        li={
+            "room":find(("Room",),0), "name":find(("Guest Name",),1),
+            "phone":find(("Phone",),2), "status":find(("Status",),3),
+            "check_in_time":find(("CHECK IN TIME", "IN TIME", "Check-In Time"),4),
+            "check_out_time":find(("CHECK OUT TIME", "OUT TIME", "Check-Out Time"),5),
+        }
+        if li["check_in_time"] < 0 or li["check_out_time"] < 0:
+            # Upgrade an older Lifecycle_Automation sheet without disturbing existing data.
+            current_headers = list(headers)
+            for header in ("CHECK IN TIME", "CHECK OUT TIME"):
+                if header not in [str(x).strip().upper() for x in current_headers]:
+                    life.update_cell(1, len(current_headers)+1, header)
+                    current_headers.append(header)
+            vals=life.get_all_values(); headers=vals[0] if vals else current_headers; hm=_complaint_header_map(headers)
+            li["check_in_time"] = find(("CHECK IN TIME", "IN TIME", "Check-In Time"),4)
+            li["check_out_time"] = find(("CHECK OUT TIME", "OUT TIME", "Check-Out Time"),5)
+
         existing={}
         for r,row in enumerate(vals[1:],start=2):
             key=clean_phone(row[li["phone"]] if len(row)>li["phone"] else "")+":"+clean_room(row[li["room"]] if len(row)>li["room"] else "")
             if key!=":":existing[key]=r
         changed=False
         for rr_idx, rr in enumerate(rooms, start=2):
-            room=clean_room(rr[room_col] if len(rr)>room_col else ""); phone=clean_phone(rr[phone_col] if len(rr)>phone_col else ""); name=str(rr[name_col] if len(rr)>name_col else "Guest").strip(); status=str(rr[status_idx] if len(rr)>status_idx else "").strip().upper()
-            if not room or not phone or not status:continue
+            room=clean_room(rr[next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)] if len(rr)>0 else "")
+            name_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"guest_name_(d)","guest_name","guest"}),1)
+            phone_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"phone_(e)","phone","whatsapp","mobile"}),2)
+            room_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)
+            room=clean_room(rr[room_col] if len(rr)>room_col else "")
+            phone=clean_phone(rr[phone_col] if len(rr)>phone_col else "")
+            name=str(rr[name_col] if len(rr)>name_col else "Guest").strip()
+            status=str(rr[status_idx] if len(rr)>status_idx else "").strip().upper()
+            if not room or not phone or not status: continue
             key=phone+":"+room; rownum=existing.get(key)
-            previous_status = ""
+            previous_status=""
             if rownum:
-                life_row = vals[rownum-1] if rownum-1 < len(vals) else []
-                previous_status = str(life_row[li["status"]] if len(life_row)>li["status"] else "").strip().upper()
+                life_row=vals[rownum-1] if rownum-1 < len(vals) else []
+                previous_status=str(life_row[li["status"]] if len(life_row)>li["status"] else "").strip().upper()
             if not rownum:
-                # A brand-new OUT row may be historical data; do not stamp it
-                # with the current time unless we observe a real transition.
-                life.append_row([room,name,phone,status,"","","","","","",""]); rownum=life.get_last_row(); existing[key]=rownum; changed=True
-            life.update_cell(rownum,li["room"]+1,room); life.update_cell(rownum,li["name"]+1,name); life.update_cell(rownum,li["phone"]+1,phone); life.update_cell(rownum,li["status"]+1,status)
+                width=max(13, len(headers))
+                life.append_row([""]*width)
+                rownum=life.get_last_row(); existing[key]=rownum; changed=True
+            for col,val in ((li["room"],room),(li["name"],name),(li["phone"],phone),(li["status"],status)):
+                if col >= 0:
+                    life.update_cell(rownum,col+1,val)
 
-            now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
-            in_status = ("IN" in status and "OUT" not in status)
-            out_status = ("OUT" in status)
-            if in_status and room_in_col >= 0:
-                current_in = str(rr[room_in_col] if len(rr)>room_in_col else "").strip()
-                if not current_in and (not previous_status or not ("IN" in previous_status and "OUT" not in previous_status)):
-                    rooms_sheet.update_cell(rr_idx, room_in_col + 1, now_text)
-                    changed = True
-            if out_status and room_out_col >= 0:
-                current_out = str(rr[room_out_col] if len(rr)>room_out_col else "").strip()
-                if not current_out and previous_status and not ("OUT" in previous_status):
-                    rooms_sheet.update_cell(rr_idx, room_out_col + 1, now_text)
-                    changed = True
+            current_in = ""; current_out = ""
+            row_now = life.row_values(rownum)
+            if li["check_in_time"] >= 0 and len(row_now)>li["check_in_time"]:
+                current_in=str(row_now[li["check_in_time"]]).strip()
+            if li["check_out_time"] >= 0 and len(row_now)>li["check_out_time"]:
+                current_out=str(row_now[li["check_out_time"]]).strip()
+
+            now_text=now_ist().strftime("%d-%b-%Y %I:%M %p")
+            in_status=("IN" in status and "OUT" not in status)
+            out_status=("OUT" in status)
+            previous_in=("IN" in previous_status and "OUT" not in previous_status)
+            previous_out=("OUT" in previous_status)
+            if in_status and not current_in and (not previous_status or not previous_in):
+                life.update_cell(rownum, li["check_in_time"]+1, now_text); changed=True
+            if out_status and not current_out and previous_status and not previous_out:
+                life.update_cell(rownum, li["check_out_time"]+1, now_text); changed=True
         return changed
     except Exception as exc:
         print("LIFECYCLE MARKER SYNC ERROR:",exc,flush=True); return False
@@ -7126,7 +7223,7 @@ def monitor_guest_status_lifecycle():
             rows = lifecycle_rows
             cols = _room_lifecycle_columns()
 
-            required = ("room", "name", "phone", "status", "welcome_sent", "thirty_sent", "checkout_sent")
+            required = ("room", "name", "phone", "status", "check_in_time", "check_out_time", "welcome_sent", "thirty_sent", "checkout_sent")
             if any(cols[x] < 0 for x in required):
                 # Self-heal the marker ledger instead of waiting forever for a manual setup.
                 try:
@@ -7136,14 +7233,27 @@ def monitor_guest_status_lifecycle():
                         try:
                             life_sheet = sh.worksheet("Lifecycle_Automation")
                         except Exception:
-                            life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=11)
+                            life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=13)
                         existing_values = life_sheet.get_all_values()
                         existing_headers = existing_values[0] if existing_values else []
                         if not existing_headers:
-                            life_sheet.append_row(["Room","Guest Name","Phone","Status","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
+                            life_sheet.append_row(["Room","Guest Name","Phone","Status","CHECK IN TIME","CHECK OUT TIME","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
                         fetch_sheet_data_sync()
                         rows = list(shared_store.get("lifecycle_rows", []))
                         cols = _room_lifecycle_columns()
+                        # Ensure legacy Lifecycle_Automation tabs receive the new timing columns.
+                        try:
+                            current_headers = sh.worksheet("Lifecycle_Automation").row_values(1)
+                            desired = ["Room","Guest Name","Phone","Status","CHECK IN TIME","CHECK OUT TIME","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"]
+                            for wanted in desired:
+                                if wanted not in [str(x).strip().upper() for x in current_headers]:
+                                    sh.worksheet("Lifecycle_Automation").update_cell(1, len(current_headers)+1, wanted)
+                                    current_headers.append(wanted)
+                            fetch_sheet_data_sync()
+                            rows = list(shared_store.get("lifecycle_rows", []))
+                            cols = _room_lifecycle_columns()
+                        except Exception as upgrade_exc:
+                            print("LIFECYCLE HEADER UPGRADE ERROR:", upgrade_exc, flush=True)
                 except Exception as exc:
                     print("LIFECYCLE AUTO-SETUP ERROR:", exc, flush=True)
                 if any(cols[x] < 0 for x in required):
@@ -7151,24 +7261,9 @@ def monitor_guest_status_lifecycle():
                     time.sleep(30)
                     continue
 
-            # Rooms is the single source of truth for check-in/check-out timestamps.
+            # Rooms stays clean; Lifecycle_Automation owns event timestamps.
             with state_lock:
-                room_headers=list(shared_store.get("room_headers",[])); room_data=list(shared_store.get("rooms",[]))
-            def _find_room_col(names, default=-1):
-                for i,h in enumerate(room_headers):
-                    k=normalize_text(h).replace(" ","_")
-                    if k in {normalize_text(n).replace(" ","_") for n in names}: return i
-                return default
-            room_status_col=_room_status_column_index(room_headers)
-            room_in_col=_find_room_col(("CHECK IN TIME","IN TIME","Check-In Time"),-1)
-            room_out_col=_find_room_col(("CHECK OUT TIME","OUT TIME","Check-Out Time"),-1)
-            room_phone_col=_find_room_col(("PHONE (E)","PHONE","WHATSAPP","MOBILE"),4)
-            room_room_col=_find_room_col(("ROOM (A)","ROOM"),0)
-            room_time_map={}
-            for rr in room_data:
-                rp=clean_phone(rr[room_phone_col] if len(rr)>room_phone_col else ""); rm=clean_room(rr[room_room_col] if len(rr)>room_room_col else "")
-                if rp and rm: room_time_map[f"{rp}:{rm}"]=(rr[room_in_col] if room_in_col>=0 and len(rr)>room_in_col else "", rr[room_out_col] if room_out_col>=0 and len(rr)>room_out_col else "")
-
+                lifecycle_rows = list(shared_store.get("lifecycle_rows", []))
             for row_index, row in enumerate(rows, start=2):
                 if len(row) <= max(cols.values()):
                     continue
@@ -7186,9 +7281,10 @@ def monitor_guest_status_lifecycle():
                 lifecycle_key = f"{phone}:{room}"
                 lifecycle_status_cache[lifecycle_key] = status
 
-                room_times = room_time_map.get(f"{phone}:{room}", ("", ""))
-                check_in_at = _parse_sheet_datetime(room_times[0])
-                check_out_at = _parse_sheet_datetime(room_times[1])
+                check_in_raw = row[cols["check_in_time"]] if cols["check_in_time"] >= 0 and len(row) > cols["check_in_time"] else ""
+                check_out_raw = row[cols["check_out_time"]] if cols["check_out_time"] >= 0 and len(row) > cols["check_out_time"] else ""
+                check_in_at = _parse_sheet_datetime(check_in_raw)
+                check_out_at = _parse_sheet_datetime(check_out_raw)
 
                 # Self-heal the exact active checkout event when Apps Script did not run.
                 # We only do this on a detected status transition, never for pre-existing old OUT rows.
@@ -7197,14 +7293,14 @@ def monitor_guest_status_lifecycle():
                 # IN-HOUSE LIFECYCLE
                 # -----------------------------
                 if is_in:
-                    # Welcome is tied to the Sheet's current IN record.
+                    # Welcome is tied to the Lifecycle_Automation guest record.
                     if not _lifecycle_sent(row, cols["welcome_sent"]):
                         lang = get_guest_response_language(phone)
                         welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
                         if welcome_text and send_whatsapp_message(phone, welcome_text):
                             _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                    # 30-minute message uses the actual Sheet IN TIME.
+                    # 30-minute message uses Lifecycle_Automation CHECK IN TIME.
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
                         if current >= check_in_at + timedelta(minutes=30):
                             lang = get_guest_response_language(phone)
@@ -7241,7 +7337,7 @@ def monitor_guest_status_lifecycle():
                 # CHECK-OUT LIFECYCLE
                 # -----------------------------
                 elif is_out:
-                    # OUT TIME is the authoritative checkout event timestamp.
+                    # Lifecycle_Automation OUT TIME is the authoritative checkout event timestamp.
                     # If an old OUT row has already been acknowledged, no duplicate.
                     if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)

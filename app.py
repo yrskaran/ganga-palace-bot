@@ -154,7 +154,6 @@ shared_store = {
     "kitchen_headers": [],
     "staff_roster": [],
     "staff_headers": [],
-    "notification_messages": [],
     "notification_headers": [],
     "complaint_rows": [],
     "complaint_headers": [],
@@ -3994,16 +3993,14 @@ def start_checkin(sender_phone):
     )
 
 
-def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
-    """Persist a self-check-in ID Drive link in Sheets before room allocation.
 
-    If a matching phone already exists in Rooms, ID PROOF LINK is written there.
-    A Self_Checkin_IDs audit row is always kept so reception can access the
-    document even when the guest has not yet been assigned a room.
+def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
+    """Store self-check-in data directly in Rooms.
+
+    Rooms is the single guest record. Self-check-in no longer creates or uses
+    a separate Self_Checkin_IDs tab.
     """
-    # Address may still be available even when Drive upload fails. Persist the
-    # address independently so the self-check-in record is not lost.
-    if not id_link and not str(address or '').strip():
+    if not str(sender_phone or "").strip():
         return False
 
     client = get_gspread_client()
@@ -4017,56 +4014,81 @@ def save_self_checkin_id_link(sender_phone, guest_name, address, id_link):
         if not values:
             return False
 
-        headers = [str(x).strip().upper() for x in values[0]]
+        headers = [str(x).strip() for x in values[0]]
+        upper = [str(x).strip().upper() for x in headers]
 
-        def find_col(*names):
+        def ensure_header(name):
+            nonlocal headers, upper
+            target = str(name).strip().upper()
+            if target in upper:
+                return upper.index(target)
+            rooms.update_cell(1, len(headers) + 1, name)
+            headers.append(name)
+            upper.append(target)
+            return len(headers) - 1
+
+        def find_col(names, fallback=-1):
             for name in names:
                 target = str(name).strip().upper()
-                if target in headers:
-                    return headers.index(target) + 1
-            return -1
+                if target in upper:
+                    return upper.index(target)
+            return fallback
 
-        phone_col = find_col('PHONE (E)', 'PHONE', 'WHATSAPP', 'MOBILE', 'MOBILE NUMBER')
-        id_col = find_col('ID PROOF LINK', 'ID LINK', 'GOVT ID LINK')
-
-        if id_col == -1:
-            id_col = len(headers) + 1
-            rooms.update_cell(1, id_col, 'ID PROOF LINK')
+        room_col = find_col(("ROOM (A)", "ROOM"), 0)
+        name_col = find_col(("GUEST NAME (D)", "GUEST NAME", "GUEST"), 1)
+        phone_col = find_col(("PHONE (E)", "PHONE", "WHATSAPP", "MOBILE"), 2)
+        status_col = find_col(("STATUS (F)", "STATUS", "GUEST STATUS", "BOOKING STATUS"), 3)
+        address_col = ensure_header("ADDRESS")
+        id_col = ensure_header("ID PROOF LINK")
+        checkin_col = ensure_header("CHECK IN TIME")
+        checkout_col = ensure_header("CHECK OUT TIME")
 
         target_phone = clean_phone(sender_phone)
         matched_row = None
-        if phone_col != -1 and target_phone:
-            for row_num, row in enumerate(values[1:], start=2):
-                if clean_phone(row[phone_col - 1] if len(row) >= phone_col else '') == target_phone:
-                    matched_row = row_num
-                    break
+        matched_status = ""
 
-        if matched_row and id_link:
-            rooms.update_cell(matched_row, id_col, id_link)
+        # Refresh after potential header additions.
+        values = rooms.get_all_values()
+        for row_num, row in enumerate(values[1:], start=2):
+            if clean_phone(row[phone_col] if len(row) > phone_col else "") == target_phone:
+                matched_row = row_num
+                matched_status = str(row[status_col] if len(row) > status_col else "").strip().upper()
+                break
 
-        # Keep an audit trail even when the room row does not exist yet.
-        try:
-            log = sh.worksheet('Self_Checkin_IDs')
-        except Exception:
-            log = sh.add_worksheet(title='Self_Checkin_IDs', rows=1000, cols=8)
-            log.append_row([
-                'SUBMITTED AT', 'PHONE', 'GUEST NAME', 'ADDRESS',
-                'ID PROOF LINK', 'STATUS', 'ROOM', 'NOTES'
-            ])
+        if matched_row is None:
+            new_row = [""] * rooms.get_last_column()
+            new_row[room_col] = ""
+            new_row[name_col] = str(guest_name or "Guest").strip()
+            new_row[phone_col] = target_phone
+            new_row[status_col] = "PENDING VERIFICATION"
+            new_row[address_col] = str(address or "").strip()
+            new_row[id_col] = str(id_link or "").strip()
+            rooms.append_row(new_row)
+            print(f"SELF CHECK-IN SAVED TO ROOMS: phone={target_phone}", flush=True)
+            return True
 
-        log.append_row([
-            now_ist().strftime('%d-%m-%Y %I:%M:%S %p'),
-            str(sender_phone),
-            str(guest_name or 'Guest'),
-            str(address or ''),
-            str(id_link),
-            'PENDING VERIFICATION',
-            '',
-            'Uploaded during WhatsApp self check-in'
-        ])
+        # Do not overwrite an active room assignment unless the field is blank.
+        if guest_name and not str(rooms.cell(matched_row, name_col + 1).value or "").strip():
+            rooms.update_cell(matched_row, name_col + 1, str(guest_name).strip())
+
+        if address:
+            rooms.update_cell(matched_row, address_col + 1, str(address).strip())
+
+        if id_link:
+            rooms.update_cell(matched_row, id_col + 1, str(id_link).strip())
+
+        if not matched_status or "OUT" in matched_status:
+            rooms.update_cell(matched_row, status_col + 1, "PENDING VERIFICATION")
+
+        # CHECK IN / CHECK OUT columns are created here but only written by the
+        # lifecycle status transition logic; they remain the notification source.
+        _ = checkin_col, checkout_col
+
+        print(f"SELF CHECK-IN UPDATED ROOMS: phone={target_phone} row={matched_row}", flush=True)
         return True
+
     except Exception as exc:
-        print('SELF CHECK-IN ID SHEET ERROR:', exc, flush=True)
+        print("SELF CHECK-IN ROOMS SAVE ERROR:", exc, flush=True)
         return False
 
 
@@ -5963,10 +5985,35 @@ def process_and_reply(message, sender_phone, msg_type):
             if len(user_text) >= 4:
                 with state_lock:
                     checkin["address"] = user_text
-                    checkin["step"] = "ID"
+
+                # If ID upload already succeeded, keep that link and finish the
+                # self-check-in record in the same Rooms row.
+                save_self_checkin_id_link(
+                    sender_phone,
+                    checkin.get("name", "Guest"),
+                    checkin.get("address", ""),
+                    checkin.get("id_link", ""),
+                )
+
+                send_staff_alert(
+                    room="",
+                    role="Reception",
+                    message=(
+                        "SELF CHECK-IN — VERIFICATION REQUIRED\n"
+                        f"Name: {checkin.get('name','Guest')}\n"
+                        f"Phone: +{sender_phone}\n"
+                        f"Address: {checkin.get('address','')}\n"
+                        f"ID Link: {checkin.get('id_link') or 'Not available'}\n\n"
+                        "Please verify the original ID and complete room allocation."
+                    ),
+                    fallback_phone=STAFF_PHONE,
+                )
+                with state_lock:
+                    checkin["step"] = "STAFF_VERIFICATION"
+
                 send_whatsapp_message(
                     sender_phone,
-                    "Please share clear photos of valid Govt ID proofs (Passport, Driving License, or Voter ID) right here."
+                    "Ji, address save ho gaya hai ✅ Aapki self check-in details reception verification ke liye bhej di gayi hain. Verification ke baad room confirm hoga. 🙏"
                 )
             else:
                 send_whatsapp_message(
@@ -6806,18 +6853,18 @@ def _parse_sheet_datetime(value):
         return None
 
 
-def _room_lifecycle_columns():
-    """Lifecycle_Automation owns lifecycle timestamps and sent markers.
 
-    The main Rooms sheet stays clean (Room/Guest/Phone/Status only).
+def _room_lifecycle_columns():
+    """Lifecycle_Automation stores sent markers only.
+
+    Rooms is the single source of truth for guest identity, status, address,
+    ID proof and CHECK IN TIME / CHECK OUT TIME.
     """
     return {
         "room": _lifecycle_header_index(("Room",)),
         "name": _lifecycle_header_index(("Guest Name",)),
         "phone": _lifecycle_header_index(("Phone",)),
         "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
-        "check_in_time": _lifecycle_header_index(("CHECK IN TIME", "IN TIME", "Check-In Time")),
-        "check_out_time": _lifecycle_header_index(("CHECK OUT TIME", "OUT TIME", "Check-Out Time")),
         "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
         "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
         "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
@@ -6826,6 +6873,7 @@ def _room_lifecycle_columns():
         "dinner_sent": _lifecycle_header_index(("DINNER SENT",)),
         "checkout_sent": _lifecycle_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
     }
+
 
 def _mark_room_lifecycle_cell(row_number, col_index, value):
     """Persist lifecycle marker and immediately mirror it into the local cache.
@@ -6883,98 +6931,136 @@ def _room_status_column_index(headers):
     return -1
 
 
-def reconcile_lifecycle_from_room_sheet():
-    """Mirror Room identity/status into Lifecycle_Automation.
 
-    Lifecycle_Automation owns CHECK IN TIME / CHECK OUT TIME and all sent markers.
-    This keeps the main Rooms sheet visually clean while preserving restart-safe
-    lifecycle timing.
+def reconcile_lifecycle_from_room_sheet():
+    """Sync Rooms identity/status into Lifecycle_Automation and maintain timestamps.
+
+    Rooms owns CHECK IN TIME / CHECK OUT TIME. Lifecycle_Automation stores only
+    notification sent markers, so the two records cannot drift on timing.
     """
     try:
         with state_lock:
-            rooms=list(shared_store.get("rooms",[])); rh=list(shared_store.get("room_headers",[]))
-            lifecycle_headers=list(shared_store.get("lifecycle_headers",[]))
-        if not lifecycle_headers: return False
-        status_idx=_room_status_column_index(rh)
-        if status_idx<0: return False
-        client=get_gspread_client()
-        if not client: return False
-        sh=client.open_by_key(SHEET_ID); life=sh.worksheet("Lifecycle_Automation")
-        try:
-            rooms_sheet = sh.get_worksheet(0)
-        except Exception:
-            rooms_sheet = sh.sheet1
-        vals=life.get_all_values(); headers=vals[0] if vals else lifecycle_headers
-        hm=_complaint_header_map(headers)
-        def find(names, default=-1):
-            for n in names:
-                k=normalize_text(n).replace(" ","_")
-                if k in hm:return hm[k]
-            return default
-        li={
-            "room":find(("Room",),0), "name":find(("Guest Name",),1),
-            "phone":find(("Phone",),2), "status":find(("Status",),3),
-            "check_in_time":find(("CHECK IN TIME", "IN TIME", "Check-In Time"),4),
-            "check_out_time":find(("CHECK OUT TIME", "OUT TIME", "Check-Out Time"),5),
+            rooms = list(shared_store.get("rooms", []))
+            rh = list(shared_store.get("room_headers", []))
+            lifecycle_headers = list(shared_store.get("lifecycle_headers", []))
+
+        if not rh or not lifecycle_headers:
+            return False
+
+        def find_idx(headers, names, fallback=-1):
+            normalized = [normalize_text(h).replace(" ", "_") for h in headers]
+            for name in names:
+                key = normalize_text(name).replace(" ", "_")
+                if key in normalized:
+                    return normalized.index(key)
+            return fallback
+
+        room_idx = find_idx(rh, ("ROOM (A)", "ROOM"), 0)
+        name_idx = find_idx(rh, ("GUEST NAME (D)", "GUEST NAME", "GUEST"), 1)
+        phone_idx = find_idx(rh, ("PHONE (E)", "PHONE", "WHATSAPP", "MOBILE"), 2)
+        status_idx = _room_status_column_index(rh)
+        if status_idx < 0:
+            return False
+
+        client = get_gspread_client()
+        if not client:
+            return False
+
+        sh = client.open_by_key(SHEET_ID)
+        rooms_sheet = sh.get_worksheet(0)
+        life = sh.worksheet("Lifecycle_Automation")
+
+        # Ensure timing fields live in Rooms.
+        room_headers = rooms_sheet.row_values(1)
+        def ensure_room_header(name):
+            upper = [str(x or "").strip().upper() for x in room_headers]
+            target = name.strip().upper()
+            if target in upper:
+                return upper.index(target)
+            rooms_sheet.update_cell(1, len(room_headers) + 1, name)
+            room_headers.append(name)
+            return len(room_headers) - 1
+
+        room_in_idx = ensure_room_header("CHECK IN TIME")
+        room_out_idx = ensure_room_header("CHECK OUT TIME")
+        room_address_idx = ensure_room_header("ADDRESS")
+        room_id_idx = ensure_room_header("ID PROOF LINK")
+
+        life_vals = life.get_all_values()
+        life_headers = life_vals[0] if life_vals else [
+            "Room", "Guest Name", "Phone", "Status",
+            "WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT",
+            "LUNCH SENT", "AARTI SENT", "DINNER SENT", "CHECKOUT SENT"
+        ]
+
+        lidx = {
+            "room": find_idx(life_headers, ("Room",), 0),
+            "name": find_idx(life_headers, ("Guest Name",), 1),
+            "phone": find_idx(life_headers, ("Phone",), 2),
+            "status": find_idx(life_headers, ("Status",), 3),
         }
-        if li["check_in_time"] < 0 or li["check_out_time"] < 0:
-            # Upgrade an older Lifecycle_Automation sheet without disturbing existing data.
-            current_headers = list(headers)
-            for header in ("CHECK IN TIME", "CHECK OUT TIME"):
-                if header not in [str(x).strip().upper() for x in current_headers]:
-                    life.update_cell(1, len(current_headers)+1, header)
-                    current_headers.append(header)
-            vals=life.get_all_values(); headers=vals[0] if vals else current_headers; hm=_complaint_header_map(headers)
-            li["check_in_time"] = find(("CHECK IN TIME", "IN TIME", "Check-In Time"),4)
-            li["check_out_time"] = find(("CHECK OUT TIME", "OUT TIME", "Check-Out Time"),5)
 
-        existing={}
-        for r,row in enumerate(vals[1:],start=2):
-            key=clean_phone(row[li["phone"]] if len(row)>li["phone"] else "")+":"+clean_room(row[li["room"]] if len(row)>li["room"] else "")
-            if key!=":":existing[key]=r
-        changed=False
-        for rr_idx, rr in enumerate(rooms, start=2):
-            room=clean_room(rr[next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)] if len(rr)>0 else "")
-            name_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"guest_name_(d)","guest_name","guest"}),1)
-            phone_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"phone_(e)","phone","whatsapp","mobile"}),2)
-            room_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)
-            room=clean_room(rr[room_col] if len(rr)>room_col else "")
-            phone=clean_phone(rr[phone_col] if len(rr)>phone_col else "")
-            name=str(rr[name_col] if len(rr)>name_col else "Guest").strip()
-            status=str(rr[status_idx] if len(rr)>status_idx else "").strip().upper()
-            if not room or not phone or not status: continue
-            key=phone+":"+room; rownum=existing.get(key)
-            previous_status=""
-            if rownum:
-                life_row=vals[rownum-1] if rownum-1 < len(vals) else []
-                previous_status=str(life_row[li["status"]] if len(life_row)>li["status"] else "").strip().upper()
-            if not rownum:
-                width=max(13, len(headers))
-                life.append_row([""]*width)
-                rownum=life.get_last_row(); existing[key]=rownum; changed=True
-            for col,val in ((li["room"],room),(li["name"],name),(li["phone"],phone),(li["status"],status)):
-                if col >= 0:
-                    life.update_cell(rownum,col+1,val)
+        existing = {}
+        for row_num, row in enumerate(life_vals[1:], start=2):
+            key = clean_phone(row[lidx["phone"]] if len(row) > lidx["phone"] else "") + ":" + clean_room(
+                row[lidx["room"]] if len(row) > lidx["room"] else ""
+            )
+            if key != ":":
+                existing[key] = {
+                    "row": row_num,
+                    "status": str(row[lidx["status"]] if len(row) > lidx["status"] else "").strip().upper()
+                }
 
-            current_in = ""; current_out = ""
-            row_now = life.row_values(rownum)
-            if li["check_in_time"] >= 0 and len(row_now)>li["check_in_time"]:
-                current_in=str(row_now[li["check_in_time"]]).strip()
-            if li["check_out_time"] >= 0 and len(row_now)>li["check_out_time"]:
-                current_out=str(row_now[li["check_out_time"]]).strip()
+        changed = False
+        for room_sheet_row, rr in enumerate(rooms, start=2):
+            room = clean_room(rr[room_idx] if len(rr) > room_idx else "")
+            phone = clean_phone(rr[phone_idx] if len(rr) > phone_idx else "")
+            name = str(rr[name_idx] if len(rr) > name_idx else "Guest").strip()
+            status = str(rr[status_idx] if len(rr) > status_idx else "").strip().upper()
 
-            now_text=now_ist().strftime("%d-%b-%Y %I:%M %p")
-            in_status=("IN" in status and "OUT" not in status)
-            out_status=("OUT" in status)
-            previous_in=("IN" in previous_status and "OUT" not in previous_status)
-            previous_out=("OUT" in previous_status)
-            if in_status and not current_in and (not previous_status or not previous_in):
-                life.update_cell(rownum, li["check_in_time"]+1, now_text); changed=True
-            if out_status and not current_out and previous_status and not previous_out:
-                life.update_cell(rownum, li["check_out_time"]+1, now_text); changed=True
+            if not phone or not status:
+                continue
+
+            key = phone + ":" + room
+            rec = existing.get(key)
+            if not rec:
+                life.append_row([room, name, phone, status, "", "", "", "", "", "", ""])
+                rec = {"row": life.get_last_row(), "status": ""}
+                existing[key] = rec
+                changed = True
+            else:
+                row_num = rec["row"]
+                life.getRange(row_num, 1, 1, 4).setValues([[room, name, phone, status]])
+                changed = True
+
+            row_num = rec["row"]
+            previous_status = rec.get("status", "")
+
+            check_in_now = str(rooms_sheet.cell(room_sheet_row, room_in_idx + 1).getDisplayValue() or "").strip()
+            check_out_now = str(rooms_sheet.cell(room_sheet_row, room_out_idx + 1).getDisplayValue() or "").strip()
+
+            now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
+            in_status = "IN" in status and "OUT" not in status
+            out_status = "OUT" in status
+            previous_in = "IN" in previous_status and "OUT" not in previous_status
+            previous_out = "OUT" in previous_status
+
+            # A genuine new in-house stay starts a new check-in timestamp in Rooms.
+            if in_status and (not previous_status or not previous_in) and not check_in_now:
+                rooms_sheet.update_cell(room_sheet_row, room_in_idx + 1, now_text)
+                changed = True
+
+            # A genuine IN -> OUT transition records checkout time in Rooms.
+            if out_status and previous_status and not previous_out and not check_out_now:
+                rooms_sheet.update_cell(room_sheet_row, room_out_idx + 1, now_text)
+                changed = True
+
+            rec["status"] = status
+
         return changed
     except Exception as exc:
-        print("LIFECYCLE MARKER SYNC ERROR:",exc,flush=True); return False
+        print("LIFECYCLE MARKER SYNC ERROR:", exc, flush=True)
+        return False
 
 
 # ============================================================
@@ -7232,7 +7318,7 @@ def monitor_guest_status_lifecycle():
             rows = lifecycle_rows
             cols = _room_lifecycle_columns()
 
-            required = ("room", "name", "phone", "status", "check_in_time", "check_out_time", "welcome_sent", "thirty_sent", "checkout_sent")
+            required = ("room", "name", "phone", "status", "welcome_sent", "thirty_sent", "checkout_sent")
             if any(cols[x] < 0 for x in required):
                 # Self-heal the marker ledger instead of waiting forever for a manual setup.
                 try:
@@ -7242,27 +7328,14 @@ def monitor_guest_status_lifecycle():
                         try:
                             life_sheet = sh.worksheet("Lifecycle_Automation")
                         except Exception:
-                            life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=13)
+                            life_sheet = sh.add_worksheet(title="Lifecycle_Automation", rows=1000, cols=11)
                         existing_values = life_sheet.get_all_values()
                         existing_headers = existing_values[0] if existing_values else []
                         if not existing_headers:
-                            life_sheet.append_row(["Room","Guest Name","Phone","Status","CHECK IN TIME","CHECK OUT TIME","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
+                            life_sheet.append_row(["Room","Guest Name","Phone","Status","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"])
                         fetch_sheet_data_sync()
                         rows = list(shared_store.get("lifecycle_rows", []))
                         cols = _room_lifecycle_columns()
-                        # Ensure legacy Lifecycle_Automation tabs receive the new timing columns.
-                        try:
-                            current_headers = sh.worksheet("Lifecycle_Automation").row_values(1)
-                            desired = ["Room","Guest Name","Phone","Status","CHECK IN TIME","CHECK OUT TIME","WELCOME SENT","30 MIN SENT","BREAKFAST SENT","LUNCH SENT","AARTI SENT","DINNER SENT","CHECKOUT SENT"]
-                            for wanted in desired:
-                                if wanted not in [str(x).strip().upper() for x in current_headers]:
-                                    sh.worksheet("Lifecycle_Automation").update_cell(1, len(current_headers)+1, wanted)
-                                    current_headers.append(wanted)
-                            fetch_sheet_data_sync()
-                            rows = list(shared_store.get("lifecycle_rows", []))
-                            cols = _room_lifecycle_columns()
-                        except Exception as upgrade_exc:
-                            print("LIFECYCLE HEADER UPGRADE ERROR:", upgrade_exc, flush=True)
                 except Exception as exc:
                     print("LIFECYCLE AUTO-SETUP ERROR:", exc, flush=True)
                 if any(cols[x] < 0 for x in required):
@@ -7270,9 +7343,35 @@ def monitor_guest_status_lifecycle():
                     time.sleep(30)
                     continue
 
-            # Rooms stays clean; Lifecycle_Automation owns event timestamps.
+            # Rooms is the source for lifecycle timing; Lifecycle_Automation stores only sent markers.
             with state_lock:
                 lifecycle_rows = list(shared_store.get("lifecycle_rows", []))
+                room_rows = list(shared_store.get("rooms", []))
+                room_headers = list(shared_store.get("room_headers", []))
+
+            def _room_col(names, fallback=-1):
+                normalized = [normalize_text(h).replace(" ", "_") for h in room_headers]
+                for n in names:
+                    key = normalize_text(n).replace(" ", "_")
+                    if key in normalized:
+                        return normalized.index(key)
+                return fallback
+
+            room_id_idx = _room_col(("ROOM (A)", "ROOM"), 0)
+            room_phone_idx = _room_col(("PHONE (E)", "PHONE", "WHATSAPP", "MOBILE"), 2)
+            room_in_idx = _room_col(("CHECK IN TIME", "CHECK-IN TIME", "CHECK IN DATE", "CHECK_IN_DATE"), -1)
+            room_out_idx = _room_col(("CHECK OUT TIME", "CHECK-OUT TIME", "CHECK OUT DATE", "CHECK_OUT_DATE"), -1)
+
+            room_time_map = {}
+            for rr in room_rows:
+                rroom = clean_room(rr[room_id_idx] if room_id_idx >= 0 and len(rr) > room_id_idx else "")
+                rphone = clean_phone(rr[room_phone_idx] if room_phone_idx >= 0 and len(rr) > room_phone_idx else "")
+                if not rroom or not rphone:
+                    continue
+                rin = rr[room_in_idx] if room_in_idx >= 0 and len(rr) > room_in_idx else ""
+                rout = rr[room_out_idx] if room_out_idx >= 0 and len(rr) > room_out_idx else ""
+                room_time_map[f"{rphone}:{rroom}"] = (rin, rout)
+
             for row_index, row in enumerate(rows, start=2):
                 if len(row) <= max(cols.values()):
                     continue
@@ -7290,8 +7389,7 @@ def monitor_guest_status_lifecycle():
                 lifecycle_key = f"{phone}:{room}"
                 lifecycle_status_cache[lifecycle_key] = status
 
-                check_in_raw = row[cols["check_in_time"]] if cols["check_in_time"] >= 0 and len(row) > cols["check_in_time"] else ""
-                check_out_raw = row[cols["check_out_time"]] if cols["check_out_time"] >= 0 and len(row) > cols["check_out_time"] else ""
+                check_in_raw, check_out_raw = room_time_map.get(lifecycle_key, ("", ""))
                 check_in_at = _parse_sheet_datetime(check_in_raw)
                 check_out_at = _parse_sheet_datetime(check_out_raw)
 
@@ -7309,7 +7407,7 @@ def monitor_guest_status_lifecycle():
                         if welcome_text and send_whatsapp_message(phone, welcome_text):
                             _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
 
-                    # 30-minute message uses Lifecycle_Automation CHECK IN TIME.
+                    # 30-minute message uses Rooms CHECK IN TIME.
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
                         if current >= check_in_at + timedelta(minutes=30):
                             lang = get_guest_response_language(phone)
@@ -7346,7 +7444,7 @@ def monitor_guest_status_lifecycle():
                 # CHECK-OUT LIFECYCLE
                 # -----------------------------
                 elif is_out:
-                    # Lifecycle_Automation OUT TIME is the authoritative checkout event timestamp.
+                    # Rooms CHECK OUT TIME is the authoritative checkout event timestamp.
                     # If an old OUT row has already been acknowledged, no duplicate.
                     if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)

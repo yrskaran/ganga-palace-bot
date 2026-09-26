@@ -107,6 +107,10 @@ SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
+# Fixed reception handoff number for unknown/unverified guest questions.
+# By default this uses STAFF_PHONE so existing deployments keep working; set
+# RECEPTION_PHONE explicitly when reception has its own WhatsApp number.
+RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", STAFF_PHONE).strip()
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
@@ -4234,11 +4238,33 @@ def format_kitchen_bill_message(fin, room, guest_name):
 # ============================================================
 
 def send_reception_fallback(sender_phone, guest_info, guest_message, request_text, source="reception_fallback"):
-    """Send the guest fallback text AND notify reception; never promise an alert silently."""
+    """Send the guest fallback text AND notify the fixed reception number."""
     sent_guest = send_whatsapp_message(sender_phone, guest_message)
-    notified = notify_reception_request(sender_phone, guest_info, request_text, source)
+    notified = notify_reception_direct(sender_phone, guest_info, request_text, source)
     print(f"RECEPTION FALLBACK: guest_sent={sent_guest} reception_notified={notified} source={source}", flush=True)
     return sent_guest
+
+
+def notify_reception_direct(sender_phone, guest_info, request_text, source="bot_fallback"):
+    """Forward the ORIGINAL guest message directly to the configured reception WhatsApp number."""
+    try:
+        room = (guest_info or {}).get("room", "") if guest_info else ""
+        name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
+        status = (guest_info or {}).get("status", "") if guest_info else ""
+        message = (
+            "RECEPTION REQUEST\n"
+            f"Guest: {name}\nPhone: +{sender_phone}\n"
+            f"Room: {room or 'Not assigned'}\nStatus: {status or 'Unknown'}\n"
+            f"Source: {source}\n"
+            "Original Guest Message:\n"
+            f"{str(request_text or '').strip()[:2000]}"
+        )
+        ok = send_whatsapp_message(RECEPTION_PHONE, message)
+        print(f"RECEPTION DIRECT: number_configured={bool(RECEPTION_PHONE)} sent={ok} source={source}", flush=True)
+        return ok
+    except Exception as exc:
+        print("RECEPTION DIRECT NOTIFY ERROR:", exc, flush=True)
+        return False
 
 
 def notify_reception_request(sender_phone, guest_info, request_text, source="bot_fallback"):
@@ -4363,10 +4389,18 @@ Pending state: {state_hint}
 
 Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend; keep reply concise (normally <=220 characters); return JSON only.
 
+IMPORTANT RECEPTION FALLBACK RULE:
+- First, answer the guest normally whenever the answer is supported by hotel_data, actual Google Sheets/live records, or the conversation context.
+- You may also handle ordinary general conversation naturally when no hotel-specific fact is being claimed.
+- If the requested information/action is NOT known, NOT configured, cannot be verified from current records, or requires a hotel staff decision/confirmation, DO NOT GUESS and DO NOT make up an answer.
+- In that case set action="RECEPTION", needs_reception=true, and provide a warm guest-facing reply saying that the message has been sent to reception for confirmation.
+- The backend will forward the ORIGINAL guest message verbatim to the reception number. Do not replace it with a vague summary.
+- Never say the information is definitely unavailable when it merely needs staff confirmation.
+
 Return exactly this JSON shape (empty strings/array when not applicable):
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 
-For an answerable question, put the actual guest-facing answer in reply. Reply in the same language/script style as the current guest. Do not return a reception fallback when hotel_data contains the answer. For follow-ups, resolve the referent from the conversation rather than answering as a standalone message.
+For an answerable question, put the actual guest-facing answer in reply. Reply in the same language/script style as the current guest. For an unknown/unverified hotel-specific question, ALWAYS use action="RECEPTION" with needs_reception=true. For follow-ups, resolve the referent from the conversation rather than answering as a standalone message.
 """
 
 def understand_guest_request(user_text, guest_info=None, sender_phone=None):
@@ -4412,10 +4446,18 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "generic": str(obj.get("generic", "")).strip(),
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
-                "needs_reception": bool(obj.get("needs_reception", False)),
+                "needs_reception": bool(obj.get("needs_reception", False)) or action == "RECEPTION",
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
+            # A RECEPTION action is the explicit unknown/unverified handoff.
+            # Never let an empty AI reply prevent the reception notification.
+            if action == "RECEPTION" and not result["reply"]:
+                lang = get_guest_response_language(sender_phone)
+                if lang == "english":
+                    result["reply"] = "Ji, I am unable to confirm this right now. I have sent your message to reception, and they will confirm it for you. 🙏"
+                else:
+                    result["reply"] = "Ji, main iski abhi pushti nahi kar pa raha hoon. Aapka message maine reception ko bhej diya hai; woh confirm kar denge. 🙏"
             print(f"AI UNDERSTANDING: provider={provider_name} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
             return result
         except Exception as exc:
@@ -6010,7 +6052,10 @@ def process_and_reply(message, sender_phone, msg_type):
                 if reply:
                     send_whatsapp_message(sender_phone, reply)
                     if ai_understanding.get("needs_reception") or any(x in normalize_text(reply) for x in ["reception se confirm", "reception can confirm", "reception will confirm", "reception ko bata"]):
-                        notify_reception_request(sender_phone, guest_info, user_text, "ai_semantic_reception")
+                        if ai_action == "RECEPTION":
+                            notify_reception_direct(sender_phone, guest_info, user_text, "ai_semantic_reception")
+                        else:
+                            notify_reception_request(sender_phone, guest_info, user_text, "ai_semantic_reception")
                     remember_conversation(sender_phone, "user", user_text)
                     remember_conversation(sender_phone, "assistant", reply)
                     return
@@ -6521,24 +6566,25 @@ def process_and_reply(message, sender_phone, msg_type):
     # Never leave an ordinary guest question unanswered.
     # ========================================================
     fallback_lang = get_guest_response_language(sender_phone)
-    # When every AI provider is unavailable, do NOT turn an ordinary chat turn
-    # into a Reception ticket. Unknown factual requests can be handed to Reception
-    # only when an AI/local rule explicitly identifies a property-specific handoff.
+    # If the AI itself is unavailable, the bot cannot safely determine whether
+    # an unsupported question can be answered. Forward the original guest message
+    # to reception rather than leaving the guest waiting or inventing an answer.
     if semantic_ai_unavailable:
         if fallback_lang == "english":
             fallback_in = (
-                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
-                "main available hote hi turant help karunga."
+                "Ji, I could not confirm this right now. Your message has been sent directly to reception; "
+                "they will confirm it for you. 🙏"
             )
         else:
             fallback_in = (
-                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
-                "main available hote hi turant help karunga."
+                "Ji, main iski abhi pushti nahi kar pa raha hoon. Aapka message seedha reception ko bhej diya hai; "
+                "woh confirm kar denge. 🙏"
             )
         send_whatsapp_message(sender_phone, fallback_in)
+        notify_reception_direct(sender_phone, guest_info, user_text, "ai_unavailable_reception_fallback")
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", fallback_in)
-        print("AI OUTAGE FALLBACK: all semantic/conversational providers unavailable; no Reception auto-ticket", flush=True)
+        print("AI OUTAGE FALLBACK: all semantic/conversational providers unavailable; original guest message forwarded to Reception", flush=True)
         return
 
     if fallback_lang == "english":
@@ -6579,6 +6625,10 @@ def handle_incoming_async(message, sender_phone, msg_type):
                 "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; main reception se confirm karwa deta hoon. 🙏"
             )
             print(f"SAFETY REPLY RESULT: phone={sender_phone} sent={sent}", flush=True)
+            try:
+                notify_reception_direct(sender_phone, None, message.get("text", {}).get("body", "") if isinstance(message, dict) else "", "process_exception")
+            except Exception as notify_exc:
+                print("EXCEPTION RECEPTION NOTIFY ERROR:", notify_exc, flush=True)
         except Exception as reply_exc:
             print("SAFETY REPLY ERROR:", reply_exc, flush=True)
 

@@ -3619,7 +3619,7 @@ def _append_complaint(room, guest_name, phone, complaint_text):
             sheet = sh.worksheet(COMPLAINT_SHEET_NAME)
         except Exception:
             sheet = sh.add_worksheet(title=COMPLAINT_SHEET_NAME, rows=1000, cols=len(COMPLAINT_HEADERS))
-            sheet.getRange(1,1,1,len(COMPLAINT_HEADERS)).setValues([COMPLAINT_HEADERS]) if False else None
+            None
         values = sheet.get_all_values()
         headers = values[0] if values else COMPLAINT_HEADERS
         if not values:
@@ -6866,7 +6866,7 @@ def _room_lifecycle_columns():
         "phone": _lifecycle_header_index(("Phone",)),
         "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
         "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
-        "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
+        "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT", "20 MIN SENT")),
         "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
         "lunch_sent": _lifecycle_header_index(("LUNCH SENT",)),
         "aarti_sent": _lifecycle_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),

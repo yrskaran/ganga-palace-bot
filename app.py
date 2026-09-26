@@ -4519,7 +4519,14 @@ Handle Hindi, Hinglish, English, slang, spelling mistakes, indirect wording and 
 Current guest context: {guest_info or 'NEW CUSTOMER'}
 Pending state: {state_hint}
 
-Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend; keep reply concise (normally <=220 characters); return JSON only.
+Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend.
+
+RECEPTIONIST BUSINESS ROLE:
+- IN-HOUSE / CHECKED-IN GUEST: act as a warm, proactive hotel concierge. Solve service requests promptly, offer practical help, and follow up naturally on comfort or unresolved issues without spamming.
+- NEW CUSTOMER: act as a helpful booking sales receptionist. Understand dates, number of guests and preferences; recommend the most relevant room category using actual hotel_data and live records; explain differences/value naturally; handle reasonable objections; and guide the guest toward the next booking step. Be persuasive through useful information, never fake scarcity, fake discounts, invented availability or pressure.
+- Never expose internal implementation terms such as "configured", "backend", "routing", "provider" or action names in guest-facing replies.
+
+Keep reply concise (normally <=220 characters); return JSON only.
 
 Return exactly this JSON shape (empty strings/array when not applicable):
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
@@ -4807,7 +4814,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         elif prompt_window:
             msg = (
                 f"☀️ *Breakfast reminder window:* {prompt_window}.\n"
-                "Exact kitchen serving timing abhi configured nahi hai; reception se confirm karwa sakte hain."
+                "Exact kitchen serving timing abhi confirm karni hogi; reception se confirm karwa sakte hain."
             )
         else:
             msg = "Ji, breakfast timing reception se confirm karwa deta hoon."
@@ -4866,7 +4873,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 if photo_url:
                     send_whatsapp_image(sender_phone, photo_url, f"🏨 {get_hotel_name()} — Hotel Front")
                 else:
-                    send_whatsapp_message(sender_phone, "Ji, hotel front photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
+                    send_whatsapp_message(sender_phone, "Ji, hotel front photo abhi share nahi ho pa rahi. Main reception se confirm karwa deta hoon. 🙏")
                     notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
                 return True
             exterior = get_hotel_photo("exterior")
@@ -4875,7 +4882,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
             if photo_url:
                 send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
             else:
-                send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
+                send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi share nahi ho pa rahi. Main reception se confirm karke share karwa deta hoon. 🙏")
                 notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
             return True
 
@@ -5376,29 +5383,58 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
             )
         target = current_text_target
 
-    if not target:
+    # If the current guest message is a broad room-photo request and contains no
+    # unique category, the AI must not be allowed to invent/pick one category.
+    # This prevents a message like "Room ki photos dikhaoge?" from accidentally
+    # becoming "Deluxe Room" or another arbitrary target.
+    current_text = normalize_text(user_text) if user_text else ""
+    broad_photo_request = (
+        any(x in current_text for x in [
+            "room photo", "room photos", "room ki photo", "room ki photos",
+            "room dikhao", "room pic", "rooms dikhao", "room ki pics"
+        ])
+        and current_text_target is None
+        and not any(x in current_text for x in ["hotel front", "hotel photo", "exterior", "outside", "front photo"])
+    )
+    if broad_photo_request and target.strip().lower() not in {"", "room", "rooms", "photo", "photos", "room photo", "room photos", "room category", "room categories"}:
+        print(f"PHOTO AI BROAD REQUEST OVERRIDE: ai_target={target!r} text={user_text!r}", flush=True)
+        target = ""
+
+    # Broad room-photo requests are category browsing, not a missing-photo case.
+    generic_photo_targets = {
+        "room", "rooms", "photo", "photos", "room photo", "room photos",
+        "room category", "room categories", "all", "full"
+    }
+    if not target or target.strip().lower() in generic_photo_targets:
         with state_lock:
             photo_sessions[sender_phone] = {
                 "created": time.time(),
                 "categories": [name for name, _ in categories],
             }
         if categories:
-            lines = ["🛏️ *Room Categories*", "Kaunsi room category ki photo dekhna chahenge?"]
+            lines = ["🛏️ *Room Categories*", "Bilkul ji 😊 Kaunsi room category ki photo dekhna chahenge?"]
             lines.extend(f"• {name.title()}" for name, _ in categories)
             send_whatsapp_message(sender_phone, "\n".join(lines))
         else:
-            send_whatsapp_message(sender_phone, "Ji, room photos abhi configured nahi hain. 🙏")
+            send_whatsapp_message(sender_phone, "Ji, room photos abhi share nahi ho pa rahi hain. Main reception se confirm karwa deta hoon. 🙏")
+            notify_reception_request(sender_phone, guest_info, user_text or "Room photos requested", "ai_photo_categories_unavailable")
         return True
 
     photo_url = get_hotel_photo(target)
     if not photo_url:
-        send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
-        notify_reception_request(sender_phone, guest_info, f"Photo requested: {target}", "ai_photo_missing")
+        # Never expose internal configuration/state wording to the guest.
+        send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi share nahi ho pa rahi. Main reception se confirm karke share karwa deta hoon. 🙏")
+        notify_reception_request(sender_phone, guest_info, user_text or f"Photo requested: {target}", "ai_photo_missing")
         return True
 
     print(f"PHOTO AI RESOLVED: target={target!r} url={photo_url!r}", flush=True)
     with state_lock:
         photo_sessions.pop(sender_phone, None)
+
+    # For a selected room category, hotel_data specifies exterior first, then the room photo.
+    exterior = get_hotel_photo("exterior")
+    if exterior and target.strip().lower() != "exterior":
+        send_whatsapp_image(sender_phone, exterior, f"🏨 {get_hotel_name()} — Hotel Front")
     sent = send_whatsapp_image(sender_phone, photo_url, f"🛏️ {target.title()}")
     print(f"PHOTO AI SEND RESULT: target={target!r} sent={sent}", flush=True)
     return True
@@ -6330,7 +6366,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 if photo_url:
                     send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
                 else:
-                    reply = "Ji, is room category ki photo abhi configured nahi hai. Main reception se share karwa deta hoon."
+                    reply = "Ji, is room category ki photo abhi share nahi ho pa rahi. Main reception se confirm karke share karwa deta hoon. 🙏"
                     send_reception_fallback(sender_phone, guest_info, reply, f"Photo requested for room category '{requested}' but configured photo was unavailable.", "photo_context_fallback")
                 return
 
@@ -6352,7 +6388,7 @@ def process_and_reply(message, sender_phone, msg_type):
                 if photo_url:
                     send_whatsapp_image(sender_phone, photo_url, f"🏨 {requested.title()}")
                 else:
-                    reply = "Ji, hotel front/exterior photo abhi configured nahi hai. Main reception se share karwa deta hoon."
+                    reply = "Ji, hotel front/exterior photo abhi share nahi ho pa rahi. Main reception se confirm karke share karwa deta hoon. 🙏"
                     send_reception_fallback(sender_phone, guest_info, reply, "Hotel front/exterior photo requested but configured photo was unavailable.", "photo_fallback")
                 return
 
@@ -6363,7 +6399,7 @@ def process_and_reply(message, sender_phone, msg_type):
             if photo_url:
                 send_whatsapp_image(sender_phone, photo_url, f"🛏️ {requested.title()}")
             else:
-                reply = "Ji, is room category ki photo abhi configured nahi hai. Main reception se share karwa deta hoon."
+                reply = "Ji, is room category ki photo abhi share nahi ho pa rahi. Main reception se confirm karke share karwa deta hoon. 🙏"
                 send_reception_fallback(sender_phone, guest_info, reply, f"Photo requested for room category '{requested}' but configured photo was unavailable.", "photo_fallback")
             return
 

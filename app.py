@@ -497,13 +497,24 @@ def get_hotel_value(label, default=""):
 
 
 def get_hotel_data():
-    path = os.getenv("HOTEL_DATA_FILE", "hotel_data.txt")
+    """Load hotel_data.txt robustly from the configured path or app directory."""
+    configured = str(os.getenv("HOTEL_DATA_FILE", "hotel_data.txt") or "hotel_data.txt").strip()
+    candidates = [Path(configured)]
+    if not candidates[0].is_absolute():
+        candidates.append(Path(__file__).resolve().parent / configured)
+
+    seen = set()
     try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                return f.read().strip()
-    except Exception:
-        pass
+        for candidate in candidates:
+            key = str(candidate.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            if candidate.exists() and candidate.is_file():
+                return candidate.read_text(encoding="utf-8").strip()
+    except Exception as exc:
+        print("HOTEL DATA LOAD ERROR:", exc, flush=True)
+    print(f"HOTEL DATA FILE NOT FOUND: {configured}", flush=True)
     return ""
 
 
@@ -3619,7 +3630,7 @@ def _append_complaint(room, guest_name, phone, complaint_text):
             sheet = sh.worksheet(COMPLAINT_SHEET_NAME)
         except Exception:
             sheet = sh.add_worksheet(title=COMPLAINT_SHEET_NAME, rows=1000, cols=len(COMPLAINT_HEADERS))
-            None
+            # Legacy Apps Script no-op removed; this is a Python/gspread client.
         values = sheet.get_all_values()
         headers = values[0] if values else COMPLAINT_HEADERS
         if not values:
@@ -6866,7 +6877,7 @@ def _room_lifecycle_columns():
         "phone": _lifecycle_header_index(("Phone",)),
         "status": _lifecycle_header_index(("Status", "Guest Status", "Booking Status")),
         "welcome_sent": _lifecycle_header_index(("WELCOME SENT",)),
-        "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT", "20 MIN SENT")),
+        "thirty_sent": _lifecycle_header_index(("30 MIN SENT", "30-MIN SENT", "30 MINUTE SENT")),
         "breakfast_sent": _lifecycle_header_index(("BREAKFAST SENT",)),
         "lunch_sent": _lifecycle_header_index(("LUNCH SENT",)),
         "aarti_sent": _lifecycle_header_index(("AARTI SENT", "SPECIAL EVENING SENT")),
@@ -7036,8 +7047,8 @@ def reconcile_lifecycle_from_room_sheet():
             row_num = rec["row"]
             previous_status = rec.get("status", "")
 
-            check_in_now = str(rooms_sheet.cell(room_sheet_row, room_in_idx + 1).getDisplayValue() or "").strip()
-            check_out_now = str(rooms_sheet.cell(room_sheet_row, room_out_idx + 1).getDisplayValue() or "").strip()
+            check_in_now = str(rooms_sheet.cell(room_sheet_row, room_in_idx + 1).value or "").strip()
+            check_out_now = str(rooms_sheet.cell(room_sheet_row, room_out_idx + 1).value or "").strip()
 
             now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
             in_status = "IN" in status and "OUT" not in status

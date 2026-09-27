@@ -73,7 +73,7 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "").strip()
 OPENROUTER_MODELS = [
     x.strip() for x in os.getenv(
         "OPENROUTER_MODELS",
-        "google/gemma-4-31b-it:free,nvidia/nemotron-3.5-lightning:free"
+        "nvidia/nemotron-3.5-lightning:free,google/gemma-4-31b-it:free"
     ).split(",") if x.strip()
 ]
 OPENROUTER_SITE_URL = os.getenv("OPENROUTER_SITE_URL", "").strip()
@@ -121,10 +121,10 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "hotel-reception-v48-semantic-conversation"
+APP_VERSION = "hotel-reception-v50-fast-context-quota"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
-SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
+SHEET_SYNC_MIN_INTERVAL = max(60, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "120")))
 LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
 # Proactive messages must have one sender even if Render is accidentally scaled
 # to multiple instances. Each instance heartbeats into Google Sheets and the
@@ -135,14 +135,13 @@ LIFECYCLE_INSTANCE_ID = os.getenv("LIFECYCLE_INSTANCE_ID", "").strip() or uuid.u
 LIFECYCLE_LEADER_SHEET = os.getenv("LIFECYCLE_LEADER_SHEET", "Bot_Leader").strip() or "Bot_Leader"
 GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
 
-# Central provider order. OpenAI remains first when configured; OpenRouter is
-# deliberately ahead of Groq because the current deployment is using Groq's
-# relatively small daily token allowance for demo traffic. Providers that have
+# Central provider order. Paid/fast providers are preferred when configured;
+# Groq is checked before OpenRouter to avoid an avoidable free-model hop. Providers that have
 # no key or an open circuit are skipped by their own functions.
 AI_PROVIDER_ORDER = tuple(
     x.strip().lower() for x in os.getenv(
         "AI_PROVIDER_ORDER",
-        "openai,gemini,openrouter,groq,cerebras,cohere"
+        "openai,gemini,groq,openrouter,cerebras,cohere"
     ).split(",") if x.strip()
 )
 # Upper bound for an individual AI request. A slow/dead provider must not make
@@ -209,6 +208,10 @@ BOT_STATE_HEADERS = [
     "Photo Session JSON", "Updated At"
 ]
 bot_state_loaded = set()
+bot_state_dirty = set()
+BOT_STATE_SHEET_CACHE = None
+bot_state_last_persist = {}
+BOT_STATE_PERSIST_MIN_INTERVAL = max(60, int(os.getenv("BOT_STATE_PERSIST_MIN_INTERVAL", "300")))
 
 def _bot_state_json(value):
     try:
@@ -226,6 +229,9 @@ def _bot_state_from_json(value, default):
         return default
 
 def _ensure_bot_state_sheet():
+    global BOT_STATE_SHEET_CACHE
+    if BOT_STATE_SHEET_CACHE is not None:
+        return BOT_STATE_SHEET_CACHE
     client = get_gspread_client()
     if not client:
         return None
@@ -243,6 +249,7 @@ def _ensure_bot_state_sheet():
         sheet.hide()
     except Exception:
         pass
+    BOT_STATE_SHEET_CACHE = sheet
     return sheet
 
 def _persist_bot_state(phone):
@@ -320,6 +327,30 @@ def _restore_bot_state(phone):
         bot_state_loaded.add(phone)
     except Exception as exc:
         print(f"BOT STATE RESTORE ERROR: {phone}: {exc}", flush=True)
+
+def mark_bot_state_dirty(phone):
+    phone = clean_phone(phone)
+    if phone:
+        with state_lock:
+            bot_state_dirty.add(phone)
+
+def persist_dirty_bot_states():
+    """Persist conversation state off the WhatsApp request path, at a low cadence."""
+    while True:
+        try:
+            now = time.time()
+            with state_lock:
+                phones = list(bot_state_dirty)
+                due = [p for p in phones if now - float(bot_state_last_persist.get(p, 0)) >= BOT_STATE_PERSIST_MIN_INTERVAL]
+            for phone in due:
+                if _persist_bot_state(phone):
+                    with state_lock:
+                        bot_state_dirty.discard(phone)
+                        bot_state_last_persist[phone] = time.time()
+        except Exception as exc:
+            print(f"BOT STATE BACKGROUND ERROR: {exc}", flush=True)
+        time.sleep(30)
+
 
 # When the bot asks the guest to choose a room-photo category, keep that
 # pending choice briefly so a reply like "Family" or "Deluxe" is understood
@@ -1122,9 +1153,88 @@ def get_credentials():
         return None
 
 
+_GSPREAD_CLIENT = None
+_GSPREAD_CLIENT_LOCK = threading.RLock()
+
 def get_gspread_client():
-    creds = get_credentials()
-    return gspread.authorize(creds) if creds else None
+    """Reuse one authorized gspread client per process; authorization is not part of the hot message path."""
+    global _GSPREAD_CLIENT
+    if _GSPREAD_CLIENT is not None:
+        return _GSPREAD_CLIENT
+    with _GSPREAD_CLIENT_LOCK:
+        if _GSPREAD_CLIENT is not None:
+            return _GSPREAD_CLIENT
+        creds = get_credentials()
+        if not creds:
+            return None
+        _GSPREAD_CLIENT = gspread.authorize(creds)
+        return _GSPREAD_CLIENT
+
+
+LIVE_TARGETED_REFRESH_MIN_INTERVAL = max(3, int(os.getenv("LIVE_TARGETED_REFRESH_MIN_INTERVAL", "8")))
+last_targeted_refresh = {"rooms": 0.0, "kitchen": 0.0}
+
+def _sheet_quota_error(exc):
+    text = str(exc or "")
+    return ("429" in text or "quota exceeded" in text.lower() or
+            "read requests per minute" in text.lower())
+
+def refresh_live_sheet_context(rooms=True, kitchen=False, force=False):
+    """Refresh only the live Sheets data required for a hard backend decision.
+
+    Normal conversation uses the in-memory cache. Transactional paths call this
+    helper immediately before execution so checkout/order/bill decisions use fresh
+    data without downloading every operational tab on every WhatsApp message.
+    """
+    global SHEETS_QUOTA_BACKOFF_UNTIL
+    now = time.time()
+    if now < SHEETS_QUOTA_BACKOFF_UNTIL:
+        return False
+    keys = []
+    if rooms: keys.append("rooms")
+    if kitchen: keys.append("kitchen")
+    if not keys:
+        return True
+    if not force and any(now - last_targeted_refresh[k] < LIVE_TARGETED_REFRESH_MIN_INTERVAL for k in keys):
+        return True
+    client = get_gspread_client()
+    if not client:
+        return False
+    try:
+        sh = client.open_by_key(SHEET_ID)
+        if rooms:
+            values = sh.get_worksheet(0).get_all_values()
+            with state_lock:
+                shared_store["room_headers"] = [str(x).strip() for x in (values[0] if values else [])]
+                shared_store["rooms"] = values[1:] if len(values) > 1 else []
+            last_targeted_refresh["rooms"] = now
+        if kitchen:
+            values = sh.worksheet("Kitchen_Orders").get_all_values()
+            with state_lock:
+                shared_store["kitchen_headers"] = [str(x).strip() for x in (values[0] if values else [])]
+                shared_store["kitchen_orders"] = values[1:] if len(values) > 1 else []
+            last_targeted_refresh["kitchen"] = now
+        with state_lock:
+            shared_store["last_synced"] = now
+        print(f"LIVE SHEET REFRESH: rooms={rooms} kitchen={kitchen}", flush=True)
+        return True
+    except Exception as exc:
+        if _sheet_quota_error(exc):
+            SHEETS_QUOTA_BACKOFF_UNTIL = time.time() + 600
+            print("LIVE SHEET QUOTA BACKOFF: 600s", flush=True)
+        print(f"LIVE SHEET REFRESH ERROR: {exc}", flush=True)
+        return False
+
+def refresh_guest_live_context(sender_phone, need_kitchen=False):
+    """Freshly verify the guest/stay immediately before a transactional action.
+
+    A failed live refresh is never treated as permission to use stale cached status
+    for a chargeable room-service action.
+    """
+    ok = refresh_live_sheet_context(rooms=True, kitchen=need_kitchen, force=True)
+    if not ok:
+        return None
+    return get_guest_stay_status(sender_phone)
 
 
 def fetch_sheet_data_sync():
@@ -2220,7 +2330,9 @@ the guest means in this turn and answer naturally.
    not override a clear topic change.
 3. When the latest turn is brief, incomplete, indirect, or conversational, resolve it
    from the immediately preceding exchange. Do not invent a new subject just because a
-   word can have another meaning.
+   word can have another meaning. If the previous assistant offered options, prices,
+   choices or a question, treat a short reply as a continuation of that exact exchange
+   unless the guest clearly changes topic.
 4. If context still leaves two materially different interpretations, ask one natural,
    concise clarification question instead of guessing.
 5. Never infer that the guest is joking, angry, confused, leaving, ordering, cancelling,
@@ -2228,19 +2340,31 @@ the guest means in this turn and answer naturally.
 6. Do not turn casual statements into transactions. An actual order/service action needs
    a clear request or an unmistakable contextual continuation of a request.
 7. Do not turn an actual request into generic small talk. Answer the request first.
-8. Keep continuity: if the guest is discussing room service, continue that conversation;
+8. For food/drink ordering, use the ORDER or ORDER_SELECTION action when the guest is
+   actually asking for food/drink, including indirect or colloquial wording. Do not classify
+   a clear order as ANSWER merely because the sentence is informal.
+9. Never parrot the guest's wording back as the receptionist's reply. In particular, do not
+   repeat phrases such as "le le", "btao", "haan", "kya chahiye" or the full guest sentence
+   as though the receptionist is speaking it. Convert the meaning into natural receptionist
+   language. For example, if the guest wants one unspecified chai, say naturally that one
+   chai can be arranged and ask which configured chai they want; do not write "1 chai le le!".
+10. When offering configured food choices, use the actual item names and prices from hotel_data
+   when useful, then ask one clear choice question. Avoid filler such as "Koi aur chahiye kya?"
+   unless the guest has actually finished the current request and an additional suggestion is
+   genuinely useful.
+11. Keep continuity: if the guest is discussing room service, continue that conversation;
    if they switch to sightseeing, follow the new topic; if they return to the earlier topic,
    use the remembered context.
-9. Do not repeat your identity, the hotel name, or a generic “how may I help” line unless
+12. Do not repeat your identity, the hotel name, or a generic “how may I help” line unless
    it is actually relevant to the current turn. Do not append a generic closing to every reply.
-10. Respond like a helpful local hotel receptionist: warm, concise, practical and human.
+13. Respond like a helpful local hotel receptionist: warm, concise, practical and human.
     You may recommend, explain, ask a useful follow-up, or add a small relevant detail when
     it genuinely helps. Do not sound like a call-centre script.
-11. Use the guest's language/style naturally. Do not force formal Hindi or English if the
+14. Use the guest's language/style naturally. Do not force formal Hindi or English if the
     guest is speaking casually in Hinglish.
-12. If a hotel fact/action is required, use hotel_data and the validated backend. Never
+15. If a hotel fact/action is required, use hotel_data and the validated backend. Never
     invent rates, availability, payments, bookings, identity or staff actions.
-13. The backend may reject or validate a transaction for safety, but Python must not invent
+16. The backend may reject or validate a transaction for safety, but Python must not invent
     the meaning of an ordinary guest message after the AI has understood it.
 
 QUALITY SELF-CHECK BEFORE ANSWERING:
@@ -4484,7 +4608,6 @@ def _handle_complaint_feedback(phone, text, ai_result=None):
         guest=get_guest_stay_status(phone) or {}
         send_staff_alert(room=guest.get("room",rec.get("room","")),role=rec.get("category","Reception"),message=(f"COMPLAINT REOPENED\nRoom: {guest.get('room',rec.get('room',''))}\nGuest: {guest.get('name',rec.get('guest_name','Guest'))}\nProblem still not solved.\nComplaint: {rec.get('complaint','')}\nPhone: +{phone}"),fallback_phone=STAFF_PHONE)
         send_whatsapp_message(phone,"Ji, samajh gaya. 🙏 Maine complaint dobara staff ko priority ke saath bhej di hai.")
-    fetch_sheet_data_sync()
     return True
 
 
@@ -5091,7 +5214,8 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     transactional actions only after the model has understood the guest.
     """
     history = get_conversation_history(sender_phone) if sender_phone else []
-    recent_history = history[-15:]
+    short_turn = len(str(user_text).split()) <= 5
+    recent_history = history[-8:] if short_turn else history[-15:]
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 700)}"
         for item in recent_history
@@ -5119,7 +5243,9 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
         "afternoon" if 12 <= now.hour < 17 else
         "evening" if 17 <= now.hour < 21 else "night"
     )
-    hotel_db = _ai_knowledge_snapshot(15000)
+    # Short follow-ups need dialogue signal more than a huge hotel-data payload.
+    # Keeping the prompt compact improves both latency and context adherence.
+    hotel_db = _ai_knowledge_snapshot(7000 if short_turn else 15000)
 
     return f"""
 You are the semantic brain and conversational receptionist for Hotel Ganga View on WhatsApp.
@@ -5135,6 +5261,9 @@ Local hotel time: {now.strftime('%d-%b-%Y %I:%M %p')} IST ({daypart})
 
 DIALOGUE MEMORY — read this before interpreting the current turn:
 {history_text}
+
+IMMEDIATE EXCHANGE FOCUS:
+{history_text.split(chr(10))[-4:] if history_text else "No prior exchange."}
 
 CURRENT BACKEND STATE (context only; never invent an action from state alone):
 {state_text}
@@ -6484,6 +6613,16 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
         with state_lock:
             pending_order = order_sessions.get(sender_phone) or duplicate_order_sessions.get(sender_phone)
         if pending_order and explicit_confirmation and is_inhouse:
+            live_guest = refresh_guest_live_context(sender_phone, need_kitchen=False)
+            if not live_guest or not live_guest.get("is_inhouse"):
+                with state_lock:
+                    order_sessions.pop(sender_phone, None)
+                    duplicate_order_sessions.pop(sender_phone, None)
+                send_whatsapp_message(sender_phone, "Ji, checkout status latest record ke hisaab se active nahi hai, isliye room-service order place nahi kar raha hoon. 🙏")
+                return
+            guest_info = live_guest
+            is_inhouse = True
+            is_checkout = False
             order_text = pending_order.get("order", "")
             total = pending_order.get("total", 0)
             ok = append_kitchen_order(guest_info["room"], guest_info["name"], order_text, total)
@@ -6596,6 +6735,14 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
 
     if duplicate_pending and _ai_allows_order_state(ai_understanding, {"CONFIRM_ORDER", "ORDER_CANCEL"}):
         if is_yes(user_text):
+            live_guest = refresh_guest_live_context(sender_phone, need_kitchen=False)
+            if not live_guest or not live_guest.get("is_inhouse"):
+                with state_lock:
+                    duplicate_order_sessions.pop(sender_phone, None)
+                send_whatsapp_message(sender_phone, "Ji, latest stay record ke hisaab se room service ab active nahi hai. 🙏")
+                return
+            guest_info = live_guest
+            is_inhouse = True
             if not is_inhouse:
                 with state_lock:
                     duplicate_order_sessions.pop(sender_phone, None)
@@ -6718,7 +6865,6 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
             f"{('Staff ko alert kar diya hai.' if staff_ok else 'Primary staff notification fail hua, isliye reception ko alert kar diya hai.')} "
             "Main 30 minute baad khud poochunga ki problem solve hui ya nahi. 🙏"
         )
-        fetch_sheet_data_sync()
         return
 
     # ========================================================
@@ -7221,7 +7367,28 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                             "qty": qty,
                             "created": time.time(),
                         }
-                    reply = f"Ji {guest_info['name']} ji, {generic} me se kaunsa chahiye: {choices}?"
+                    # Generic natural receptionist phrasing for EVERY configured menu group.
+                    # There is deliberately no item-specific or phrase-specific branch here.
+                    # The semantic AI decides what the guest means; this backend only formats
+                    # the authoritative choices already present in hotel_data/menu data.
+                    priced = []
+                    for choice in choices_list:
+                        try:
+                            _std, _price = get_hotel_menu()[normalize_text(choice)]
+                            priced.append(f"{_std} (Rs.{_price})")
+                        except Exception:
+                            priced.append(str(choice))
+
+                    display_choices = ", ".join(priced)
+                    if len(priced) == 2:
+                        display_choices = f"{priced[0]} ya {priced[1]}"
+                    elif len(priced) > 2:
+                        display_choices = ", ".join(priced[:-1]) + f" ya {priced[-1]}"
+
+                    reply = (
+                        f"Bilkul 😊 {generic.title()} arrange kar dete hain. "
+                        f"{display_choices} — kaunsa option bheju?"
+                    )
                 send_whatsapp_message(sender_phone, reply)
                 remember_conversation(sender_phone, "user", user_text)
                 remember_conversation(sender_phone, "assistant", reply)
@@ -7285,6 +7452,12 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                 return
             else:
                 order_text = format_order(parsed["items"])
+                live_guest = refresh_guest_live_context(sender_phone, need_kitchen=True)
+                if not live_guest or not live_guest.get("is_inhouse"):
+                    send_whatsapp_message(sender_phone, "Ji, latest stay record ke hisaab se checkout ho chuka hai, isliye room service order nahi le sakta. 🙏")
+                    return
+                guest_info = live_guest
+                is_inhouse = True
                 recent = _recent_matching_kitchen_order(guest_info["room"], order_text, max_minutes=RECENT_DUPLICATE_ORDER_MINUTES)
                 if recent:
                     lang = get_guest_response_language(sender_phone)
@@ -7312,7 +7485,12 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
             # writes HOW a human receptionist should say it. This prevents JSON
             # formatting pressure from degrading the guest-facing conversation.
             if ai_action in {"ANSWER", "LOCAL_GUIDE"}:
-                reply = ask_ai_chat(user_text, guest_info, sender_phone) or ai_understanding.get("reply", "").strip()
+                # The semantic pass already receives the full dialogue and is instructed
+                # to write a natural reply. Do not automatically call a second AI just
+                # to rewrite it: that doubled latency and sometimes replaced a good
+                # contextual answer with a more generic one. A second call is reserved
+                # only for the explicit quality-rejection path below.
+                reply = ai_understanding.get("reply", "").strip()
             else:
                 reply = ai_understanding.get("reply", "").strip()
             if reply:
@@ -7640,8 +7818,11 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                 return
             last_bill_reply[bill_key] = now_ts
         if is_inhouse:
-            # Refresh live kitchen data before financial response.
-            fetch_sheet_data_sync()
+            # Refresh only Rooms + Kitchen for a live financial answer.
+            if not refresh_live_sheet_context(rooms=True, kitchen=True, force=True):
+                send_reception_fallback(sender_phone, guest_info, "Ji, live bill data abhi verify nahi ho pa raha. Main reception se confirm karwa deta hoon. 🙏", user_text, "bill_live_refresh_failed")
+                return
+            guest_info = get_guest_stay_status(sender_phone) or guest_info
             fin = get_guest_financials(
                 guest_info["room"],
                 sender_phone
@@ -7918,16 +8099,17 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
 
 
 def process_and_reply(message, sender_phone, msg_type):
-    """Persistent wrapper: restore short-term state before the turn and save it after.
+    """Restore state once, process immediately, and persist asynchronously.
 
-    The actual receptionist logic remains in _process_and_reply_impl; this wrapper
-    prevents Render restarts from silently destroying a pending guest conversation.
+    Google Sheets is not used as a per-message conversation database. In-memory
+    conversation state is authoritative during the live process; the Sheet is a
+    durable backup written by a background worker every few minutes.
     """
     _restore_bot_state(sender_phone)
     try:
         return _process_and_reply_impl(message, sender_phone, msg_type)
     finally:
-        _persist_bot_state(sender_phone)
+        mark_bot_state_dirty(sender_phone)
 
 
 def _safe_mark_message_as_read(message_id):
@@ -8003,7 +8185,6 @@ def process_full_bill_paid_notifications(rows):
         full_bill_paid_initialized = True
 
     for phone, room, name in pending_notifications:
-        fetch_sheet_data_sync()
         info = get_guest_financials(room, phone)
         if info.get("balance", 1) != 0:
             continue
@@ -8721,8 +8902,7 @@ def maybe_send_owner_report(current):
         if key in sent:
             return
         sent.add(key)
-    # Live refresh before calculating the owner's figures.
-    fetch_sheet_data_sync()
+    # Use the monitor's current cache; avoid an extra full-sheet read at the slot boundary.
     if not update_owner_daily_revenue(send_message=True):
         with state_lock:
             shared_store.get("owner_report_sent", set()).discard(key)
@@ -9097,6 +9277,12 @@ def startup():
         target=sync_sheets_in_background,
         daemon=True,
         name="sheet-sync"
+    ).start()
+
+    threading.Thread(
+        target=persist_dirty_bot_states,
+        daemon=True,
+        name="bot-state-persist"
     ).start()
 
     threading.Thread(

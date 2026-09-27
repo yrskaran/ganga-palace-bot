@@ -9,6 +9,7 @@ import threading
 import hmac
 import hashlib
 import traceback
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -118,11 +119,17 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "hotel-reception-v44-ai-brain"
+APP_VERSION = "hotel-reception-v46-single-sender-lifecycle"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
 LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
+# Proactive messages must have one sender even if Render is accidentally scaled
+# to multiple instances. Each instance heartbeats into Google Sheets and the
+# deterministic leader alone is allowed to send lifecycle/owner/complaint follow-ups.
+LIFECYCLE_LEADER_LEASE_SECONDS = max(45, int(os.getenv("LIFECYCLE_LEADER_LEASE_SECONDS", "90")))
+LIFECYCLE_INSTANCE_ID = os.getenv("LIFECYCLE_INSTANCE_ID", "").strip() or uuid.uuid4().hex[:12]
+LIFECYCLE_LEADER_SHEET = os.getenv("LIFECYCLE_LEADER_SHEET", "Bot_Leader").strip() or "Bot_Leader"
 GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
 
 # Central provider order. OpenAI remains first when configured; OpenRouter is
@@ -1173,50 +1180,143 @@ def fetch_sheet_data_sync():
 
 
 # ============================================================
+# DISTRIBUTED PROACTIVE-SENDER LEADER
+# ============================================================
+
+def _lifecycle_is_sender_leader():
+    """Elect exactly one active Render instance as proactive sender.
+
+    This protects lifecycle/complaint/owner notifications when two Render
+    instances or an old+new process are accidentally live at the same time.
+    The leader is the lexicographically smallest fresh instance id. A dead
+    instance expires after LIFECYCLE_LEADER_LEASE_SECONDS.
+    """
+    client = get_gspread_client()
+    if not client:
+        # Guest replies must keep working without Sheets; proactive messages are
+        # safer to suppress than to risk duplicate sends when coordination fails.
+        return False
+    try:
+        sh = client.open_by_key(SHEET_ID)
+        try:
+            sheet = sh.worksheet(LIFECYCLE_LEADER_SHEET)
+        except Exception:
+            sheet = sh.add_worksheet(title=LIFECYCLE_LEADER_SHEET, rows=50, cols=2)
+            sheet.update("A1:B1", [["Instance ID", "Last Seen Epoch"]])
+        values = sheet.get_all_values()
+        if not values or [str(x).strip() for x in values[0][:2]] != ["Instance ID", "Last Seen Epoch"]:
+            sheet.update("A1:B1", [["Instance ID", "Last Seen Epoch"]])
+            values = sheet.get_all_values()
+
+        now_epoch = time.time()
+        row_num = None
+        for rn, row in enumerate(values[1:], start=2):
+            if str(row[0] if row else "").strip() == LIFECYCLE_INSTANCE_ID:
+                row_num = rn
+                break
+        if row_num is None:
+            sheet.append_row([LIFECYCLE_INSTANCE_ID, f"{now_epoch:.3f}"])
+        else:
+            sheet.update(f"A{row_num}:B{row_num}", [[LIFECYCLE_INSTANCE_ID, f"{now_epoch:.3f}"]])
+
+        # Re-read after our heartbeat so concurrent instances converge on the
+        # same deterministic leader instead of both sending.
+        fresh = sheet.get_all_values()
+        active = []
+        cutoff = now_epoch - LIFECYCLE_LEADER_LEASE_SECONDS
+        for row in fresh[1:]:
+            try:
+                instance = str(row[0] if row else "").strip()
+                seen = float(row[1] if len(row) > 1 else 0)
+                if instance and seen >= cutoff:
+                    active.append(instance)
+            except Exception:
+                continue
+        leader = min(active) if active else LIFECYCLE_INSTANCE_ID
+        is_leader = leader == LIFECYCLE_INSTANCE_ID
+        if not is_leader:
+            print(f"PROACTIVE SENDER STANDBY: leader={leader} self={LIFECYCLE_INSTANCE_ID}", flush=True)
+        else:
+            print(f"PROACTIVE SENDER LEADER: {LIFECYCLE_INSTANCE_ID}", flush=True)
+        return is_leader
+    except Exception as exc:
+        print(f"PROACTIVE LEADER CHECK FAILED: {exc}", flush=True)
+        return False
+
+
+# ============================================================
 # AI-GENERATED PROACTIVE GUEST MESSAGES
 # ============================================================
 
 def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
-    """Generate a short proactive guest message from the AI + hotel_data.txt.
+    """Return a deterministic, hotel-safe proactive message.
 
-    No Notification_Messages tab is required. The event itself is deterministic;
-    the wording and guest language are generated from the current hotel brain.
+    Proactive lifecycle messages are operational notifications, not open-ended
+    AI conversation. Using fixed/configured wording prevents odd AI greetings,
+    invented reminders, or accidental changes in tone at scheduled times.
     """
-    lang = str(language or "english").strip()
-    prompts = {
-        "WELCOME": "Welcome the guest warmly after check-in and offer help.",
-        "30_MINUTE": "Check whether the guest is comfortably settled and offer assistance.",
-        "BREAKFAST": "Give a short breakfast-time reminder and invite the guest to ask for the menu.",
-        "LUNCH": "Give a short lunch-time reminder and invite the guest to ask for the menu.",
-        "GANGA_AARTI": "Give a short Ganga Aarti reminder and advise the guest to confirm current timing with reception before leaving.",
-        "DINNER": "Give a short dinner-time reminder and invite the guest to ask for the menu.",
-        "CHECKOUT": "Thank the guest after checkout and wish them a safe journey."
-    }
-    instruction = prompts.get(event, "Give a brief helpful hotel guest reminder.")
-    prompt = (
-        "Write ONE concise WhatsApp message for a hotel guest.\n"
-        f"Current hotel local time (IST): {now_ist().strftime('%d-%b-%Y %I:%M %p')}.\n"
-        "Use a morning greeting only when the current local time is morning; do not call a nighttime message 'Good morning'.\n"
-        f"Event: {event}.\nInstruction: {instruction}\n"
-        f"Guest name: {name}. Room: {room}.\n"
-        f"Reply language: {lang}.\n"
-        "Use only facts available in HOTEL DATA. Do not invent prices, timings, facilities, or promises. "
-        "Do not mention AI, prompts, or internal systems. Return only the message, no labels."
-    )
-    reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
-    if reply:
-        return re.sub(r"\s+", " ", str(reply).strip())
-    # Safe generic fallback if AI service is temporarily unavailable.
-    fallback = {
-        "WELCOME": f"🌸 Welcome {name} ji! Hotel mein aapka swagat hai. Kisi bhi help ke liye yahin message karein. 🙏",
-        "30_MINUTE": f"🌸 {name} ji, umeed hai aap comfortably settle ho gaye honge. Kisi bhi assistance ke liye yahin message karein. 🙏",
-        "BREAKFAST": f"☀️ Good Morning {name} ji! Breakfast time hai. Menu dekhne ke liye message karein. 🍽️",
-        "LUNCH": f"🍛 {name} ji, lunch time hai. Menu ke liye message karein.",
-        "GANGA_AARTI": f"🙏 {name} ji, Ganga Aarti ka samay aa raha hai. Jaane se pehle reception se current timing confirm kar lein. 🌸",
-        "DINNER": f"🌙 {name} ji, dinner time hai. Menu ke liye message karein. 🍽️",
-        "CHECKOUT": f"🙏 Thank you {name} ji! Aapki journey safe aur sukhad rahe. 🌸"
-    }
-    return fallback.get(event, f"Ji {name} ji, agar kisi assistance ki zarurat ho to yahin message karein.")
+    lang = str(language or "english").strip().lower()
+    hotel = get_hotel_name()
+    name = str(name or "Guest").strip() or "Guest"
+    room = str(room or "").strip()
+
+    # The evening reminder remains hotel-configurable through hotel_data.txt.
+    if event == "GANGA_AARTI":
+        configured = get_hotel_value("Special Evening Reminder", "").strip()
+        if configured:
+            try:
+                return configured.format(name=name, room=room, hotel=hotel)
+            except Exception:
+                return configured
+        if lang == "english":
+            return f"🙏 {name} ji, the evening Ganga Aarti is coming up. Please confirm the current timing with reception before leaving. 🌸"
+        if lang == "hindi":
+            return f"🙏 {name} जी, शाम की गंगा आरती का समय होने वाला है। जाने से पहले reception से current timing confirm कर लें। 🌸"
+        return f"🙏 {name} ji, shaam ki Ganga Aarti ka samay hone wala hai. Jaane se pehle reception se current timing confirm kar lein. 🌸"
+
+    if event == "WELCOME":
+        if lang == "english":
+            return f"🌸 Welcome to {hotel}, {name} ji! 🏨 Room {room} mein aapka swagat hai. Kisi bhi assistance ke liye yahin message karein. 🙏"
+        if lang == "hindi":
+            return f"🌸 {name} जी, {hotel} में आपका स्वागत है! 🏨 Room {room} में किसी भी सहायता के लिए यहीं message करें। 🙏"
+        return f"🌸 Welcome {name} ji! 🏨 Room {room} mein aapka swagat hai. Kisi bhi help ke liye yahin message karein. 🙏"
+
+    if event == "30_MINUTE":
+        if lang == "english":
+            return f"🌸 {name} ji, we hope you are comfortably settled in Room {room}. For towel, soap, water, cleaning or any assistance, simply message us here. 🙏"
+        if lang == "hindi":
+            return f"🌸 {name} जी, उम्मीद है आप Room {room} में आराम से settle हो गए होंगे। Towel, soap, water, cleaning या किसी भी सहायता के लिए यहीं message करें। 🙏"
+        return f"🌸 {name} ji, umeed hai aap Room {room} mein comfortably settle ho gaye honge. Towel, soap, water, cleaning ya kisi bhi help ke liye yahin message karein. 🙏"
+
+    if event == "BREAKFAST":
+        if lang == "english":
+            return f"☀️ Good Morning {name} ji! Breakfast time hai. Options dekhne ke liye *menu* type karein; order room mein serve kar denge. 🍽️"
+        if lang == "hindi":
+            return f"☀️ सुप्रभात {name} जी! Breakfast का समय है। Options देखने के लिए *menu* type करें; order room में serve कर देंगे। 🍽️"
+        return f"☀️ Good Morning {name} ji! Breakfast time hai. Options ke liye *menu* type karein; order room mein serve kar denge. 🍽️"
+
+    if event == "LUNCH":
+        if lang == "english":
+            return f"🍛 Good Afternoon {name} ji! Lunch ke liye *menu* type karein. Available options room mein serve kar denge. 🙏"
+        if lang == "hindi":
+            return f"🍛 नमस्ते {name} जी! Lunch के लिए *menu* type करें। Available options room में serve कर देंगे। 🙏"
+        return f"🍛 Good Afternoon {name} ji! Lunch ke liye *menu* type karein. Available options room mein serve kar denge. 🙏"
+
+    if event == "DINNER":
+        if lang == "english":
+            return f"🌙 Good Evening {name} ji! Dinner ke liye *menu* type karein. Available options room mein serve kar denge. 🍽️"
+        if lang == "hindi":
+            return f"🌙 शुभ संध्या {name} जी! Dinner के लिए *menu* type करें। Available options room में serve कर देंगे। 🍽️"
+        return f"🌙 Good Evening {name} ji! Dinner ke liye *menu* type karein. Available options room mein serve kar denge. 🍽️"
+
+    if event == "CHECKOUT":
+        if lang == "english":
+            return f"🙏 Thank you, {name} ji! We hope your stay at {hotel} was comfortable. Wishing you a safe journey. 🌸"
+        if lang == "hindi":
+            return f"🙏 धन्यवाद, {name} जी! हमें उम्मीद है {hotel} में आपका stay comfortable रहा होगा। आपकी यात्रा मंगलमय हो। 🌸"
+        return f"🙏 Dhanyawad, {name} ji! Umeed hai {hotel} mein aapka stay comfortable raha hoga. Aapki yatra mangalmay ho. 🌸"
+
+    return f"Ji {name} ji, agar kisi assistance ki zarurat ho to yahin message karein."
 
 
 def _staff_header_map():
@@ -5047,13 +5147,15 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
 
     # 4) Explicit room photo request. Ambiguous/contextual photo wording still
     # goes to the AI route. Do not steal mixed photo+price questions.
+    configured_photo_target = resolve_requested_photo(user_text)
+    visual_cues = ("dikhao", "dikha do", "show", "photo", "photos", "pic", "pics", "image", "tasveer", "picture")
     photo_intent = any(x in t for x in [
         "room photo", "room photos", "room dikhao", "room pic", "room ki photo",
         "photos", "photo", "hotel front", "hotel photo", "exterior", "outside"
-    ])
+    ]) or (bool(configured_photo_target) and any(x in t for x in visual_cues))
     mixed_photo_price = any(x in t for x in ["price", "rate", "tariff", "rent", "cost", "kitne ka", "kitna ka"])
     if photo_intent and not mixed_photo_price:
-        requested = resolve_requested_photo(user_text)
+        requested = configured_photo_target
         if requested:
             photo_url = get_hotel_photo(requested)
             with state_lock:
@@ -5076,10 +5178,34 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 notify_reception_request(sender_phone, get_guest_stay_status(sender_phone), user_text, "photo_fallback")
             return True
 
+        # Generic "room photo" means the guest wants to see the available room
+        # photos. Do not answer with a generic stay-status message or force a
+        # second turn just to choose a category. Send the configured set directly.
+        categories = get_room_photo_categories()
+        sent_count = 0
+        exterior = get_hotel_photo("exterior")
+        if exterior and send_whatsapp_image(sender_phone, exterior, f"🏨 {get_hotel_name()} — Hotel Front"):
+            sent_count += 1
+        for name, _url in categories:
+            url = get_hotel_photo(name)
+            if url and send_whatsapp_image(sender_phone, url, f"🛏️ {name.title()}"):
+                sent_count += 1
+        if sent_count:
+            reply = "Ji 😊 available room photos share kar di hain. Kisi specific room ka rate ya detail chahiye ho to bata dijiye."
+            send_whatsapp_message(sender_phone, reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", reply)
+        else:
+            send_reception_fallback(sender_phone, get_guest_stay_status(sender_phone), "Ji, room photos main reception se share karwa deta hoon. 🙏", user_text, "photo_fallback")
+        return True
+
     # 5) Static room categories/rates and general availability wording. Live
     # availability is still never fabricated.
     room_rate = ("room" in t and any(x in t for x in ["price", "rate", "tariff", "rent", "cost", "kitne ka", "kitna ka"])) or t in {"tariff", "room rates", "room rate", "room price", "room rent"}
-    if room_rate:
+    # Mixed photo + rate requests belong to the semantic AI route so both
+    # parts of the request are understood together; do not let the static
+    # room-rate handler silently drop the photo request.
+    if room_rate and not (photo_intent and mixed_photo_price):
         categories = list(get_room_categories().values())
         if categories:
             lines = [f"🏨 *{get_hotel_name()} — Room Tariff*", "━━━━━━━━━━━━━━━━"]
@@ -5213,7 +5339,8 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     thanks = {
         "thanks", "thank you", "thankyou", "thx", "ty", "thanks ji",
         "thank you ji", "thankyou ji", "dhanyavad", "dhanyavaad",
-        "shukriya", "bahut shukriya", "bahut dhanyavad",
+        "shukriya", "shukriya ji", "bahut shukriya", "bahut shukriya ji",
+        "dhanyavad ji", "dhanyavaad ji",
     }
     if compact in thanks:
         if lang == "english":
@@ -5240,6 +5367,42 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
         print("LOCAL CONVERSATION: goodbye", flush=True)
+        return True
+
+    capability_queries = {
+        "help", "madad", "madad karo", "meri help karo", "koi bhi help",
+        "koi bhi madad", "can you help", "how can you help", "what can you do",
+        "kya kar sakte ho", "kya kya kar sakte ho", "aap kya kya kar sakte ho",
+        "kya help kar sakte ho", "kya kya help kar sakte ho",
+    }
+    if compact in capability_queries or compact.startswith("koi bhi help") or compact.startswith("koi bhi madad"):
+        if lang == "english":
+            msg = (
+                "🤝 I can help with room photos/rates, menu & food orders, Wi-Fi, hotel timings, "
+                "Haridwar guide, housekeeping/room service, complaints and bill details."
+            )
+        else:
+            msg = (
+                "🤝 Main room photos/rates, menu & food orders, Wi-Fi, hotel timings, Haridwar guide, "
+                "housekeeping/room service, complaints aur bill details mein help kar sakta hoon."
+            )
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: capability_help", flush=True)
+        return True
+
+    repeated_reply_phrases = {
+        "ek hi reply", "ek hi reply kitni baar", "same reply", "same response",
+        "baar baar same reply", "bar bar same reply", "same reply baar baar",
+        "reply kitni baar", "itni baar same", "1 hi reply", "1 hi reply kitni baar",
+    }
+    if compact in repeated_reply_phrases or ("same reply" in compact and "baar" in compact):
+        msg = "Bilkul ji, samajh gaya. Har message ka relevant jawab dunga; same welcome/reply repeat nahi karunga. 🙏"
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: repeated_reply_complaint", flush=True)
         return True
 
     acknowledgements = {"ok", "okay", "ok ji", "theek hai", "thik hai", "alright", "sure", "great", "nice", "perfect"}
@@ -5788,9 +5951,16 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
         guest_info and guest_info.get("status") == "CHECKED_OUT"
     )
 
-    # AI BRAIN FIRST: every normal conversational turn is interpreted with context
-    # before deterministic keyword/state handlers are allowed to act. This prevents
-    # words like "complaint" or "haan" from hijacking an unrelated conversation.
+    # HIGH-CONFIDENCE LOCAL ROUTES FIRST.
+    # Explicit hotel requests must not be hijacked by a semantic model returning
+    # a generic conversational reply. Ambiguous/indirect requests still fall
+    # through to the AI semantic brain below.
+    if _local_conversation_fallback(sender_phone, user_text, guest_info):
+        return
+    if _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
+        return
+
+    # AI BRAIN handles ambiguous/contextual turns after deterministic routes.
     ai_understanding = None
     with state_lock:
         _checkin_now = checkin_sessions.get(sender_phone)
@@ -5817,12 +5987,6 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
             remember_conversation(sender_phone, "user", user_text)
             remember_conversation(sender_phone, "assistant", handoff)
             return
-
-    if not _skip_semantic_ai and ai_understanding is None and _local_conversation_fallback(sender_phone, user_text, guest_info):
-        return
-
-    if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
-        return
 
     # ========================================================
     # ACTIVE COMPLAINT FEEDBACK
@@ -8048,9 +8212,12 @@ def monitor_guest_status_lifecycle():
             if time.time() - last_lifecycle_reconcile >= LIFECYCLE_RECONCILE_MIN_INTERVAL:
                 if reconcile_lifecycle_from_room_sheet():
                     last_lifecycle_reconcile = time.time()
-            process_complaint_followups()
+            proactive_sender = _lifecycle_is_sender_leader()
+            if proactive_sender:
+                process_complaint_followups()
             current = now_ist()
-            maybe_send_owner_report(current)
+            if proactive_sender:
+                maybe_send_owner_report(current)
             today = current.strftime("%Y-%m-%d")
             hour = current.hour
 
@@ -8068,8 +8235,10 @@ def monitor_guest_status_lifecycle():
                 room_rows = list(shared_store.get("rooms", []))
                 lifecycle_rows = list(shared_store.get("lifecycle_rows", []))
 
-            # Keep full-bill payment notification behaviour intact.
-            process_full_bill_paid_notifications(room_rows)
+            # Keep full-bill payment notification behaviour intact, but only the
+            # elected proactive sender may emit outbound notifications.
+            if proactive_sender:
+                process_full_bill_paid_notifications(room_rows)
             rows = lifecycle_rows
             cols = _room_lifecycle_columns()
 
@@ -8119,6 +8288,10 @@ def monitor_guest_status_lifecycle():
             # IMPORTANT: process exactly one ledger row per logical stay. This is
             # the final spam barrier even if legacy duplicate rows remain in Sheets.
             rows = _select_one_lifecycle_row_per_stay(rows, cols, room_time_map)
+
+            if not proactive_sender:
+                time.sleep(30)
+                continue
 
             for row_index, row in rows:
                 if len(row) <= max(cols.values()):
@@ -8225,6 +8398,7 @@ def health():
     return jsonify({
         "status": "active",
         "version": APP_VERSION,
+        "router": "local-high-confidence-before-ai",
         "hotel": get_hotel_name(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,

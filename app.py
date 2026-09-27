@@ -684,6 +684,45 @@ def _parse_rupee(value):
     return int(m.group(1).replace(",", "")) if m else None
 
 
+def _pending_selection_price_match(user_text, choices):
+    """Resolve a numeric/price reference against the exact pending menu choices.
+
+    This is transactional context resolution, not a phrase-by-phrase intent router.
+    It is deliberately scoped to an already-active selection question, so a number
+    elsewhere in a normal conversation cannot become a food order by itself.
+    """
+    text = str(user_text or "").strip().lower()
+    if not text or not isinstance(choices, list) or not choices:
+        return None
+
+    # Require a price/selection-shaped reference. This prevents phrases such as
+    # "20 minute walk" from being mistaken for a Rs.20 menu selection.
+    price_reference = bool(re.search(
+        r"(?:₹|rs\.?|rupees?|rup(?:ay|aye)|wali|waali|wala|waala|waale|waale|vali|vaali|vale|pehle|dusri|doosri|last|sasti|cheapest)\b",
+        text,
+        re.I,
+    ))
+    if not price_reference:
+        return None
+
+    numbers = [int(x) for x in re.findall(r"(?<!\d)(\d{1,5})(?!\d)", text)]
+    if not numbers:
+        return None
+
+    menu = get_hotel_menu()
+    matches = []
+    for choice in choices:
+        key = normalize_text(choice)
+        entry = menu.get(key)
+        if not entry:
+            continue
+        _std_name, price = entry
+        if any(n == int(price) for n in numbers):
+            matches.append(choice)
+
+    return matches[0] if len(matches) == 1 else None
+
+
 def _parse_hotel_config(raw):
     """
     Convert hotel_data.txt into a lightweight structured config.
@@ -2348,7 +2387,16 @@ the guest means in this turn and answer naturally.
    as though the receptionist is speaking it. Convert the meaning into natural receptionist
    language. For example, if the guest wants one unspecified chai, say naturally that one
    chai can be arranged and ask which configured chai they want; do not write "1 chai le le!".
-10. When offering configured food choices, use the actual item names and prices from hotel_data
+   Maintain a consistently respectful hotel-reception tone: use "ji", "aap" and polite verbs
+   naturally. Never mirror street-slang such as "le le", "tu", "chal" or similarly abrupt phrasing,
+   even when the guest uses it. The tone should feel like a polished, attentive hotel receptionist,
+   not a street-stall seller or call-centre script.
+10. If the immediately preceding assistant turn offered priced choices and the guest replies with
+   a price/reference such as "20 wali", "₹20", "Rs 20", "20 rupees", "sasti wali" or "pehle wali",
+   resolve it against those exact pending choices before considering unrelated meanings for the
+   number. Do not reinterpret a selection price as a distance, duration, currency-note question,
+   sightseeing fact or other topic when the active exchange is a menu choice.
+11. When offering configured food choices, use the actual item names and prices from hotel_data
    when useful, then ask one clear choice question. Avoid filler such as "Koi aur chahiye kya?"
    unless the guest has actually finished the current request and an additional suggestion is
    genuinely useful.
@@ -5231,7 +5279,20 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     if pending_photo:
         state_context.append("A room-photo selection conversation is active.")
     if pending_selection:
-        state_context.append("A food-selection conversation is active.")
+        _pending_generic = str(pending_selection.get("generic", "")).strip()
+        _pending_choices = get_hotel_config().get("generic_menu", {}).get(_pending_generic, []) if _pending_generic else []
+        _pending_choice_details = []
+        for _choice in _pending_choices:
+            try:
+                _std, _price = get_hotel_menu().get(normalize_text(_choice), (_choice, None))
+                _pending_choice_details.append(f"{_std} = Rs.{_price}" if _price is not None else str(_choice))
+            except Exception:
+                _pending_choice_details.append(str(_choice))
+        state_context.append(
+            "A food-selection conversation is active. Exact pending choices: "
+            + (", ".join(_pending_choice_details) if _pending_choice_details else "configured choices unavailable")
+            + ". A short price/reference reply must be resolved against these choices first."
+        )
     if _find_active_complaint(sender_phone):
         state_context.append("A complaint feedback conversation is active.")
     state_text = "\n".join(state_context) or "No pending conversational state."
@@ -6596,7 +6657,9 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
     # rate, sightseeing help, etc.
     if _ai_is_authoritative(ai_understanding):
         _current_action = str(ai_understanding.get("action", "")).strip().upper()
-        if _current_action in {"ANSWER", "LOCAL_GUIDE", "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY"}:
+        with state_lock:
+            _has_pending_selection = bool((order_sessions.get(sender_phone) or {}).get("selection_pending"))
+        if _current_action in {"ANSWER", "LOCAL_GUIDE", "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY"} and not _has_pending_selection:
             with state_lock:
                 order_sessions.pop(sender_phone, None)
                 duplicate_order_sessions.pop(sender_phone, None)
@@ -6902,6 +6965,12 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
             normalized = normalize_text(user_text)
 
             selected = None
+
+            # Resolve an active priced-choice reference (e.g. "20 wali") against
+            # the exact choices the bot just offered. This is generic transactional
+            # state resolution, not a phrase-specific intent rule.
+            selected = _pending_selection_price_match(user_text, choices)
+
             ai_selected = str((ai_understanding or {}).get("items", [{}])[0].get("name", "") if (ai_understanding or {}).get("items") else "").strip()
             if ai_selected:
                 ai_norm = normalize_text(ai_selected)
@@ -6961,7 +7030,8 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                             "created": time.time(),
                         }
                     reply = (
-                        f"Ji {guest_info['name']} ji, {order_text} Room {guest_info['room']} ke liye note kiya hai. Confirm kar dein?"
+                        f"Ji {guest_info['name']} ji, {order_text} Room {guest_info['room']} ke liye note kar liya hai. "
+                        f"Kya main ise confirm kar doon?"
                     )
                     send_whatsapp_message(sender_phone, reply)
                     remember_conversation(sender_phone, "user", user_text)
@@ -7367,27 +7437,24 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                             "qty": qty,
                             "created": time.time(),
                         }
-                    # Generic natural receptionist phrasing for EVERY configured menu group.
-                    # There is deliberately no item-specific or phrase-specific branch here.
-                    # The semantic AI decides what the guest means; this backend only formats
-                    # the authoritative choices already present in hotel_data/menu data.
+                    # Natural, respectful receptionist phrasing for every configured
+                    # food/drink group. No item-specific phrase branch is used.
                     priced = []
                     for choice in choices_list:
                         try:
                             _std, _price = get_hotel_menu()[normalize_text(choice)]
                             priced.append(f"{_std} (Rs.{_price})")
                         except Exception:
-                            priced.append(str(choice))
-
-                    display_choices = ", ".join(priced)
+                            priced.append(choice)
                     if len(priced) == 2:
-                        display_choices = f"{priced[0]} ya {priced[1]}"
+                        choice_text = f"{priced[0]} ya {priced[1]}"
                     elif len(priced) > 2:
-                        display_choices = ", ".join(priced[:-1]) + f" ya {priced[-1]}"
-
+                        choice_text = ", ".join(priced[:-1]) + f" ya {priced[-1]}"
+                    else:
+                        choice_text = ", ".join(priced)
                     reply = (
-                        f"Bilkul 😊 {generic.title()} arrange kar dete hain. "
-                        f"{display_choices} — kaunsa option bheju?"
+                        f"Bilkul {guest_info['name']} ji 😊 {generic.title()} arrange kar dete hain. "
+                        f"{choice_text} — aap kaunsa lena pasand karenge?"
                     )
                 send_whatsapp_message(sender_phone, reply)
                 remember_conversation(sender_phone, "user", user_text)

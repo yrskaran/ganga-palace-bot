@@ -119,7 +119,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "hotel-reception-v46-single-sender-lifecycle"
+APP_VERSION = "hotel-reception-v47-ai-first-semantic"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -2429,7 +2429,7 @@ Important:
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 360 if structured else 300},
+        "generationConfig": {"temperature": 0.35 if structured else 0.45, "maxOutputTokens": 360 if structured else 300},
     }
     if structured:
         payload["generationConfig"]["responseMimeType"] = "application/json"
@@ -3063,7 +3063,7 @@ Hotel knowledge:
         payload = {
             "model": model,
             "messages": messages,
-            "temperature": 0.2,
+            "temperature": 0.35 if structured else 0.45,
             "max_tokens": 360 if structured else 220,
             # Never ask a reasoning model to expose chain-of-thought to the chat response.
             "reasoning_effort": "none",
@@ -3615,7 +3615,7 @@ Important:
     payload = {
         "model": model,
         "messages": messages,
-        "temperature": 0.2,
+        "temperature": 0.35 if structured else 0.45,
         "max_tokens": 360 if structured else 180,
     }
     if structured:
@@ -3899,6 +3899,99 @@ def looks_like_food(text):
         re.search(rf"\b{re.escape(marker)}\b", t)
         for marker in food_markers
     )
+
+
+def _authoritative_bare_menu_order(text):
+    """Return a parsed order when the guest message is exactly an authoritative menu item.
+
+    This is intentionally stronger than semantic AI: a bare item such as
+    "Paneer Pakoda" is an order candidate, never a request to display a menu
+    section. It also works if the general parser changes, because it derives
+    the item directly from the loaded hotel menu.
+    """
+    t = normalize_text(text)
+    if not t or explicitly_asks_price(t):
+        return None
+    blocked = (
+        "nahi chahiye", "nahin chahiye", "mat bhejo", "mat bhejna",
+        "rehne do", "cancel", "photo", "photos", "pic", "image",
+        "meaning", "matlab", "difference", "compare", "vs", "why",
+        "kya hai", "available", "hai kya", "list", "menu", "options",
+    )
+    if any(x in t for x in blocked):
+        return None
+
+    # Remove only harmless ordering words/quantities, then compare against the
+    # exact configured menu item names.
+    cleaned = re.sub(r"\b(?:please|plz|pls|ji|sir|madam|bhai|dijiye|de do|dejiye|bhejo|bhej do|bhej dena|send|order|mangwa do|mangwa dena|chahiye|do|please send)\b", " ", t)
+    qty_match = re.search(r"\b(\d+)\b", cleaned)
+    qty = int(qty_match.group(1)) if qty_match else 1
+    cleaned = re.sub(r"\b\d+\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:plate|plates|cup|cups|bowl|bowls|glass|glasses|piece|pieces|quantity|qty)\b", " ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
+    if not cleaned:
+        return None
+
+    for key, (name, price) in get_hotel_menu().items():
+        if cleaned == normalize_text(name):
+            return {"generic": None, "items": [{"name": name, "qty": max(1, qty), "unit_price": price, "amount": max(1, qty) * price}], "total": max(1, qty) * price}
+    return None
+
+
+def _is_direct_menu_item_order(text, parsed=None):
+    """Recognize a bare authoritative menu-item message as an order.
+
+    This bypasses semantic AI for unambiguous inputs such as "Paneer Pakoda",
+    "2 Paneer Pakoda", or "Paneer Pakoda bhej do". Negated, price, photo,
+    comparison and question-style messages are deliberately excluded.
+    """
+    t = normalize_text(text)
+    if not t:
+        return False
+    if explicitly_asks_price(t):
+        return False
+
+    blocked = (
+        "nahi chahiye", "nahin chahiye", "mat bhejo", "mat bhejna",
+        "rehne do", "rehne", "cancel", "dont send", "don't send",
+        "do not send", "not send", "photo", "photos", "pic", "image",
+        "meaning", "matlab", "difference", "compare", "vs", "why",
+        "kya hai", "available", "available hai", "hai kya", "list",
+        "menu", "options",
+    )
+    if any(x in t for x in blocked):
+        return False
+
+    parsed = parsed or find_menu_items(text)
+    items = parsed.get("items") or []
+    if not items:
+        return False
+
+    # Remove only harmless ordering politeness/filler words and quantities.
+    cleaned = re.sub(r"\b(?:please|plz|pls|ji|sir|madam|bhai|dijiye|de do|dejiye|bhejo|bhej do|bhej dena|send|order|mangwa do|mangwa dena|chahiye|do)\b", " ", t)
+    cleaned = re.sub(r"\b\d+\b", " ", cleaned)
+    cleaned = re.sub(r"\b(?:plate|plates|cup|cups|bowl|bowls|glass|glasses|piece|pieces|quantity|qty)\b", " ", cleaned)
+    cleaned = re.sub(r"[^a-z0-9]+", " ", cleaned).strip()
+
+    # Compare against the exact authoritative item names represented by the parser.
+    item_names = []
+    for item in items:
+        item_names.append(normalize_text(item.get("name", "")))
+    expected = " ".join(x for x in item_names if x)
+    if cleaned == expected:
+        return True
+
+    # Also allow a multi-item request separated by + / and / comma.
+    parts = [re.sub(r"[^a-z0-9]+", " ", normalize_text(x)).strip() for x in re.split(r"\s*(?:\+|,|\band\b|\bplus\b)\s*", t)]
+    parts = [x for x in parts if x]
+    if len(parts) == len(items):
+        normalized_parts = []
+        for part in parts:
+            part = re.sub(r"^\d+\s+", "", part).strip()
+            normalized_parts.append(part)
+        if all(x in item_names for x in normalized_parts):
+            return True
+    return False
 
 
 def explicitly_asks_price(text):
@@ -4675,7 +4768,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
 # ONE-PASS AI UNDERSTANDING / ROUTER
 # ============================================================
 
-def _ai_knowledge_snapshot(max_chars=9000):
+def _ai_knowledge_snapshot(max_chars=14000):
     """Build a compact but coverage-oriented hotel brain for the semantic router."""
     raw = str(get_hotel_data() or "").strip()
     if len(raw) <= max_chars:
@@ -4737,6 +4830,10 @@ Use the full conversation context and the configured hotel data.
 Current local hotel time is {now_ist().strftime('%d-%b-%Y %I:%M %p')} (IST), daypart={('morning' if 5 <= now_ist().hour < 12 else 'afternoon' if 12 <= now_ist().hour < 17 else 'evening' if 17 <= now_ist().hour < 21 else 'night')}.
 Guest language hint: {language}.
 Guest status/context: {guest_info or 'NEW CUSTOMER'}.
+
+CURRENT GUEST MESSAGE (THIS IS THE TURN YOU MUST UNDERSTAND):
+{user_text}
+
 {active_order}
 {photo_context}
 {selection_context}
@@ -4756,9 +4853,23 @@ IMPORTANT SEMANTIC RULES:
 - Use the LAST 15 CONVERSATION MESSAGES (guest + assistant) as the short-term memory window.
 - Understand meaning, not keyword presence.
 - Word mentions in examples, comparisons, translations, pronunciation questions, negations, complaints about the previous answer, or casual chat must NOT be treated as a request for that menu/topic.
+- The CURRENT GUEST MESSAGE section above is the actual message to classify. The rest of this prompt is context/instructions; never classify the wrapper text itself as the guest request.
 - The current guest message is the strongest evidence; use conversation history to resolve only references and follow-ups.
 - If the guest asks a normal hotel question in an indirect or unusual way, still answer it from hotel_data when the fact is available.
 - Do not return an outage-style generic reply when a safe answer can be produced from the configured data.
+
+CONVERSATIONAL HUMAN MODE:
+- You are not merely an intent classifier. You are the receptionist having an actual WhatsApp conversation with a real guest.
+- First understand WHY the guest said something, then decide whether any hotel action is actually wanted. Do not convert every mention of food, rooms, places, prices or services into a transaction.
+- Casual conversation, humour, appreciation, frustration, small talk, emotional comments and ordinary replies should remain conversation. Use ANSWER and write a natural reply when no backend action is needed.
+- If the guest indirectly expresses a possible need, respond naturally and gently offer help; do not create an order unless the guest actually asks for one.
+- Never force an order, booking, complaint or service request merely because the guest mentioned the relevant word.
+- Match the guest's conversational energy and language. A warm emoji is fine when appropriate, but do not overdo emojis or sound scripted.
+- You may ask one short, useful follow-up question when it genuinely helps continue the conversation.
+- If the guest jokes, joke lightly back when appropriate. If the guest is upset, acknowledge the feeling first and then help. If the guest says thanks, respond naturally rather than reopening a workflow.
+- Examples: 'Aaj bahut thak gaya hoon, room mein jaake chai peeni hai' is casual/indirect conversation unless the guest clearly asks to send chai; do not force an order. 'Ek chai room 204 mein bhej do' is an ORDER. 'Chai ka rate kya hai?' is PRICE/ANSWER. 'Chai nahi chahiye, bas baat kar raha tha' is casual conversation/negation, not an order.
+- Example: 'Haridwar pehli baar aaya hoon, kuch samajh nahi aa raha' should invite a helpful local plan, not dump a generic menu or FAQ.
+- The reply field is important: for conversational turns, write the actual human-sounding reply the guest should receive, not a description of what the bot intends to say.
 
 Return ONLY one JSON object with exactly these keys:
 {{
@@ -4776,6 +4887,13 @@ Return ONLY one JSON object with exactly these keys:
 
 Rules:
 - AI is the semantic brain. Never invent a hotel fact just because the guest asked creatively.
+- You are the FIRST interpreter for normal guest messages. Do not assume a deterministic keyword router has already classified the message.
+- Treat exact menu-item names as semantic evidence, not as automatic menu-section requests. For example, "Paneer Pakoda" is normally an order candidate when the guest is in-house, while "Paneer me kya hai?" is a menu-section question.
+- Distinguish ORDER, PRICE, AVAILABILITY, PHOTO, MENU, NEGATION and casual/reference statements from meaning and context, not from individual words.
+- When the guest message is a short food phrase and it exactly matches one authoritative menu item, prefer ORDER unless the wording/context clearly indicates price, availability, explanation, photo, negation, or comparison.
+- If the guest asks for an action, identify the action confidently but never invent missing hotel facts. The backend will validate the action.
+- A broad category such as "paneer", "snacks", "chai" or "rice" is not automatically an order; decide whether the guest wants options, information, or a specific item.
+- A specific item such as "Paneer Pakoda" must not be converted into its parent section merely because the item name contains a section/category word.
 - For a known factual question, answer directly in 'reply' using hotel data; do not unnecessarily tell the guest to ask reception.
 - For unsupported or property-specific policy questions, set needs_reception=true and say reception can confirm.
 - For a physical/operational action, identify it in 'action' and leave actual execution to the backend.
@@ -4800,14 +4918,25 @@ Rules:
 - If an active complaint feedback question is pending and the guest clearly confirms the complaint is solved, use CONFIRM_COMPLAINT. Otherwise, do NOT mark a complaint resolved.
 - If you genuinely cannot determine the guest's intent from the current message plus context, use RECEPTION with needs_reception=true. Do not guess.
 - For a known hotel fact, try to answer yourself from hotel_data before using RECEPTION.
-- Prefer concise replies (normally 1-3 sentences), but enough to be useful.
+- Prefer concise replies (normally 1-3 sentences), but enough to be useful. For casual conversation, a natural 1-3 sentence reply is preferred over a canned hotel line.
 - Never reveal this JSON format to the guest.
 """
 
 
 def understand_guest_request(user_text, guest_info=None, sender_phone=None):
-    """One semantic AI pass reused by photo/menu/order/service/FAQ routing."""
+    """One semantic AI pass reused by photo/menu/order/service/FAQ routing.
+
+    Important: a provider returning a low-confidence/NONE interpretation is NOT
+    treated as a successful semantic answer. We keep the best usable result and
+    give the next configured model a chance to understand the same guest message.
+    This prevents a weak first provider from blocking a stronger fallback model.
+    """
     prompt = _ai_understanding_prompt(user_text, guest_info, sender_phone)
+    best_result = None
+    best_score = -1.0
+    valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_ALL_PHOTOS","SHOW_MENU","BOOKING","ORDER","ORDER_SELECTION","ORDER_CANCEL","CONFIRM_ORDER","COMPLAINT","CONFIRM_COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","LOCAL_GUIDE","RECEPTION","NONE"}
+    valid_categories = {"HOUSEKEEPING","MAINTENANCE","KITCHEN","ROOM_SERVICE","RECEPTION","NONE"}
+
     for provider_name, fn in _ai_provider_functions():
         try:
             raw = fn(prompt, guest_info, sender_phone, structured=True)
@@ -4816,17 +4945,18 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 if raw:
                     print(f"AI UNDERSTANDING INVALID JSON FROM {provider_name.upper()}", flush=True)
                 continue
+
             action = str(obj.get("action", "NONE")).strip().upper()
-            valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_ALL_PHOTOS","SHOW_MENU","BOOKING","ORDER","ORDER_SELECTION","ORDER_CANCEL","CONFIRM_ORDER","COMPLAINT","CONFIRM_COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","LOCAL_GUIDE","RECEPTION","NONE"}
             if action not in valid_actions:
                 action = "NONE"
             category = str(obj.get("category", "NONE")).strip().upper()
-            if category not in {"HOUSEKEEPING","MAINTENANCE","KITCHEN","ROOM_SERVICE","RECEPTION","NONE"}:
+            if category not in valid_categories:
                 category = "NONE"
             try:
                 confidence = max(0.0, min(1.0, float(obj.get("confidence", 0))))
             except Exception:
                 confidence = 0.0
+
             items = obj.get("items") if isinstance(obj.get("items"), list) else []
             cleaned_items = []
             for item in items:
@@ -4839,6 +4969,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                     qty = 1
                 if item_name:
                     cleaned_items.append({"name": item_name, "qty": qty})
+
             result = {
                 "action": action,
                 "intent": action if action in {"COMPLAINT","ORDER_CANCEL","ORDER_SELECTION","ORDER","SERVICE","RECEPTION"} else str(obj.get("intent", action)).strip().upper(),
@@ -4853,10 +4984,32 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "confidence": confidence,
             }
             print(f"AI UNDERSTANDING: provider={provider_name} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
-            return result
+
+            # NONE/low-confidence is uncertainty. Do not let it terminate the
+            # semantic chain; ask the next provider. Keep the strongest result
+            # only as a last-resort diagnostic if every provider is uncertain.
+            score = confidence
+            if action == "NONE":
+                score *= 0.25
+            if action == "ORDER" and cleaned_items:
+                score += 0.05
+            score = min(score, 1.0)
+            if score > best_score:
+                best_score = score
+                best_result = result
+
+            if confidence >= 0.55 and action != "NONE":
+                return result
+
+            print(
+                f"AI UNDERSTANDING UNCERTAIN: provider={provider_name} action={action} "
+                f"confidence={confidence:.2f}; trying next provider",
+                flush=True,
+            )
         except Exception as exc:
             print(f"AI UNDERSTANDING ERROR ({provider_name}): {exc}", flush=True)
-    return None
+
+    return best_result
 
 
 def _ai_is_authoritative(ai_result):
@@ -5114,7 +5267,22 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         print("LOCAL HOTEL PRE-AI: breakfast_timing", flush=True)
         return True
 
-    # 2) Specific menu section / breakfast / lunch / dinner etc.
+    # 2) Exact menu-item protection.
+    # A guest typing an authoritative menu item (e.g. "Paneer Pakoda") is an
+    # order candidate, NOT a request to display the whole Paneer section.
+    # This guard must run before the broad section matcher below because
+    # allow_broad_menu=True is enabled by the main message router.
+    # Price/photo requests are allowed to continue to their dedicated routes.
+    exact_order_candidate = find_menu_items(user_text)
+    if exact_order_candidate.get("items") and not explicitly_asks_price(user_text):
+        print(
+            f"LOCAL HOTEL FALLBACK: exact menu item detected; handing to order parser: "
+            f"{format_order(exact_order_candidate['items'])!r}",
+            flush=True,
+        )
+        return False
+
+    # 3) Specific menu section / breakfast / lunch / dinner etc.
     # Natural-language section requests are intentionally NOT consumed before
     # semantic AI. We only use a conservative direct/static path here; when AI
     # is unavailable the caller enables allow_broad_menu=True so the hotel-data
@@ -5136,7 +5304,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 print(f"LOCAL HOTEL FALLBACK: menu_section={section!r} prices={price_requested} broad={allow_broad_menu}", flush=True)
                 return True
 
-    # 3) Explicit full-menu request. Do not spend an AI call for a static menu.
+    # 4) Explicit full-menu request. Do not spend an AI call for a static menu.
     if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
         msgs = send_full_menu_presentation(sender_phone, include_prices=price_requested)
         remember_conversation(sender_phone, "user", user_text)
@@ -5145,7 +5313,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         print(f"LOCAL HOTEL PRE-AI: full_menu_presentation messages={len(msgs)} prices={price_requested}", flush=True)
         return True
 
-    # 4) Explicit room photo request. Ambiguous/contextual photo wording still
+    # 5) Explicit room photo request. Ambiguous/contextual photo wording still
     # goes to the AI route. Do not steal mixed photo+price questions.
     configured_photo_target = resolve_requested_photo(user_text)
     visual_cues = ("dikhao", "dikha do", "show", "photo", "photos", "pic", "pics", "image", "tasveer", "picture")
@@ -5951,16 +6119,17 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
         guest_info and guest_info.get("status") == "CHECKED_OUT"
     )
 
-    # HIGH-CONFIDENCE LOCAL ROUTES FIRST.
-    # Explicit hotel requests must not be hijacked by a semantic model returning
-    # a generic conversational reply. Ambiguous/indirect requests still fall
-    # through to the AI semantic brain below.
-    if _local_conversation_fallback(sender_phone, user_text, guest_info):
-        return
-    if _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
-        return
-
-    # AI BRAIN handles ambiguous/contextual turns after deterministic routes.
+    # ========================================================
+    # AI-FIRST SEMANTIC BRAIN
+    # ========================================================
+    # The semantic model gets the first opportunity to understand every normal
+    # guest message. Do NOT let broad keyword/menu rules decide the meaning first.
+    # This is the architectural fix for cases such as:
+    #   "Paneer pakoda" -> ORDER
+    #   "Paneer pakoda kitne ka?" -> PRICE
+    #   "Paneer pakoda nahi chahiye" -> NEGATION / no order
+    #   "Snacks me kya hai?" -> MENU_SECTION
+    # The deterministic backend remains responsible for validation and execution.
     ai_understanding = None
     with state_lock:
         _checkin_now = checkin_sessions.get(sender_phone)
@@ -5970,6 +6139,31 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
     if not _skip_semantic_ai:
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
+
+        # ONLY when every semantic provider is unavailable do we fall back to the
+        # deterministic legacy router. These fallbacks are safety nets, not the
+        # primary interpretation layer.
+        if semantic_ai_unavailable:
+            if _local_conversation_fallback(sender_phone, user_text, guest_info):
+                return
+
+            authoritative_order = _authoritative_bare_menu_order(user_text)
+            direct_order_candidate = authoritative_order or find_menu_items(user_text)
+            direct_order = bool(authoritative_order) or _is_direct_menu_item_order(user_text, direct_order_candidate)
+            if direct_order:
+                ai_understanding = {
+                    "action": "ORDER",
+                    "category": "KITCHEN",
+                    "confidence": 1.0,
+                    "reply": "",
+                }
+                semantic_ai_unavailable = True
+            elif _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
+                return
+    else:
+        # Active self-check-in is a transactional state machine; it must finish
+        # its current step before the general semantic brain takes over.
+        semantic_ai_unavailable = True
 
     # The semantic brain owns the meaning of the turn. A returned NONE/low-confidence
     # decision is uncertainty, not permission for old keyword/state handlers to guess.
@@ -6776,8 +6970,16 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                 remember_conversation(sender_phone, "assistant", reply)
                 return
             if not parsed.get("items"):
-                # AI did not resolve an order item safely; let the legacy parser try.
-                pass
+                # The semantic brain already decided this turn is an ORDER.
+                # Never let the old keyword parser reinterpret the same message.
+                # If the backend cannot safely map the AI-selected item to the
+                # authoritative menu, hand it to reception instead of guessing.
+                send_reception_fallback(
+                    sender_phone, guest_info,
+                    "Ji, main is item ko kitchen menu se verify karke confirm karwa deta hoon. 🙏",
+                    user_text, "ai_order_item_validation_failed"
+                )
+                return
             else:
                 order_text = format_order(parsed["items"])
                 recent = _recent_matching_kitchen_order(guest_info["room"], order_text, max_minutes=RECENT_DUPLICATE_ORDER_MINUTES)
@@ -6815,16 +7017,36 @@ def _process_and_reply_impl(message, sender_phone, msg_type):
                     return
 
         # BILL is intentionally left for the deterministic live-financial backend below.
-        # ORDER_CANCEL and COMPLAINT are handled by the existing validated paths above.
-
+        # Do not treat BILL as an unhandled AI action; the backend must calculate the
+        # live amount from Google Sheets before replying. ORDER_CANCEL and COMPLAINT
+        # are handled by the existing validated paths above.
+        if ai_action == "BILL":
+            pass
         # If the semantic brain made a confident decision but this action is not
         # executable in the current backend, do NOT let an unrelated legacy
         # keyword handler hijack the turn. Escalate the exact request to reception.
-        if ai_action not in {"NONE", ""}:
+        elif ai_action not in {"NONE", ""}:
             send_reception_fallback(
                 sender_phone, guest_info,
                 "Ji, main is request ko reception se confirm karwa deta hoon. 🙏",
                 user_text, "ai_authoritative_unhandled_action"
+            )
+            return
+
+    # ========================================================
+    # SEMANTIC OWNERSHIP GUARD
+    # ========================================================
+    # If a semantic provider successfully understood the turn, legacy keyword
+    # handlers below are NOT allowed to reinterpret it. The only intentional
+    # exception is BILL, which uses the live financial backend below.
+    if _ai_is_authoritative(ai_understanding):
+        ai_action = str(ai_understanding.get("action", "NONE")).strip().upper()
+        if ai_action != "BILL":
+            send_reception_fallback(
+                sender_phone, guest_info,
+                ai_understanding.get("reply", "").strip() or
+                "Ji, main is request ko reception se confirm karwa deta hoon. 🙏",
+                user_text, "ai_authoritative_no_legacy_fallback"
             )
             return
 

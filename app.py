@@ -1237,7 +1237,7 @@ def append_kitchen_order(room, guest_name, order_details, amount):
 
     try:
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
-        stamp = now_ist().strftime("%d-%b %I:%M %p")
+        stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
         new_row = [stamp, str(room), str(guest_name), str(order_details), int(amount), "PENDING"]
         sheet.append_row(new_row, value_input_option="USER_ENTERED")
         # Keep the in-memory cache current without spending another Sheets read.
@@ -1488,6 +1488,12 @@ def calculate_stay_nights(check_in_value):
 
 
 def get_guest_financials(room_number, sender_phone=""):
+    """Build billing only from the guest's CURRENT room/stay.
+
+    Critical rule: when a room is supplied, never fall back to another room
+    just because the WhatsApp phone number matches. The same phone can belong
+    to an old checked-out stay and a newer in-house stay.
+    """
     target_room = clean_room(room_number)
     target_phone = clean_phone(sender_phone)
 
@@ -1508,88 +1514,161 @@ def get_guest_financials(room_number, sender_phone=""):
                 return room_headers.index(target)
         return -1
 
+    # Reuse the bot's existing Google-Sheets timestamp parser.
+    parse_dt = _parse_sheet_datetime
+
+
     total_paid_col = header_index("TOTAL PAID", "TOTAL PAYMENT", "PAID TOTAL")
     payment_status_col = header_index("PAYMENT STATUS", "BILL STATUS", "PAYMENT")
+    checkin_time_col = header_index("CHECK IN TIME", "CHECK-IN TIME", "CHECKIN TIME")
+    checkout_time_col = header_index("CHECK OUT TIME", "CHECK-OUT TIME", "CHECKOUT TIME")
+    checkin_date_col = header_index("CHECK_IN_DATE", "CHECK IN DATE", "CHECK-IN DATE", "CHECK IN")
 
+    # Select the exact room row whenever the caller already knows the room.
+    # Phone-only matching is used only as a fallback when no room is supplied.
+    candidates = []
+    for idx, row in enumerate(room_rows):
+        if len(row) < 5:
+            continue
+        row_room = clean_room(row[0])
+        row_phone = clean_phone(row[4]) if len(row) > 4 else ""
+        status = _classify_guest_status(row[5] if len(row) > 5 else "")
+        if target_room:
+            if row_room != target_room:
+                continue
+        elif target_phone:
+            if row_phone != target_phone:
+                continue
+        else:
+            continue
+
+        cin_value = ""
+        if checkin_time_col >= 0 and len(row) > checkin_time_col:
+            cin_value = row[checkin_time_col]
+        if not cin_value and checkin_date_col >= 0 and len(row) > checkin_date_col:
+            cin_value = row[checkin_date_col]
+        cin_dt = parse_dt(cin_value)
+        candidates.append((
+            1 if status == "CHECKED_IN" else 0,
+            cin_dt.timestamp() if cin_dt else 0,
+            idx,
+            row,
+            status,
+        ))
+
+    selected = None
+    selected_status = ""
+    if candidates:
+        candidates.sort(key=lambda x: (x[0], x[1], x[2]), reverse=True)
+        _, _, _, selected, selected_status = candidates[0]
+
+    room_rate = 0
+    nights = 1
+    guest_name = "Guest"
+    room_payment = 0
+    sheet_total_paid = 0
+    sheet_payment_status = ""
+    stay_start = None
+    stay_end = now_ist()
+
+    if selected is not None:
+        guest_name = str(selected[3]).strip() if len(selected) > 3 and selected[3] else "Guest"
+
+        if len(selected) > 2:
+            room_rate = safe_int(selected[2])
+
+        checkin_value = ""
+        if checkin_time_col >= 0 and len(selected) > checkin_time_col:
+            checkin_value = selected[checkin_time_col]
+        if not checkin_value and checkin_date_col >= 0 and len(selected) > checkin_date_col:
+            checkin_value = selected[checkin_date_col]
+        stay_start = parse_dt(checkin_value)
+
+        checkout_value = ""
+        if checkout_time_col >= 0 and len(selected) > checkout_time_col:
+            checkout_value = selected[checkout_time_col]
+        checkout_dt = parse_dt(checkout_value)
+        if selected_status == "CHECKED_OUT" and checkout_dt:
+            stay_end = checkout_dt
+
+        if stay_start:
+            nights = max(1, (stay_end.date() - stay_start.date()).days)
+        else:
+            # Legacy fallback: use the dedicated check-in-date column only.
+            fallback_date = selected[6] if len(selected) > 6 else ""
+            nights = calculate_stay_nights(fallback_date)
+
+        if total_paid_col >= 0 and len(selected) > total_paid_col:
+            sheet_total_paid = safe_int(selected[total_paid_col])
+        if payment_status_col >= 0 and len(selected) > payment_status_col:
+            sheet_payment_status = str(selected[payment_status_col]).strip().upper()
+
+        # TOTAL PAID is the reception-recorded payment total for this CURRENT
+        # room/stay. Do not read the payment amount from PAYMENT METHOD.
+        room_payment = sheet_total_paid
+    elif target_phone:
+        print(
+            f"BILL GUEST ROW NOT FOUND: room={target_room!r} phone={target_phone!r}",
+            flush=True,
+        )
+
+    # Hotel-specific configured room rates are only a fallback when the sheet
+    # does not have a usable rate. The active Rooms row remains authoritative.
+    if room_rate <= 0:
+        room_rates = [x["rate"] for x in get_room_categories().values() if x.get("rate")]
+        room_rate = min(room_rates) if room_rates else 0
+
+    # Kitchen charges belong to the CURRENT stay only. A room can be reused,
+    # so historical orders in the same room must not leak into a new bill.
     for row in kitchen_rows:
-        if len(row) < 6:
+        if len(row) < 6 or clean_room(row[1]) != target_room:
             continue
 
-        if clean_room(row[1]) != target_room:
-            continue
+        order_dt = parse_dt(row[0])
+        if stay_start:
+            if not order_dt or order_dt < stay_start or (stay_end and order_dt > stay_end):
+                continue
 
         item = str(row[3]).strip() or "Food Order"
         amount = safe_int(row[4])
         status = str(row[5]).upper()
+        if "CANCEL" in status:
+            continue
 
         total_kitchen += amount
-
         if "PAID" in status:
             paid_kitchen += amount
             paid_items.append(f"{item} - Rs.{amount}")
-        elif "CANCEL" not in status:
+        else:
             pending_items.append(f"{item} - Rs.{amount}")
-
-    room_rates = [x["rate"] for x in get_room_categories().values() if x.get("rate")]
-    room_rate = min(room_rates) if room_rates else 1000
-    nights = 1
-    guest_name = "Guest"
-    room_advance = 0
-    sheet_total_paid = 0
-    sheet_payment_status = ""
-
-    for row in room_rows:
-        if len(row) < 5:
-            continue
-
-        same_room = clean_room(row[0]) == target_room
-        same_phone = target_phone and clean_phone(row[4]) == target_phone
-
-        if not (same_room or same_phone):
-            continue
-
-        guest_name = str(row[3]).strip() if len(row) > 3 and row[3] else "Guest"
-
-        # The sheet's room-rate column is treated as authoritative if numeric.
-        if len(row) > 2 and safe_int(row[2]) > 0:
-            room_rate = safe_int(row[2])
-
-        # Current code/schema commonly stores check-in date in column 7.
-        if len(row) > 6:
-            nights = calculate_stay_nights(row[6])
-
-        # Existing J column remains the legacy advance/partial-payment field.
-        if len(row) > 9:
-            room_advance = safe_int(row[9])
-
-        # New payment fields are located by header name, so the existing sheet
-        # layout can remain untouched.
-        if total_paid_col >= 0 and len(row) > total_paid_col:
-            sheet_total_paid = safe_int(row[total_paid_col])
-        if payment_status_col >= 0 and len(row) > payment_status_col:
-            sheet_payment_status = str(row[payment_status_col]).strip().upper()
-
-        break
 
     room_total = room_rate * nights
     grand_total = room_total + total_kitchen
-    calculated_paid = room_advance + paid_kitchen
-    # If reception has used the one-click full-payment action, TOTAL PAID is
-    # authoritative. This prevents staff from having to mark every food row.
+
+    # A sheet PAID status is an explicit full-payment state for this selected
+    # room row. Otherwise combine reception-recorded room payments with food
+    # rows explicitly marked PAID for this same stay.
     if sheet_payment_status == "PAID":
-        total_paid = max(grand_total, sheet_total_paid)
-    elif sheet_total_paid > 0:
-        total_paid = max(calculated_paid, sheet_total_paid)
+        total_paid = grand_total
     else:
-        total_paid = calculated_paid
+        total_paid = min(grand_total, max(0, room_payment) + paid_kitchen)
+
     balance = max(0, grand_total - total_paid)
+
+    print(
+        f"BILL CURRENT STAY: room={target_room} guest={guest_name} "
+        f"status={selected_status or 'UNKNOWN'} rate={room_rate} nights={nights} "
+        f"food={total_kitchen} room_paid={room_payment} food_paid={paid_kitchen} "
+        f"grand={grand_total} paid={total_paid} due={balance}",
+        flush=True,
+    )
 
     return {
         "guest_name": guest_name,
         "nights": nights,
         "room_rate": room_rate,
         "room_total": room_total,
-        "room_advance": room_advance,
+        "room_advance": room_payment,
         "kitchen_total": total_kitchen,
         "kitchen_paid": paid_kitchen,
         "kitchen_pending": max(0, total_kitchen - paid_kitchen),
@@ -3395,7 +3474,7 @@ def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
                     notified_paid_orders.add(fp)
 
         # One WhatsApp notification per room per polling cycle.
-        name = "Guest"
+        name = str(room_name_map.get(room) or "Guest").strip() or "Guest"
         send_whatsapp_message(
             phone,
             build_paid_payment_message(name, room, orders)
@@ -5203,14 +5282,51 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
 def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
     target = str(result.get("photo_target", "")).strip()
     categories = get_room_photo_categories()
+    category_names = [name for name, _ in categories]
+    text_norm = normalize_text(user_text)
 
-    # Validate the AI target against the CURRENT guest wording when that wording
-    # contains a unique configured category. This prevents a previously shown
-    # category from being repeated when the guest explicitly asks for another one.
-    current_text_target = resolve_requested_photo(
-        user_text,
-        [name for name, _ in categories],
-    ) if user_text else None
+    with state_lock:
+        pending_photo = photo_sessions.get(sender_phone)
+
+    # "Saari / sab / all photos" means send all configured ROOM-category photos
+    # directly. Never ask for a yes/no confirmation.
+    wants_all = bool(re.search(
+        r"\b(?:saari|sari|sab|sabh?i|all|every|har|poori|puri)\b",
+        text_norm,
+        re.I,
+    )) and any(x in text_norm for x in [
+        "photo", "photos", "pic", "pics", "picture", "pictures", "image", "images", "room"
+    ])
+    if pending_photo and re.match(
+        r"^(?:saari|sari|sab|sabhi|sabh?i|all|poori|puri)(?:\s+(?:photo|photos|pic|pics|picture|pictures|image|images|dikhao|dikha|bhejo|bhej|send|do|de))+$",
+        text_norm,
+        re.I,
+    ):
+        wants_all = True
+
+    if wants_all:
+        with state_lock:
+            photo_sessions.pop(sender_phone, None)
+        if not categories:
+            send_whatsapp_message(sender_phone, "Ji, room photos abhi available nahi hain. Main reception se confirm karwa deta hoon.")
+            notify_reception_request(sender_phone, guest_info, "Guest requested all room photos but no configured photo categories were available.", "ai_photo_all_missing")
+            return True
+        sent_count = 0
+        for name, url in categories:
+            if url and send_whatsapp_image(sender_phone, url, f"🛏️ {name.title()}"):
+                sent_count += 1
+        print(f"PHOTO AI SEND ALL: requested={user_text!r} sent={sent_count}/{len(categories)}", flush=True)
+        return True
+
+    # A bare acknowledgement after the category list is NOT a photo target.
+    # Do not allow an older AI target to turn "Haan" into a stale photo send.
+    short_photo_ack = text_norm in {"haan", "ha", "yes", "y", "ok", "okay", "theek hai", "ji"}
+    if pending_photo and short_photo_ack:
+        target = ""
+
+    # If the guest's current wording names a configured category, that wording
+    # takes priority over any stale AI target from earlier conversation context.
+    current_text_target = resolve_requested_photo(user_text, category_names) if user_text else None
     if current_text_target:
         if target.strip().lower() != str(current_text_target).strip().lower():
             print(
@@ -5219,24 +5335,49 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
             )
         target = current_text_target
 
-    if not target:
+    # Generic photo requests such as "Room photo hai" should show the
+    # available categories, not guess a room category from the guest record.
+    generic_photo_request = False
+    if not current_text_target:
+        tokens = re.findall(r"[a-z0-9]+", text_norm)
+        generic_tokens = {
+            "room", "rooms", "hotel", "photo", "photos", "pic", "pics",
+            "picture", "pictures", "image", "images", "ki", "ka", "ke",
+            "hai", "he", "h", "meri", "mere", "mujhe", "please", "plz",
+            "bhejo", "bhej", "send", "dikhao", "dikha", "de", "do", "the",
+            "a", "an", "my", "the", "current", "wahi", "wali", "wala",
+        }
+        generic_photo_request = bool(tokens) and all(token in generic_tokens for token in tokens)
+
+    if pending_photo and not target and not generic_photo_request:
+        # Short replies such as "Deluxe" are category selections. "Haan" is
+        # intentionally NOT treated as a photo-selection command.
+        requested = resolve_requested_photo(user_text)
+        allowed = {str(x).strip().lower() for x in pending_photo.get("categories", [])}
+        if requested and str(requested).strip().lower() in allowed:
+            target = requested
+
+    if not target or generic_photo_request:
         with state_lock:
             photo_sessions[sender_phone] = {
                 "created": time.time(),
-                "categories": [name for name, _ in categories],
+                "categories": category_names,
             }
         if categories:
             lines = ["🛏️ *Room Categories*", "Kaunsi room category ki photo dekhna chahenge?"]
             lines.extend(f"• {name.title()}" for name, _ in categories)
             send_whatsapp_message(sender_phone, "\n".join(lines))
         else:
-            send_whatsapp_message(sender_phone, "Ji, room photos abhi configured nahi hain. 🙏")
+            send_whatsapp_message(sender_phone, "Ji, room photos abhi available nahi hain. Main reception se confirm karwa deta hoon.")
+            notify_reception_request(sender_phone, guest_info, "Guest requested room photos but no configured photo categories were available.", "ai_photo_missing")
         return True
 
     photo_url = get_hotel_photo(target)
     if not photo_url:
-        send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi configured nahi hai. Main reception se confirm karwa deta hoon.")
+        send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi available nahi hai. Main reception se confirm karwa deta hoon.")
         notify_reception_request(sender_phone, guest_info, f"Photo requested: {target}", "ai_photo_missing")
+        with state_lock:
+            photo_sessions.pop(sender_phone, None)
         return True
 
     print(f"PHOTO AI RESOLVED: target={target!r} url={photo_url!r}", flush=True)
@@ -6596,7 +6737,12 @@ def build_full_bill_paid_message(name, room, fin, language):
 
 
 def process_full_bill_paid_notifications(rows):
-    """Notify only when the one-click sheet payment status becomes PAID."""
+    """Notify only when the one-click sheet payment status becomes PAID.
+
+    The notification key includes the current check-in timestamp so a reused
+    room/phone combination from an older fully-paid stay cannot suppress the
+    notification for a new stay.
+    """
     global full_bill_paid_initialized
     current = {}
     pending_notifications = []
@@ -6607,6 +6753,11 @@ def process_full_bill_paid_notifications(rows):
         if candidate in headers:
             status_col = headers.index(candidate)
             break
+    checkin_col = -1
+    for candidate in ("CHECK IN TIME", "CHECK-IN TIME", "CHECKIN TIME", "CHECK_IN_DATE", "CHECK IN DATE"):
+        if candidate in headers:
+            checkin_col = headers.index(candidate)
+            break
 
     for row in rows:
         if status_col < 0 or len(row) <= status_col:
@@ -6616,7 +6767,10 @@ def process_full_bill_paid_notifications(rows):
         status = str(row[status_col]).strip().upper()
         if not room or not phone:
             continue
-        key = f"{phone}_{room}"
+        raw_checkin = row[checkin_col] if checkin_col >= 0 and len(row) > checkin_col else ""
+        parsed_checkin = _parse_sheet_datetime(raw_checkin) if raw_checkin else None
+        stay_token = parsed_checkin.isoformat() if parsed_checkin else str(raw_checkin).strip()
+        key = f"{phone}_{room}_{stay_token}"
         is_paid = status == "PAID"
         current[key] = is_paid
         previous = full_bill_paid_state.get(key)
@@ -6855,12 +7009,13 @@ def _owner_report_date(value):
 def _owner_report_metrics():
     """Build today's operational sales/collection snapshot from live Sheets data.
 
-    Room revenue is the room-rate revenue accrued for today's in-house/checkout-today
-    guests. Kitchen revenue is today's non-cancelled kitchen sales. Payments received
-    is the actual payment-history amount recorded today. Keeping these separate avoids
-    double-counting kitchen charges when a guest pays the combined room bill.
+    Room revenue is one current room-night for each guest staying today, plus
+    rooms checked out today. Historical checked-out stays are excluded.
+    Outstanding is calculated from the current in-house stay only, with food
+    orders restricted to that stay's check-in window.
     """
     today = now_ist().date()
+    now_dt = now_ist()
     with state_lock:
         rooms = list(shared_store.get("rooms", []))
         room_headers = list(shared_store.get("room_headers", []))
@@ -6879,24 +7034,33 @@ def _owner_report_metrics():
 
     room_price = col(room_headers, "PRICE (C)", "PRICE", "RATE", default=2)
     room_status = col(room_headers, "STATUS (F)", "STATUS", "GUEST STATUS", "BOOKING STATUS", default=5)
+    checkin_time_col = col(room_headers, "CHECK IN TIME", "CHECK-IN TIME", "CHECKIN TIME", default=-1)
+    checkout_time_col = col(room_headers, "CHECK OUT TIME", "CHECK-OUT TIME", "CHECKOUT TIME", default=-1)
     room_in_date = col(room_headers, "CHECK_IN_DATE", "CHECK IN DATE", "CHECK-IN DATE", default=6)
+    total_paid_idx = col(room_headers, "TOTAL PAID", "TOTAL PAYMENT", "PAID TOTAL", default=-1)
+
+    # Lambda keeps the helper local without adding another function declaration.
+    row_dt = lambda row, preferred_col, fallback_col=-1: (
+        _parse_sheet_datetime(row[preferred_col]) if preferred_col >= 0 and len(row) > preferred_col and row[preferred_col]
+        else (_parse_sheet_datetime(row[fallback_col]) if fallback_col >= 0 and len(row) > fallback_col and row[fallback_col] else None)
+    )
 
     room_revenue = 0
     room_guest_count = 0
     for row in rooms:
-        status = str(row[room_status] if room_status >= 0 and len(row) > room_status else "").upper()
-        if not ("IN" in status or "OUT" in status):
+        status_raw = str(row[room_status] if room_status >= 0 and len(row) > room_status else "")
+        status = _classify_guest_status(status_raw)
+        rate = safe_int(row[room_price] if room_price >= 0 and len(row) > room_price else 0)
+        if rate <= 0:
             continue
-        check_in = _owner_report_date(row[room_in_date] if room_in_date >= 0 and len(row) > room_in_date else "")
-        if check_in is None:
-            continue
-        # Accrue one room-night for guests staying today. This does not mean cash was
-        # received today; cash is reported separately from Payment_History.
-        if check_in <= today:
-            rate = safe_int(row[room_price] if room_price >= 0 and len(row) > room_price else 0)
-            if rate > 0:
-                room_revenue += rate
-                room_guest_count += 1
+        check_in = row_dt(row, checkin_time_col, room_in_date)
+        check_out = row_dt(row, checkout_time_col, -1)
+        if status == "CHECKED_IN" and check_in and check_in.date() <= today:
+            room_revenue += rate
+            room_guest_count += 1
+        elif status == "CHECKED_OUT" and check_out and check_out.date() == today:
+            room_revenue += rate
+            room_guest_count += 1
 
     kitchen_time = col(kh, "TIMESTAMP", "DATE", "TIME", default=0)
     kitchen_amount = col(kh, "AMOUNT", "PRICE", "TOTAL", default=4)
@@ -6904,7 +7068,8 @@ def _owner_report_metrics():
     kitchen_revenue = 0
     kitchen_orders = 0
     for row in kitchen:
-        if _owner_report_date(row[kitchen_time] if kitchen_time >= 0 and len(row) > kitchen_time else "") != today:
+        order_date = _owner_report_date(row[kitchen_time] if kitchen_time >= 0 and len(row) > kitchen_time else "")
+        if order_date != today:
             continue
         status = str(row[kitchen_status] if kitchen_status >= 0 and len(row) > kitchen_status else "").upper()
         if "CANCEL" in status:
@@ -6926,28 +7091,32 @@ def _owner_report_metrics():
             payments_received += amount
             payment_count += 1
 
-    # Current outstanding from live guest financials: room total + non-cancelled kitchen
-    # less the payment amount recorded on Rooms. This is a snapshot, not a cash-flow metric.
     outstanding = 0
-    room_total_current = 0
-    kitchen_total_current = 0
     for row in rooms:
-        status = str(row[room_status] if room_status >= 0 and len(row) > room_status else "").upper()
-        if "OUT" in status:
+        status_raw = str(row[room_status] if room_status >= 0 and len(row) > room_status else "")
+        status = _classify_guest_status(status_raw)
+        if status != "CHECKED_IN":
             continue
         rate = safe_int(row[room_price] if room_price >= 0 and len(row) > room_price else 0)
-        check_in = _owner_report_date(row[room_in_date] if room_in_date >= 0 and len(row) > room_in_date else "")
-        if rate <= 0 or check_in is None:
+        check_in = row_dt(row, checkin_time_col, room_in_date)
+        if rate <= 0 or check_in is None or check_in.date() > today:
             continue
-        room_total_current += rate * max(1, (today - check_in).days)
+        nights = max(1, (today - check_in.date()).days)
+        room_total = rate * nights
         room = clean_room(row[0] if row else "")
-        for k in kitchen:
-            if len(k) < 6 or clean_room(k[1]) != room or "CANCEL" in str(k[5]).upper():
-                continue
-            kitchen_total_current += safe_int(k[4])
-        total_paid_idx = col(room_headers, "TOTAL PAID", "TOTAL PAYMENT", "PAID TOTAL", default=-1)
+        food_total = 0
+        if room and kitchen_time >= 0:
+            for k in kitchen:
+                if len(k) < 6 or clean_room(k[1]) != room:
+                    continue
+                order_dt = _parse_sheet_datetime(k[kitchen_time]) if len(k) > kitchen_time else None
+                if order_dt is None or order_dt < check_in or order_dt > now_dt:
+                    continue
+                if "CANCEL" in str(k[kitchen_status] if kitchen_status >= 0 and len(k) > kitchen_status else "").upper():
+                    continue
+                food_total += safe_int(k[kitchen_amount] if kitchen_amount >= 0 and len(k) > kitchen_amount else 0)
         total_paid = safe_int(row[total_paid_idx] if total_paid_idx >= 0 and len(row) > total_paid_idx else 0)
-        outstanding += max(0, rate * max(1, (today - check_in).days) + sum(safe_int(k[4]) for k in kitchen if len(k)>=6 and clean_room(k[1])==room and "CANCEL" not in str(k[5]).upper()) - total_paid)
+        outstanding += max(0, room_total + food_total - total_paid)
 
     return {
         "date": today,

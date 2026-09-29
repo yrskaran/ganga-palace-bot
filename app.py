@@ -1394,26 +1394,51 @@ def get_guest_stay_status(sender_phone):
 
     with state_lock:
         rows = list(shared_store.get('rooms', []))
+        headers = [str(x).strip().upper() for x in shared_store.get('room_headers', [])]
+
+    # Use sheet headers when available so the guest phone/status are found even
+    # if column order changes. Fall back to the legacy positions for older sheets.
+    def header_index(*names):
+        for name in names:
+            key = str(name).strip().upper()
+            if key in headers:
+                return headers.index(key)
+        return -1
+
+    room_col = header_index('ROOM', 'ROOM NO', 'ROOM NUMBER')
+    name_col = header_index('GUEST NAME', 'NAME', 'GUEST', 'CUSTOMER NAME')
+    phone_col = header_index(
+        'WHATSAPP NUMBER', 'WHATSAPP', 'WHATSAPP NO', 'PHONE',
+        'PHONE NUMBER', 'MOBILE', 'MOBILE NUMBER', 'CONTACT', 'CONTACT NUMBER'
+    )
+    rate_col = header_index('TARIFF', 'ROOM RATE', 'RATE', 'PRICE')
+    status_col = header_index('STATUS', 'STAY STATUS', 'GUEST STATUS', 'CHECKIN STATUS')
+
+    if room_col < 0: room_col = 0
+    if name_col < 0: name_col = 3
+    if phone_col < 0: phone_col = 4
+    if rate_col < 0: rate_col = 2
+    if status_col < 0: status_col = 5
 
     # Check the newest matching guest record first. This is important when the
     # same WhatsApp number has older OUT records and a newer IN record.
     for row in reversed(rows):
-        if len(row) < 6:
+        if not phone or phone_col >= len(row):
             continue
 
-        room = clean_room(row[0])
-        name = str(row[3]).strip() if len(row) > 3 else 'Guest'
-        row_phone = clean_phone(row[4]) if len(row) > 4 else ''
-        status = _classify_guest_status(row[5] if len(row) > 5 else '')
+        room = clean_room(row[room_col]) if room_col < len(row) else ''
+        name = str(row[name_col]).strip() if name_col < len(row) else 'Guest'
+        row_phone = clean_phone(row[phone_col])
+        status = _classify_guest_status(row[status_col] if status_col < len(row) else '')
 
-        if phone and phone == row_phone:
+        if phone == row_phone:
             if status == 'CHECKED_IN':
                 return {
                     'is_inhouse': True,
                     'status': 'CHECKED_IN',
                     'room': room,
                     'name': name or 'Guest',
-                    'price': safe_int(row[2], 1800) if len(row) > 2 else 1800,
+                    'price': safe_int(row[rate_col], 1800) if rate_col < len(row) else 1800,
                 }
 
             if status == 'CHECKED_OUT':
@@ -4399,17 +4424,7 @@ def _ai_knowledge_snapshot(max_chars=3600, user_text=""):
 
 
 def concierge_style():
-    style_path = Path(__file__).with_name("concierge_style.txt")
-    try:
-        return style_path.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        # Optional style file: keep the receptionist running when the deployment
-        # does not include the companion file. The rest of the AI contract remains unchanged.
-        return (
-            "Use a professional, warm, concise hotel-receptionist tone. "
-            "Be polite and helpful, never casual or rude. "
-            "Use only verified hotel information and do not invent facts."
-        )
+    return Path(__file__).with_name("concierge_style.txt").read_text(encoding="utf-8")
 
 
 def _ai_understanding_prompt(user_text, guest_info, sender_phone):

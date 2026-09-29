@@ -9,6 +9,9 @@ import threading
 import hmac
 import hashlib
 import traceback
+from decimal import Decimal, InvalidOperation
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib.parse import quote_plus
@@ -118,7 +121,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-GENERIC-V34-ONE-PASS-LOW-TOKEN"
+APP_VERSION = "HOTEL-AI-V36-CONTEXTUAL-CONCIERGE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -166,7 +169,10 @@ shared_store = {
 
 state_lock = threading.RLock()
 
-processed_msg_ids = set()
+processed_msg_ids = OrderedDict()
+message_workers = ThreadPoolExecutor(max_workers=8, thread_name_prefix="guest")
+worker_slots = threading.BoundedSemaphore(64)
+guest_locks = [threading.RLock() for _ in range(128)]
 message_id_limit = 5000
 
 order_sessions = {}
@@ -183,6 +189,7 @@ guest_language_cache = {}
 # "more options", "what else?" and "tell me a story" have context.
 # This is intentionally bounded to keep the AI prompt small.
 conversation_memory = {}
+turn_capture = threading.local()
 CONVERSATION_MEMORY_LIMIT = 15
 # Keep enough recent turns for multi-step hotel conversations and short follow-ups.
 # When the bot asks the guest to choose a room-photo category, keep that
@@ -241,21 +248,19 @@ def ai_time_context():
 
 
 def clean_phone(value):
-    digits = re.sub(r"\D", "", str(value or ""))
-    if len(digits) >= 10:
-        return digits[-10:]
-    return ""
+    return format_whatsapp_number(value) or ""
 
 
 def format_whatsapp_number(value):
-    digits = re.sub(r"\D", "", str(value or ""))
-    if len(digits) == 10:
-        return "91" + digits
-    if len(digits) == 12 and digits.startswith("91"):
-        return digits
-    if len(digits) > 10:
-        return "91" + digits[-10:]
-    return None
+    raw = str(value or "").strip()
+    if not re.fullmatch(r"[+\d\s().-]+", raw):
+        return None
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    elif len(digits) == 10 and not raw.startswith("+"):
+        digits = "91" + digits
+    return digits if 8 <= len(digits) <= 15 and not digits.startswith("0") else None
 
 
 def clean_room(value):
@@ -264,10 +269,14 @@ def clean_room(value):
 
 
 def safe_int(value, default=0):
+    """Parse a complete number; never concatenate digits across decimals or dates."""
+    text = re.sub(r"^(?:Rs\.?|INR|₹)\s*", "", str(value or "").strip(), flags=re.I)
+    if not re.fullmatch(r"[+-]?(?:\d+|\d{1,3}(?:,\d{2,3})+)(?:\.\d+)?", text):
+        return default
     try:
-        digits = re.sub(r"[^\d]", "", str(value))
-        return int(digits) if digits else default
-    except Exception:
+        number = Decimal(text.replace(",", ""))
+        return int(number) if number == number.to_integral_value() else float(number)
+    except (InvalidOperation, ValueError, OverflowError):
         return default
 
 
@@ -453,7 +462,8 @@ def is_yes(text):
     t = normalize_text(text)
     return t in {
         "yes", "y", "haan", "ha", "ji", "ok", "okay", "theek", "thik",
-        "confirm", "confirmed", "kardo", "bhej do", "bhejo", "sure"
+        "confirm", "confirmed", "kardo", "bhej do", "bhejo", "sure",
+        "हाँ", "हां", "जी", "ठीक है", "haan ji", "yes please", "theek hai", "thik hai"
     }
 
 
@@ -461,7 +471,7 @@ def is_no(text):
     t = normalize_text(text)
     return t in {
         "no", "n", "nahi", "nahin", "cancel", "rehne do", "rehne",
-        "stop", "exit", "chodo"
+        "stop", "exit", "chodo", "नहीं", "नही", "रहने 2", "रहने दो", "मत भेजो"
     }
 
 
@@ -498,7 +508,7 @@ def get_hotel_value(label, default=""):
 
 
 def get_hotel_data():
-    path = os.getenv("HOTEL_DATA_FILE", "hotel_data.txt")
+    path = os.getenv("HOTEL_DATA_FILE", str(Path(__file__).with_name("hotel_data.txt")))
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -645,14 +655,14 @@ def get_hotel_config():
     Hot-reload hotel_data.txt when the file changes.
     No Python redeploy is needed for normal hotel-information edits.
     """
-    path = os.getenv("HOTEL_DATA_FILE", "hotel_data.txt")
+    path = os.getenv("HOTEL_DATA_FILE", str(Path(__file__).with_name("hotel_data.txt")))
 
     try:
         if not os.path.exists(path):
             return _parse_hotel_config("")
 
         raw = Path(path).read_text(encoding="utf-8")
-        signature = (os.path.getmtime(path), len(raw))
+        signature = hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
         if HOTEL_CONFIG_CACHE["signature"] != signature:
             HOTEL_CONFIG_CACHE["data"] = _parse_hotel_config(raw)
@@ -946,9 +956,7 @@ def attach_google_maps_links(text):
 
 def verify_meta_signature(raw_body, signature_header):
     if not APP_SECRET:
-        # Allow deployments that have not configured the optional app secret.
-        # Recommended: set WHATSAPP_APP_SECRET in Render.
-        return True
+        return False  # Fail closed: unsigned callers must never create charges.
 
     if not signature_header or not signature_header.startswith("sha256="):
         return False
@@ -987,12 +995,12 @@ def get_gspread_client():
     return gspread.authorize(creds) if creds else None
 
 
-def fetch_sheet_data_sync():
+def fetch_sheet_data_sync(force=False):
     """Refresh the Sheet cache, but never hammer Google Sheets on every code path."""
     global last_sheet_sync_attempt
     now = time.time()
     with state_lock:
-        if now - last_sheet_sync_attempt < SHEET_SYNC_MIN_INTERVAL:
+        if not force and now - last_sheet_sync_attempt < SHEET_SYNC_MIN_INTERVAL:
             return False
         last_sheet_sync_attempt = now
 
@@ -1239,7 +1247,7 @@ def append_kitchen_order(room, guest_name, order_details, amount):
         sheet = client.open_by_key(SHEET_ID).worksheet("Kitchen_Orders")
         stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
         new_row = [stamp, str(room), str(guest_name), str(order_details), int(amount), "PENDING"]
-        sheet.append_row(new_row, value_input_option="USER_ENTERED")
+        sheet.append_row(new_row, value_input_option="RAW")
         # Keep the in-memory cache current without spending another Sheets read.
         with state_lock:
             shared_store.setdefault("kitchen_orders", []).append(new_row)
@@ -1534,7 +1542,7 @@ def get_guest_financials(room_number, sender_phone=""):
         row_phone = clean_phone(row[4]) if len(row) > 4 else ""
         status = _classify_guest_status(row[5] if len(row) > 5 else "")
         if target_room:
-            if row_room != target_room:
+            if row_room != target_room or (target_phone and row_phone != target_phone):
                 continue
         elif target_phone:
             if row_phone != target_phone:
@@ -1612,11 +1620,8 @@ def get_guest_financials(room_number, sender_phone=""):
             flush=True,
         )
 
-    # Hotel-specific configured room rates are only a fallback when the sheet
-    # does not have a usable rate. The active Rooms row remains authoritative.
-    if room_rate <= 0:
-        room_rates = [x["rate"] for x in get_room_categories().values() if x.get("rate")]
-        room_rate = min(room_rates) if room_rates else 0
+    if selected is None or room_rate <= 0 or stay_start is None:
+        raise ValueError("Current stay, room rate or check-in timestamp is missing; reception must confirm billing")
 
     # Kitchen charges belong to the CURRENT stay only. A room can be reused,
     # so historical orders in the same room must not leak into a new bill.
@@ -1636,7 +1641,7 @@ def get_guest_financials(room_number, sender_phone=""):
             continue
 
         total_kitchen += amount
-        if "PAID" in status:
+        if status.strip() in {"PAID", "PAYMENT RECEIVED"}:
             paid_kitchen += amount
             paid_items.append(f"{item} - Rs.{amount}")
         else:
@@ -1651,7 +1656,12 @@ def get_guest_financials(room_number, sender_phone=""):
     if sheet_payment_status == "PAID":
         total_paid = grand_total
     else:
-        total_paid = min(grand_total, max(0, room_payment) + paid_kitchen)
+        # TOTAL PAID normally includes all reception-recorded payments. Only
+        # add kitchen payments when the sheet explicitly uses room-only totals.
+        if os.getenv("TOTAL_PAID_SCOPE", "ALL").upper() == "ROOM_ONLY":
+            total_paid = min(grand_total, max(0, room_payment) + paid_kitchen)
+        else:
+            total_paid = min(grand_total, max(0, room_payment, paid_kitchen))
 
     balance = max(0, grand_total - total_paid)
 
@@ -1708,7 +1718,7 @@ def send_whatsapp_message(to_number, text):
     # AI may use private [[MAP:...]] markers. Never expose those markers to guests.
     text = attach_google_maps_links(str(text or ""))
     text = re.sub(r"\[\[MAP:\s*.*?\]\]", "", text, flags=re.I)
-    text = re.sub(r"\[\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]\]", "", text, flags=re.I)
+    text = re.sub(r"\[{1,2}(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]{1,2}", "", text, flags=re.I)
     number = format_whatsapp_number(to_number)
     if not number or not text:
         return False
@@ -1720,8 +1730,23 @@ def send_whatsapp_message(to_number, text):
         "text": {"body": str(text)[:4096]},
     }
 
-    res = whatsapp_request(payload)
-    return bool(res and res.status_code in (200, 201))
+    capture = getattr(turn_capture, "current", None)
+    # Split instead of silently discarding the end of menus or multi-part answers.
+    remaining = str(text)
+    while remaining:
+        cut = min(len(remaining), 4000)
+        if len(remaining) > cut:
+            boundary = remaining.rfind("\n", 0, cut)
+            if boundary > 2000:
+                cut = boundary + 1
+        payload["text"]["body"] = remaining[:cut]
+        res = whatsapp_request(payload)
+        if res is None or res.status_code not in (200, 201):
+            return False
+        remaining = remaining[cut:]
+    if capture is not None and format_whatsapp_number(capture["phone"]) == number:
+        capture["replies"].append(str(text))
+    return True
 
 
 def upload_image_to_whatsapp(image_url):
@@ -1968,7 +1993,7 @@ def _openai_messages(user_text, guest_info=None, sender_phone=None, structured=F
 
     # Semantic AI receives only a relevance-ranked hotel-data packet to keep
     # request tokens controlled; the backend still uses the full hotel_data.txt.
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else _compact_ai_text(get_hotel_data(), 4200)
+    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
     history = get_conversation_history(sender_phone) if sender_phone else []
 
     system_prompt = f"""
@@ -2172,7 +2197,7 @@ def ask_gemini_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else _compact_ai_text(get_hotel_data(), 5000)
+    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
     history = get_conversation_history(sender_phone) if sender_phone else []
     time_context = ai_time_context()
     system_prompt = f"""
@@ -2514,7 +2539,7 @@ def ask_cerebras_chat(user_text, guest_info=None, sender_phone=None, structured=
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else _compact_ai_text(get_hotel_data(), 4200)
+    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
     history = get_conversation_history(sender_phone) if sender_phone else []
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 650)}"
@@ -2654,7 +2679,7 @@ def ask_cohere_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else _compact_ai_text(get_hotel_data(), 4200)
+    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
     history = get_conversation_history(sender_phone) if sender_phone else []
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 650)}"
@@ -2789,7 +2814,7 @@ def ask_openrouter_chat(user_text, guest_info=None, sender_phone=None, structure
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else _compact_ai_text(get_hotel_data(), 4200)
+    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
     history = get_conversation_history(sender_phone) if sender_phone else []
 
     system_prompt = f"""
@@ -3429,7 +3454,7 @@ def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
 
         # Never notify cancelled/zero amount rows.
         amount = safe_int(row[4])
-        if amount <= 0 or "PAID" not in status:
+        if amount <= 0 or status.strip() not in {"PAID", "PAYMENT RECEIVED"}:
             continue
 
         previous = payment_status_cache.get(fingerprint)
@@ -3463,7 +3488,7 @@ def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
                 fp = kitchen_order_fingerprint(row)
                 if (
                     fp in current_status
-                    and "PAID" in current_status[fp]
+                    and current_status[fp].strip() in {"PAID", "PAYMENT RECEIVED"}
                     and any(
                         clean_room(row[1]) == room
                         and safe_int(row[4]) == o["amount"]
@@ -3528,8 +3553,12 @@ def find_menu_items(text):
         qty = sum(int(x) for x in before) if before else 0
         if not qty and after:
             qty = sum(int(x) for x in after)
-        if qty <= 0:
+        if not before and not after:
             qty = 1
+        try:
+            qty = validated_quantity(qty)
+        except ValueError:
+            return {"generic": None, "items": [], "total": 0, "invalid": True}
 
         std_name, price = get_hotel_menu()[key]
 
@@ -4315,8 +4344,13 @@ def format_kitchen_bill_message(fin, room, guest_name):
 
 def send_reception_fallback(sender_phone, guest_info, guest_message, request_text, source="reception_fallback"):
     """Send the guest fallback text AND notify reception; never promise an alert silently."""
-    sent_guest = send_whatsapp_message(sender_phone, guest_message)
     notified = notify_reception_request(sender_phone, guest_info, request_text, source)
+    if not notified:
+        guest_message = bilingual_text(sender_phone,
+            "I couldn't reach reception automatically. Please contact the front desk to confirm this information.",
+            "Reception ko automatic message nahi pahunch paaya. Kripya front desk se yeh detail confirm karein.",
+            "रिसेप्शन को संदेश नहीं पहुँच पाया। कृपया फ्रंट डेस्क से यह जानकारी पक्की करें।")
+    sent_guest = send_whatsapp_message(sender_phone, guest_message)
     print(f"RECEPTION FALLBACK: guest_sent={sent_guest} reception_notified={notified} source={source}", flush=True)
     return sent_guest
 
@@ -4352,7 +4386,7 @@ def _extract_semantic_guest_message(text):
 
 
 def _ai_knowledge_snapshot(max_chars=3600, user_text=""):
-    """Build a small, relevance-ranked hotel-data packet for semantic AI.
+    """Return complete hotel knowledge for semantic AI.
 
     The full hotel_data.txt remains the backend source of truth. AI receives only
     the identity plus the most relevant data blocks, which keeps input tokens low
@@ -4361,62 +4395,12 @@ def _ai_knowledge_snapshot(max_chars=3600, user_text=""):
     raw = str(get_hotel_data() or "").strip()
     if not raw:
         return ""
-    if len(raw) <= max_chars:
-        return raw
+    return raw
 
-    # Use the actual current guest message as the strongest retrieval signal.
-    # The semantic contract may be passed here too, so extract the explicit
-    # CURRENT GUEST MESSAGE field before scoring hotel-data blocks.
-    relevance_text = _extract_semantic_guest_message(user_text)
-    query = normalize_text(relevance_text)
-    stopwords = {
-        "the", "and", "for", "with", "this", "that", "you", "your", "are", "is",
-        "me", "my", "what", "when", "where", "how", "why", "can", "could",
-        "please", "guest", "message", "hotel", "reception", "tell", "give",
-    }
-    query_tokens = {x for x in re.findall(r"[a-z0-9]+", query) if len(x) > 2 and x not in stopwords}
 
-    # Blank-line blocks preserve the hotel's existing organisation (identity,
-    # menu, FAQ, local guide, photos, etc.) without maintaining hotel-specific
-    # keyword rules in Python.
-    blocks = [b.strip() for b in re.split(r"\n\s*\n", raw) if b.strip()]
-    scored = []
-    for idx, block in enumerate(blocks):
-        bt = normalize_text(block)
-        tokens = {x for x in re.findall(r"[a-z0-9]+", bt) if len(x) > 2}
-        overlap = len(query_tokens & tokens)
-        # Small preference for early identity/config blocks; relevance still
-        # dominates so a menu/FAQ block can displace them when appropriate.
-        bonus = 1 if idx < 3 else 0
-        scored.append((overlap * 10 + bonus, -idx, idx, block))
+def concierge_style():
+    return Path(__file__).with_name("concierge_style.txt").read_text(encoding="utf-8")
 
-    selected = []
-    used = set()
-
-    # Always keep the hotel identity header, but do not consume the whole budget
-    # with it.
-    if blocks:
-        selected.append(blocks[0])
-        used.add(0)
-
-    for _, _, idx, block in sorted(scored, reverse=True):
-        if idx in used:
-            continue
-        candidate = "\n\n".join(selected + [block])
-        if len(candidate) > max_chars:
-            continue
-        selected.append(block)
-        used.add(idx)
-
-    # If there were no textual overlaps, include the beginning and the tail so
-    # basic identity plus the latest configured FAQ/data-fill rules remain visible.
-    if len(selected) == 1 and len(blocks) > 1:
-        tail = blocks[-1]
-        candidate = "\n\n".join(selected + [tail])
-        if len(candidate) <= max_chars:
-            selected.append(tail)
-
-    return "\n\n".join(selected)[:max_chars].rstrip()
 
 def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     """Compact one-pass semantic contract used by every AI provider."""
@@ -4430,18 +4414,19 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     if photo:
         pending.append("pending_photo=" + ",".join(str(x) for x in photo.get("categories", []))[:180])
     if selection:
-        pending.append(f"pending_food={str(selection.get('generic',''))[:70]} qty={selection.get('qty',1)}")
+        pending.append("pending_food=" + json.dumps(selection, ensure_ascii=False))
     state_hint = "; ".join(pending) or "no pending transaction"
 
     return f"""
 You are the semantic brain of a WhatsApp hotel receptionist.
+{concierge_style()}
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Understand that message using the recent role-separated conversation and hotel knowledge.
 Handle Hindi, Hinglish, English, slang, spelling mistakes, indirect wording and short follow-ups such as "wahi", "uske baad", "haan", "nahi", "more" and contextual choices.
 Current guest context: {guest_info or 'NEW CUSTOMER'}
 Pending state: {state_hint}
 
-Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend; keep reply concise (normally <=220 characters); return JSON only.
+Rules: understand meaning, not keywords; current message has priority; use history to resolve references; use hotel knowledge as the source of truth; never invent hotel facts, live availability, payments, bookings, verification, prices or policies; transactional execution is handled by the backend; answer every part of a multi-part question; keep replies concise but complete; return JSON only.
 
 Return exactly this JSON shape (empty strings/array when not applicable):
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
@@ -4478,9 +4463,9 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                     continue
                 item_name = str(item.get("name", "")).strip()
                 try:
-                    qty = max(1, int(float(item.get("qty", 1))))
+                    qty = validated_quantity(item.get("qty", 1))
                 except Exception:
-                    qty = 1
+                    return None
                 if item_name:
                     cleaned_items.append({"name": item_name, "qty": qty})
             result = {
@@ -4492,7 +4477,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "generic": str(obj.get("generic", "")).strip(),
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
-                "needs_reception": bool(obj.get("needs_reception", False)),
+                "needs_reception": obj.get("needs_reception") is True,
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
@@ -4503,46 +4488,43 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
     return None
 
 
-def _ai_match_menu_items(ai_result, original_text):
-    """Validate AI-extracted menu items strictly against hotel_data.txt menu."""
-    menu = get_hotel_menu()
-    normalized = {normalize_text(k): v for k, v in menu.items()}
-    normalized_std = {normalize_text(v[0]): (k, v) for k, v in menu.items()}
-    found = []
-    requested_items = ai_result.get("items", []) if ai_result else []
-    for item in requested_items:
-        qname = normalize_text(item.get("name", ""))
-        qty = max(1, int(item.get("qty", 1)))
-        match = None
-        if qname in normalized_std:
-            match = normalized_std[qname][1]
-        elif qname in normalized:
-            match = normalized[qname]
-        else:
-            # Controlled fuzzy match using tokens, never inventing a new item.
-            candidates = []
-            qtokens = {x for x in qname.split() if len(x) > 2}
-            for key, val in normalized.items():
-                ktokens = {x for x in normalize_text(val[0]).split() if len(x) > 2}
-                overlap = len(qtokens & ktokens)
-                if overlap and (overlap == len(qtokens) or overlap >= max(1, len(ktokens)-1)):
-                    candidates.append((overlap, -abs(len(ktokens)-len(qtokens)), val))
-            if candidates:
-                candidates.sort(reverse=True, key=lambda x: (x[0], x[1]))
-                match = candidates[0][2]
-        if match:
-            std_name, price = match
-            if any(x["name"] == std_name for x in found):
-                for x in found:
-                    if x["name"] == std_name:
-                        x["qty"] += qty
-                        x["amount"] = x["qty"] * x["unit_price"]
-            else:
-                found.append({"name": std_name, "qty": qty, "unit_price": price, "amount": qty * price})
-    if not found:
-        return find_menu_items(original_text)
-    return {"generic": None, "items": found, "total": sum(x["amount"] for x in found)}
+def validated_quantity(value):
+    if isinstance(value, bool):
+        raise ValueError("Invalid quantity")
+    try:
+        number = Decimal(str(value))
+        if not number.is_finite() or number != number.to_integral_value() or not 1 <= number <= 50:
+            raise ValueError("Quantity must be a whole number from 1 to 50")
+        return int(number)
+    except InvalidOperation as exc:
+        raise ValueError("Invalid quantity") from exc
 
+
+def _ai_match_menu_items(ai_result, original_text):
+    """No fuzzy substitutions or partially accepted baskets."""
+    menu = {normalize_text(k): v for k, v in get_hotel_menu().items()}
+    groups = get_hotel_config().get("generic_menu", {})
+    requested = (ai_result or {}).get("items", [])
+    found = {}
+    for item in requested:
+        name = normalize_text(item.get("name", ""))
+        if name in groups:
+            return {"generic": name, "items": [], "total": 0}
+        if name not in menu:
+            return {"generic": None, "items": [], "total": 0, "invalid": True}
+        try:
+            qty = validated_quantity(item.get("qty", 1))
+        except ValueError:
+            return {"generic": None, "items": [], "total": 0, "invalid": True}
+        std, price = menu[name]
+        old = found.get(std, {}).get("qty", 0)
+        if old + qty > 50:
+            return {"generic": None, "items": [], "total": 0, "invalid": True}
+        found[std] = {"name": std, "qty": old + qty, "unit_price": price, "amount": (old + qty) * price}
+    if not requested:
+        return find_menu_items(original_text)
+    items = list(found.values())
+    return {"generic": None, "items": items, "total": sum(x["amount"] for x in items)}
 
 
 def _phrase_in_normalized_text(text, phrase):
@@ -5420,6 +5402,23 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
 
 
 def process_and_reply(message, sender_phone, msg_type):
+    """Record every text/audio turn, including deterministic confirmations and errors."""
+    before = get_conversation_history(sender_phone)
+    capture = {"phone": sender_phone, "user": "", "replies": []}
+    turn_capture.current = capture
+    try:
+        return _process_and_reply(message, sender_phone, msg_type)
+    finally:
+        if capture["user"]:
+            turns = before + [{"role": "user", "content": capture["user"]}]
+            if capture["replies"]:
+                turns.append({"role": "assistant", "content": "\n\n".join(capture["replies"])})
+            with state_lock:
+                conversation_memory[sender_phone] = turns[-CONVERSATION_MEMORY_LIMIT:]
+        turn_capture.current = None
+
+
+def _process_and_reply(message, sender_phone, msg_type):
     user_text = ""
 
     print(
@@ -5454,6 +5453,13 @@ def process_and_reply(message, sender_phone, msg_type):
     elif msg_type == "text":
         user_text = message.get("text", {}).get("body", "")
 
+    elif msg_type == "interactive":
+        interactive = message.get("interactive", {}) or {}
+        choice = interactive.get("button_reply") or interactive.get("list_reply") or {}
+        user_text = choice.get("title", "")
+    elif msg_type == "button":
+        user_text = (message.get("button") or {}).get("text", "")
+
     # -------- image --------
     elif msg_type == "image":
         with state_lock:
@@ -5476,6 +5482,15 @@ def process_and_reply(message, sender_phone, msg_type):
         return
 
     user_text = str(user_text).strip()
+    capture = getattr(turn_capture, "current", None)
+    if capture is not None:
+        capture["user"] = user_text
+    with state_lock:
+        for sessions in (order_sessions, duplicate_order_sessions):
+            pending = sessions.get(sender_phone)
+            if pending and time.time() - pending.get("created", 0) > 600:
+                sessions.pop(sender_phone, None)
+
     if not user_text:
         send_whatsapp_message(
             sender_phone,
@@ -5513,11 +5528,25 @@ def process_and_reply(message, sender_phone, msg_type):
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
+    # Clarification is a complete response, never a reason to fall into keyword actions.
+    if ai_understanding and ai_understanding.get("reply"):
+        action = ai_understanding.get("action")
+        confidence = ai_understanding.get("confidence", 0)
+        if action == "NONE" or confidence < 0.55:
+            send_whatsapp_message(sender_phone, ai_understanding["reply"])
+            return
+        # A side question must not get trapped in the Haan/Nahi confirmation loop.
+        if (_dup_pending_now or _order_pending_now) and action in {
+            "ANSWER", "WIFI", "HOTEL_TIMINGS", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE"
+        }:
+            send_whatsapp_message(sender_phone, ai_understanding["reply"])
+            return
+
     # If semantic AI is unavailable, use the configured deterministic hotel rules
     # and then the low-risk conversational fallback.
-    if ai_understanding is None and _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
+    if not _skip_semantic_ai and ai_understanding is None and _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=True):
         return
-    if ai_understanding is None and _local_conversation_fallback(sender_phone, user_text, guest_info):
+    if not _skip_semantic_ai and ai_understanding is None and _local_conversation_fallback(sender_phone, user_text, guest_info):
         return
 
     # ========================================================
@@ -5767,30 +5796,12 @@ def process_and_reply(message, sender_phone, msg_type):
             choices = get_hotel_config().get("generic_menu", {}).get(generic, [])
             normalized = normalize_text(user_text)
 
-            selected = None
-            ai_selected = str((ai_understanding or {}).get("items", [{}])[0].get("name", "") if (ai_understanding or {}).get("items") else "").strip()
-            if ai_selected:
-                ai_norm = normalize_text(ai_selected)
-                for menu_name in choices:
-                    if ai_norm == normalize_text(menu_name) or ai_norm in normalize_text(menu_name) or normalize_text(menu_name) in ai_norm:
-                        selected = menu_name
-                        break
-            if not selected:
-                for menu_name in choices:
-                    key = normalize_text(menu_name)
-                    if normalized == key or normalized in key or key in normalized:
-                        selected = menu_name
-                        break
-
-            # Also allow the guest to answer with the distinguishing word,
-            # e.g. "Masala" for "Masala Chai". Prefer the unique match.
-            if not selected:
-                candidates = [
-                    name for name in choices
-                    if normalized and normalized in normalize_text(name)
-                ]
-                if len(candidates) == 1:
-                    selected = candidates[0]
+            candidates = list(dict.fromkeys(name for name in choices
+                if normalized and (normalized == normalize_text(name) or normalized in normalize_text(name))))
+            selected = candidates[0] if len(candidates) == 1 else None
+            if len(candidates) > 1 or is_yes(user_text):
+                send_whatsapp_message(sender_phone, "Please choose / Kaunsa chahiye: " + ", ".join(dict.fromkeys(choices)) + "?")
+                return
 
             if selected:
                 menu = get_hotel_menu()
@@ -6105,6 +6116,9 @@ def process_and_reply(message, sender_phone, msg_type):
                 return
 
             parsed = _ai_match_menu_items(ai_understanding, user_text)
+            if parsed.get("invalid"):
+                send_whatsapp_message(sender_phone, "Please choose exact items from our menu and quantities from 1 to 50. No order has been placed. / Kripya menu ka exact item aur quantity batayein; abhi order nahi bheja hai.")
+                return
             if parsed.get("generic"):
                 generic = parsed["generic"]
                 choices_list = get_hotel_config().get("generic_menu", {}).get(generic, [])
@@ -6432,12 +6446,12 @@ def process_and_reply(message, sender_phone, msg_type):
         now_ts = time.time()
         with state_lock:
             previous_bill = last_bill_reply.get(bill_key, 0)
-            if now_ts - previous_bill < 8:
-                return
             last_bill_reply[bill_key] = now_ts
         if is_inhouse:
-            # Refresh live kitchen data before financial response.
-            fetch_sheet_data_sync()
+            # A failed refresh cannot be presented as a verified current bill.
+            if not fetch_sheet_data_sync(force=True):
+                send_whatsapp_message(sender_phone, "Current bill abhi verify nahi ho pa raha. Kripya reception se bill confirm karein; purana amount final nahi maana jayega.")
+                return
             fin = get_guest_financials(
                 guest_info["room"],
                 sender_phone
@@ -6668,13 +6682,11 @@ def process_and_reply(message, sender_phone, msg_type):
     if semantic_ai_unavailable:
         if fallback_lang == "english":
             fallback_in = (
-                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
-                "main available hote hi turant help karunga."
+                "I'm having trouble understanding that right now. Could you tell me a little more about what you need? For urgent help, please contact the front desk directly."
             )
         else:
             fallback_in = (
-                "Ji, aapka message receive hua. 😊 Aap apna sawaal yahin bhejte rahiye; "
-                "main available hote hi turant help karunga."
+                "Aapki baat abhi theek se samajh nahi pa raha. Thoda aur bata denge ki aapko kis cheez mein madad chahiye? Zaroori kaam ho toh seedhe reception se sampark karein."
             )
         send_whatsapp_message(sender_phone, fallback_in)
         remember_conversation(sender_phone, "user", user_text)
@@ -6706,6 +6718,14 @@ def _safe_mark_message_as_read(message_id):
         print(f"MARK-READ ERROR: message_id={message_id!r}: {exc}", flush=True)
 
 
+def _queued_message(message, sender, msg_type):
+    try:
+        with guest_locks[hash(sender) % len(guest_locks)]:
+            handle_incoming_async(message, sender, msg_type)
+    finally:
+        worker_slots.release()
+
+
 def handle_incoming_async(message, sender_phone, msg_type):
     try:
         print(f"[INCOMING ASYNC START] phone={sender_phone} type={msg_type}", flush=True)
@@ -6717,7 +6737,7 @@ def handle_incoming_async(message, sender_phone, msg_type):
         try:
             sent = send_whatsapp_message(
                 sender_phone,
-                "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; main reception se confirm karwa deta hoon. 🙏"
+                "Ji, aapka message receive hua. Thodi technical dikkat aa gayi hai; kripya reception se sampark karein. 🙏"
             )
             print(f"SAFETY REPLY RESULT: phone={sender_phone} sent={sent}", flush=True)
         except Exception as reply_exc:
@@ -7408,7 +7428,7 @@ def webhook():
         token = request.args.get("hub.verify_token")
         challenge = request.args.get("hub.challenge")
 
-        if mode == "subscribe" and token == VERIFY_TOKEN:
+        if mode == "subscribe" and VERIFY_TOKEN and token == VERIFY_TOKEN:
             return challenge or "", 200
 
         return "Forbidden", 403
@@ -7472,12 +7492,11 @@ def webhook():
                             print(f"WEBHOOK DUPLICATE MESSAGE IGNORED: id={msg_id}", flush=True)
                             continue
 
-                        processed_msg_ids.add(msg_id)
+                        processed_msg_ids[msg_id] = time.time()
 
                         if len(processed_msg_ids) > message_id_limit:
                             # Keep a bounded in-memory set.
-                            processed_msg_ids.clear()
-                            processed_msg_ids.add(msg_id)
+                            processed_msg_ids.popitem(last=False)
 
                     dispatched += 1
                     print(
@@ -7485,22 +7504,17 @@ def webhook():
                         flush=True,
                     )
 
-                    # Read acknowledgement must never delay or prevent the actual
-                    # guest-reply worker. Run it separately.
-                    threading.Thread(
-                        target=_safe_mark_message_as_read,
-                        args=(msg_id,),
-                        daemon=True,
-                        name=f"wa-read-{msg_id[-8:]}",
-                    ).start()
-
-                    worker = threading.Thread(
-                        target=handle_incoming_async,
-                        args=(msg, sender, msg_type),
-                        daemon=True,
-                        name=f"wa-msg-{msg_id[-8:]}",
-                    )
-                    worker.start()
+                    if not worker_slots.acquire(blocking=False):
+                        with state_lock:
+                            processed_msg_ids.pop(msg_id, None)
+                        return jsonify({"status": "busy"}), 503
+                    try:
+                        message_workers.submit(_queued_message, msg, sender, msg_type)
+                    except Exception:
+                        worker_slots.release()
+                        with state_lock:
+                            processed_msg_ids.pop(msg_id, None)
+                        raise
 
         print(
             f"WEBHOOK COMPLETE: dispatched={dispatched} status_only={status_only}",
@@ -7553,9 +7567,12 @@ def startup():
     print(f"========== {APP_VERSION} READY ==========", flush=True)
 
 
-startup()
+if os.getenv("BOT_AUTOSTART", "0") == "1":
+    startup()
 
 
 if __name__ == "__main__":
+    if os.getenv("BOT_AUTOSTART", "0") != "1":
+        startup()
     port = int(os.environ.get("PORT", "10000"))
     app.run(host="0.0.0.0", port=port)

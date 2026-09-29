@@ -5528,6 +5528,15 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     t = normalize_text(user_text)
     guest_info = get_guest_stay_status(sender_phone)
+    # One targeted live refresh when the in-memory Rooms cache has no matching guest.
+    # This fixes false "new customer" replies after a stale/empty Sheet cache,
+    # without changing any other routing or billing logic.
+    if guest_info is None:
+        try:
+            if fetch_sheet_data_sync(force=True):
+                guest_info = get_guest_stay_status(sender_phone)
+        except Exception as exc:
+            print("GUEST STATUS REFRESH ERROR:", exc, flush=True)
     is_inhouse = bool(guest_info and guest_info.get("is_inhouse"))
     is_checkout = bool(
         guest_info and guest_info.get("status") == "CHECKED_OUT"

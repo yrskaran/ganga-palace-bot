@@ -4399,7 +4399,17 @@ def _ai_knowledge_snapshot(max_chars=3600, user_text=""):
 
 
 def concierge_style():
-    return Path(__file__).with_name("concierge_style.txt").read_text(encoding="utf-8")
+    style_path = Path(__file__).with_name("concierge_style.txt")
+    try:
+        return style_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        # Optional style file: keep the receptionist running when the deployment
+        # does not include the companion file. The rest of the AI contract remains unchanged.
+        return (
+            "Use a professional, warm, concise hotel-receptionist tone. "
+            "Be polite and helpful, never casual or rude. "
+            "Use only verified hotel information and do not invent facts."
+        )
 
 
 def _ai_understanding_prompt(user_text, guest_info, sender_phone):

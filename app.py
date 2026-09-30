@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 from reliability import Store
 import durable_runtime
 import re
@@ -124,7 +125,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V40-DURABLE-OPERATIONS"
+APP_VERSION = "HOTEL-AI-V41-FREE-DEMO"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -7619,7 +7620,7 @@ def webhook():
         return "Invalid signature", 403
 
     if durable_store is None and not app.testing:
-        print("WEBHOOK NOT READY: start with python serve.py and BOT_DB_PATH configured", flush=True)
+        print("WEBHOOK NOT READY: start with python serve.py to initialize demo/persistent storage", flush=True)
         return jsonify({"status": "not_ready"}), 503
 
     try:
@@ -7727,11 +7728,24 @@ def session_snapshot(phone):
             "active_orders","photo_sessions","guest_language_cache","conversation_memory")}
 
 
-def init_durable():
-    global durable_store
+def database_path():
+    mode = os.getenv("BOT_STORAGE_MODE", "demo").strip().lower()
+    if mode == "demo":
+        # Ignore an old /var/data setting: free hosting has no mounted persistent disk.
+        return str(Path(tempfile.gettempdir()) / "hotel-bot-demo" / "hotel-bot.sqlite3")
+    if mode != "persistent":
+        raise RuntimeError("BOT_STORAGE_MODE must be demo or persistent")
     path = os.getenv("BOT_DB_PATH", "").strip()
     if not path:
-        raise RuntimeError("Set BOT_DB_PATH to a file on a persistent disk before starting V40")
+        raise RuntimeError("Persistent mode requires BOT_DB_PATH on a mounted persistent disk")
+    return path
+
+
+def init_durable():
+    global durable_store
+    path = database_path()
+    if os.getenv("BOT_STORAGE_MODE", "demo").strip().lower() == "demo":
+        print("FREE DEMO STORAGE: temporary database; conversations, queued work and deduplication may reset when hosting restarts. Google Sheets records remain external.", flush=True)
     durable_store = Store(path)
     durable_store.recover()
     for phone, snapshot in durable_store.sessions().items():

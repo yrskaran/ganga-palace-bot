@@ -125,7 +125,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V41-FREE-DEMO"
+APP_VERSION = "HOTEL-AI-V42-DEMO-CONVERSATION-FIX"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -376,7 +376,9 @@ def guest_language(text):
         'garhwali': {'kakh jula','kakh jaula','myaiku dya'},
         'kumaoni': {'kakh jaula','kati cha','muila dya'},
     }
-    scores = {k: len(words & v) for k, v in sets.items()}
+    sets['hinglish'].update({'krwao', 'karwao', 'krwa', 'karwa', 'phir', 'nhi'})
+    # English "to/the" alone is not evidence of Hindi.
+    scores = {k: len((words - {'to', 'the'}) & v) for k, v in sets.items()}
     low = raw.lower()
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
@@ -1430,13 +1432,14 @@ def _classify_guest_status(value):
 
 def room_columns(headers):
     """Resolve the same room identity columns for guest lookup and billing."""
-    normalized = [re.sub(r"[^A-Z0-9]+", " ", str(h).upper()).strip() for h in headers]
+    # Some supplied sheets label columns "ROOM (A)", "PHONE (E)" etc.
+    normalized = [re.sub(r"[^A-Z0-9]+", " ", re.sub(r"\s*\([A-Z]{1,3}\)\s*$", "", str(h).upper())).strip() for h in headers]
     aliases = {
         "room": (0, ("ROOM", "ROOM NO", "ROOM NUMBER")),
         "name": (3, ("GUEST NAME", "NAME", "GUEST", "CUSTOMER NAME")),
         "phone": (4, ("WHATSAPP NUMBER", "WHATSAPP", "WHATSAPP NO", "PHONE", "PHONE NUMBER", "MOBILE", "MOBILE NUMBER", "CONTACT", "CONTACT NUMBER")),
-        "rate": (2, ("TARIFF", "ROOM TARIFF", "ROOM RATE", "RATE", "PRICE")),
-        "status": (5, ("STATUS", "STAY STATUS", "GUEST STATUS", "CHECKIN STATUS", "CHECK IN STATUS")),
+        "rate": (2, ("TARIFF", "ROOM TARIFF", "ROOM RATE", "RATE", "PRICE", "ROOM PRICE", "RENT", "ROOM RENT")),
+        "status": (5, ("STATUS", "STAY STATUS", "GUEST STATUS", "CHECKIN STATUS", "CHECK IN STATUS", "BOOKING STATUS")),
     }
     result = {}
     for field, (legacy, names) in aliases.items():
@@ -4182,6 +4185,15 @@ def service_type(text):
 # ============================================================
 
 def start_checkin(sender_phone):
+    existing = get_guest_stay_status(sender_phone)
+    if existing and existing.get("is_inhouse"):
+        with state_lock:
+            checkin_sessions.pop(sender_phone, None)
+        send_whatsapp_message(sender_phone, f"Aapka check-in Room {existing['room']} mein already active hai. Dobara OTP ki zaroorat nahi hai.")
+        return
+    if shared_store.get("schema_valid") is False or not shared_store.get("last_synced"):
+        send_whatsapp_message(sender_phone, "Hotel ka guest record abhi verify nahi ho pa raha. Dobara check-in shuru karne se pehle reception se confirm karein.")
+        return
     otp = str(random.randint(1000, 9999))
     with state_lock:
         checkin_sessions[sender_phone] = {
@@ -4193,7 +4205,7 @@ def start_checkin(sender_phone):
             "id_link": None,
         }
 
-    send_staff_alert(
+    staff_accepted = send_staff_alert(
         room="",
         role="Reception",
         message=(
@@ -4202,6 +4214,12 @@ def start_checkin(sender_phone):
         ),
         fallback_phone=STAFF_PHONE,
     )
+
+    if not staff_accepted:
+        with state_lock:
+            checkin_sessions.pop(sender_phone, None)
+        send_whatsapp_message(sender_phone, "Reception ko check-in request nahi bhej paaya. Aap front desk par check-in kar sakte hain; abhi OTP ka intezaar na karein.")
+        return
 
     send_whatsapp_message(
         sender_phone,
@@ -4551,6 +4569,7 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     return f"""
 You are the semantic brain of a WhatsApp hotel receptionist.
 {concierge_style()}
+For a factual question such as "Room me coffee ka samaan hai?", say the fact is unconfirmed and offer reception confirmation; set needs_reception=false unless the guest asks you to contact staff. Never imply that an amenity is absent merely because it is unlisted. For "confirm krwao phir", use RECEPTION; the backend will write the actual result, so do not promise an update time. A missing greeting/reminder is a notification enquiry, not a room complaint requiring a room number.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Understand that message using the recent role-separated conversation and hotel knowledge.
 Handle Hindi, Hinglish, English, slang, spelling mistakes, indirect wording and short follow-ups such as "wahi", "uske baad", "haan", "nahi", "more" and contextual choices.
@@ -5549,6 +5568,44 @@ def process_and_reply(message, sender_phone, msg_type):
         turn_capture.current = None
 
 
+def handle_notification_question(phone, text, guest_info=None):
+    t = normalize_text(text)
+    topic = any(x in t for x in ("morning", "gud morning", "good morning", "notification", "reminder", "welcome message"))
+    missing = any(x in t for x in ("nahi aaya", "nhi aaya", "nahi aya", "nhi aya", "not received", "didn't get", "did not get", "msg nahi", "message nahi"))
+    if not (topic and missing):
+        return False
+    early = now_ist().hour < 8 and "morning" in t
+    english = get_guest_response_language(phone,text) == "english"
+    if early:
+        reply = ("Good morning! The breakfast reminder window is 8–10 AM; there is no separate earlier good-morning reminder configured. How can I help you this morning?" if english else
+                 "Good morning! Breakfast reminder 8–10 baje ke beech set hai; usse pehle alag good-morning reminder set nahi hai. Abhi aapki kis cheez mein help karun?")
+    else:
+        reply = ("Sorry the reminder didn't reach you. I can't confirm its delivery from this chat alone. How can I help you now?" if english else
+                 "Reminder nahi mila, samajh gaya. Is chat se uski delivery ka reason confirm nahi kar sakta. Abhi aapko kis cheez mein help chahiye?")
+    send_whatsapp_message(phone,reply)
+    return True
+
+
+def reply_to_reception_request(phone, guest_info, user_text):
+    history = get_conversation_history(phone)
+    context = "\n".join(item.get("content", "") for item in history[-4:])
+    ok = notify_reception_request(phone, guest_info,
+        "Recent guest conversation:\n" + context + "\nCurrent request: " + user_text,
+        "explicit_reception_request")
+    if ok:
+        reply = bilingual_text(phone,
+            "I've submitted the request to reception. Their confirmation is still pending.",
+            "Reception ke liye request bhej di hai. Unki confirmation abhi baaki hai.",
+            "रिसेप्शन के लिए अनुरोध भेज दिया है। उनकी पुष्टि अभी बाकी है।")
+    else:
+        reply = bilingual_text(phone,
+            "I couldn't send the request to reception just now. Please contact the front desk directly to confirm it.",
+            "Reception ko request abhi nahi bhej paaya. Iski confirmation ke liye front desk se seedhe sampark karein.",
+            "रिसेप्शन को अनुरोध अभी नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
+    send_whatsapp_message(phone,reply)
+    return ok
+
+
 def _process_and_reply(message, sender_phone, msg_type):
     user_text = ""
 
@@ -5647,6 +5704,25 @@ def _process_and_reply(message, sender_phone, msg_type):
     is_checkout = bool(
         guest_info and guest_info.get("status") == "CHECKED_OUT"
     )
+
+    with state_lock:
+        old_checkin = checkin_sessions.get(sender_phone)
+        if old_checkin and (is_inhouse or time.time() - old_checkin.get("created", time.time()) > 1800):
+            checkin_sessions.pop(sender_phone, None)
+
+    if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
+        reply_to_reception_request(sender_phone, guest_info, user_text)
+        return
+
+    if handle_notification_question(sender_phone, user_text, guest_info):
+        return
+
+    if t in {"room number to pta hoga", "room number toh pata hoga", "mera room number", "my room number", "room number pata hai"}:
+        if is_inhouse:
+            send_whatsapp_message(sender_phone, f"Aapke hotel record mein Room {guest_info['room']} hai. Kis cheez mein madad chahiye?")
+        else:
+            send_whatsapp_message(sender_phone, "Aapka room record abhi verify nahi ho pa raha. Main room number guess nahi karunga; reception se record confirm kar lein.")
+        return
 
     # One semantic AI pass for the whole guest turn. First consume a safe local
     # hotel-data route for common deterministic questions; this dramatically reduces
@@ -6306,9 +6382,10 @@ def _process_and_reply(message, sender_phone, msg_type):
                 reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", reply).strip()
                 reply = attach_google_maps_links(reply).strip()
                 if reply:
+                    if ai_action == "RECEPTION" or ai_understanding.get("needs_reception"):
+                        reply_to_reception_request(sender_phone, guest_info, user_text)
+                        return
                     send_whatsapp_message(sender_phone, reply)
-                    if ai_understanding.get("needs_reception") or any(x in normalize_text(reply) for x in ["reception se confirm", "reception can confirm", "reception will confirm", "reception ko bata"]):
-                        notify_reception_request(sender_phone, guest_info, user_text, "ai_semantic_reception")
                     remember_conversation(sender_phone, "user", user_text)
                     remember_conversation(sender_phone, "assistant", reply)
                     return

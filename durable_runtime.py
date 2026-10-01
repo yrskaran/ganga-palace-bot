@@ -2,6 +2,7 @@ import hashlib
 import json
 import threading
 import time
+import os
 from types import SimpleNamespace
 
 context = threading.local()
@@ -26,6 +27,11 @@ def request(app, payload):
 
 def transmit(app,key,payload):
     store=app.durable_store
+    # Suppress unsent legacy technical alerts after the demo opts out, too.
+    body=(payload.get('text') or {}).get('body','')
+    if body.startswith('Hotel bot needs review. Reference:') and os.getenv('OWNER_TECH_ALERTS','0').strip().lower() not in ('1','true','yes'):
+        store.send_result(key,'suppressed')
+        return None
     if not store.claim_send(key):
         return None
     try:
@@ -55,7 +61,11 @@ def loop(app):
         try:
             for row in app.durable_store.due_sends():
                 transmit(app,row['id'],json.loads(row['body']))
-            owner=app.format_whatsapp_number(app.OWNER_PHONE)
+            # Technical diagnostics must be deliberately enabled for a separate admin number.
+            # They are never automatically sent to a guest just because OWNER_PHONE is set.
+            admin_number=os.getenv('TECH_ALERT_PHONE','').strip()
+            enabled=os.getenv('OWNER_TECH_ALERTS','0').strip().lower() in ('1','true','yes')
+            owner=app.format_whatsapp_number(admin_number) if enabled else None
             if owner:
                 for issue in app.durable_store.attention()[:5]:
                     # Never create an endless chain of failures notifying the same owner.
@@ -68,7 +78,7 @@ def loop(app):
                     previous=getattr(context,'event',None)
                     context.event='escalation:'+issue['id']
                     try:
-                        app.send_notification(owner,'Hotel bot needs review. Reference: '+issue['id']+'; status: '+issue['state']+'. Please verify before repeating the action.','OWNER')
+                        app.send_notification(owner,'Hotel bot: ek request ki jaanch zaroori hai. Status: '+issue['state']+'. Details ke liye admin review dekhein.','OWNER')
                         # The owner send itself is recorded in the outbox, including failure.
                         app.durable_store.mark_escalated(issue['id'])
                     finally:

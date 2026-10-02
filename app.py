@@ -5985,7 +5985,7 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
         "RECEPTION": "Reception",
     }
     role = mapping.get(str(result.get("category", "")).upper(), "Housekeeping" if "house" in normalize_text(service) else "Maintenance" if "maint" in normalize_text(service) or "ac" in normalize_text(service) or "tv" in normalize_text(service) else "Reception")
-    send_staff_alert(
+    staff_ok = send_staff_alert(
         room=guest_info.get("room", ""),
         role=role,
         message=(
@@ -5994,7 +5994,16 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
         ),
         fallback_phone=STAFF_PHONE,
     )
-    send_whatsapp_message(sender_phone, f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai. Staff ko inform kar diya gaya hai. 🙏")
+    if staff_ok:
+        send_whatsapp_message(
+            sender_phone,
+            f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai. Assigned staff ko inform kar diya gaya hai. 🙏"
+        )
+    else:
+        send_whatsapp_message(
+            sender_phone,
+            f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai, lekin is room/role ke liye abhi koi eligible on-duty staff nahi mila. Kripya reception se confirm karein."
+        )
     return True
 
 

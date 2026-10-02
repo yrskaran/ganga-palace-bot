@@ -136,10 +136,11 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V43-RECEPTION-BRIDGE"
+APP_VERSION = "HOTEL-AI-V44-DYNAMIC-STAFF-ROUTING"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
+STAFF_SYNC_MIN_INTERVAL = max(5, int(os.getenv("STAFF_SYNC_MIN_INTERVAL", "10")))
 LIFECYCLE_RECONCILE_MIN_INTERVAL = max(120, int(os.getenv("LIFECYCLE_RECONCILE_MIN_INTERVAL", "180")))
 GROQ_RATE_LIMIT_COOLDOWN = max(30, int(os.getenv("GROQ_RATE_LIMIT_COOLDOWN", "60")))
 AI_LIFECYCLE_WORDING = os.getenv("AI_LIFECYCLE_WORDING", "0").strip().lower() in {"1", "true", "yes", "on"}
@@ -245,6 +246,7 @@ last_model_fetch = 0
 GROQ_UNAVAILABLE_UNTIL = 0.0
 GROQ_LOCK = threading.RLock()
 last_sheet_sync_attempt = 0.0
+last_staff_sync_attempt = 0.0
 last_lifecycle_reconcile = 0.0
 
 
@@ -1218,44 +1220,126 @@ def _staff_date_matches(value, today):
 
 
 def _room_in_assignment(room, assigned_rooms):
+    """Match one room against a staff member's multi-room assignment.
+
+    Supported examples: 201,202,205 | 201/202/205 | 201-210 | 201 to 210 | All.
+    """
     room = clean_room(room)
     raw = normalize_text(assigned_rooms)
     if not room or not raw:
         return False
     if raw in {"all", "all rooms", "*", "any", "all_room", "all_rooms"}:
         return True
-    # Accept comma, slash, semicolon, space-separated room assignments and ranges.
-    tokens = [x.strip() for x in re.split(r"[,;/|]+", assigned_rooms) if x.strip()]
-    for token in tokens:
-        if clean_room(token) == room:
+
+    target = int(room)
+    # First handle explicit numeric ranges.
+    for start, end in re.findall(r"\b(\d{2,4})\s*(?:-|to)\s*(\d{2,4})\b", raw):
+        lo, hi = sorted((int(start), int(end)))
+        if lo <= target <= hi:
             return True
-        m = re.fullmatch(r"([a-z]+)?\s*(\d+)\s*[-to]+\s*([a-z]+)?\s*(\d+)", normalize_text(token))
-        if m:
-            try:
-                start = int(m.group(2)); end = int(m.group(4)); target = int(re.sub(r"\D", "", room))
-                if start <= target <= end:
-                    return True
-            except Exception:
-                pass
-    return room in {clean_room(x) for x in re.split(r"\s+", assigned_rooms) if x.strip()}
+
+    # Remove ranges, then accept any remaining room number as an explicit assignment.
+    without_ranges = re.sub(r"\b\d{2,4}\s*(?:-|to)\s*\d{2,4}\b", " ", raw)
+    explicit = {clean_room(x) for x in re.findall(r"\b\d{2,4}\b", without_ranges)}
+    return room in explicit
+
+
+def _staff_assignment_is_general(value):
+    raw = normalize_text(value)
+    return not raw or raw in {"all", "all rooms", "*", "any", "all_room", "all_rooms"}
+
+
+def refresh_staff_roster(force=False):
+    """Refresh only Staff_Roster so role/leave/room changes take effect quickly."""
+    global last_staff_sync_attempt
+    now = time.time()
+    with state_lock:
+        if not force and now - last_staff_sync_attempt < STAFF_SYNC_MIN_INTERVAL:
+            return False
+        last_staff_sync_attempt = now
+
+    client = get_gspread_client()
+    if not client:
+        return False
+    try:
+        sh = client.open_by_key(SHEET_ID)
+        staff = sh.worksheet("Staff_Roster").get_all_values()
+        with state_lock:
+            shared_store["staff_headers"] = [str(x).strip() for x in (staff[0] if staff else [])]
+            shared_store["staff_roster"] = staff[1:] if len(staff) > 1 else []
+        print("STAFF ROSTER REFRESHED", flush=True)
+        return True
+    except Exception as exc:
+        print("STAFF ROSTER REFRESH ERROR:", exc, flush=True)
+        return False
+
+
+def _staff_rows_snapshot():
+    refresh_staff_roster(force=False)
+    with state_lock:
+        return (
+            list(shared_store.get("staff_headers", [])),
+            list(shared_store.get("staff_roster", [])),
+        )
+
+
+def _role_matches(row_role, target_role):
+    row_role = normalize_text(row_role)
+    target_role = normalize_text(target_role)
+    return bool(row_role and target_role and (target_role in row_role or row_role in target_role))
+
+
+def _staff_roster_has_role(role):
+    headers, rows = _staff_rows_snapshot()
+    if not headers or not rows:
+        return False
+    h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
+    return any(_role_matches(_staff_value(row, h, "Role", "Department", "Service"), role) for row in rows)
+
+
+def is_on_duty_staff_phone(phone, role):
+    """True only when this phone is currently on duty in the requested Sheet role."""
+    wanted = format_whatsapp_number(phone)
+    if not wanted:
+        return False
+    headers, rows = _staff_rows_snapshot()
+    if not headers or not rows:
+        return False
+    h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
+    today = now_ist().date()
+    for row in rows:
+        row_phone = format_whatsapp_number(_staff_value(
+            row, h, "WhatsApp", "WhatsApp Number", "Phone", "Phone Number", "Mobile"
+        ))
+        if row_phone != wanted:
+            continue
+        if not _role_matches(_staff_value(row, h, "Role", "Department", "Service"), role):
+            continue
+        if not _staff_is_on_duty(_staff_value(row, h, "Status", "Duty Status", "On Duty")):
+            continue
+        if not _staff_date_matches(_staff_value(row, h, "Duty Date", "Date"), today):
+            continue
+        return True
+    return False
 
 
 def find_on_duty_staff(room, role):
-    """Return one live on-duty staff member for a room/role from Staff_Roster.
+    """Return the correct on-duty staff member from Staff_Roster.
 
-    Priority: exact room assignment -> role-wide on-duty backup -> None.
-    A room-assigned row wins, so the message goes only to that staff member.
+    Priority:
+    1) on-duty staff explicitly assigned to this room (one staff may own many rooms)
+    2) on-duty role-wide staff whose Assigned Rooms is blank/All
+    3) None — never steal a request from another staff member's room assignment.
     """
     target_role = normalize_text(role)
     today = now_ist().date()
-    with state_lock:
-        headers = list(shared_store.get("staff_headers", []))
-        rows = list(shared_store.get("staff_roster", []))
+    headers, rows = _staff_rows_snapshot()
     if not headers or not rows:
         return None
 
     h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
-    candidates = []
+    exact = []
+    general = []
     for row in rows:
         row_role = _staff_value(row, h, "Role", "Department", "Service")
         status = _staff_value(row, h, "Status", "Duty Status", "On Duty")
@@ -1263,33 +1347,52 @@ def find_on_duty_staff(room, role):
         phone = _staff_value(row, h, "WhatsApp", "WhatsApp Number", "Phone", "Phone Number", "Mobile")
         name = _staff_value(row, h, "Staff Name", "Name", "Employee")
         assigned = _staff_value(row, h, "Assigned Rooms", "Rooms", "Room Assignment", "Room")
-        if not name or not phone or not _staff_is_on_duty(status):
+        normalized_phone = format_whatsapp_number(phone)
+
+        if not name or not normalized_phone or not _staff_is_on_duty(status):
             continue
         if not _staff_date_matches(date_value, today):
             continue
-        if target_role and target_role not in normalize_text(row_role) and normalize_text(row_role) not in target_role:
+        if target_role and not _role_matches(row_role, target_role):
             continue
-        room_match = _room_in_assignment(room, assigned)
-        candidates.append((room_match, name, phone))
 
-    # Exact room assignment is authoritative. Only if there is no assignment
-    # do we use a role-wide on-duty person as backup.
-    for room_match, name, phone in candidates:
-        if room_match:
-            return {"name": name, "phone": format_whatsapp_number(phone), "source": "room"}
-    if candidates:
-        name, phone = candidates[0][1], candidates[0][2]
-        return {"name": name, "phone": format_whatsapp_number(phone), "source": "role"}
+        staff = {
+            "name": name,
+            "phone": normalized_phone,
+            "role": row_role,
+            "assigned_rooms": assigned,
+        }
+        if room and _room_in_assignment(room, assigned):
+            exact.append(staff)
+        elif _staff_assignment_is_general(assigned):
+            general.append(staff)
+
+    if exact:
+        result = exact[0]
+        result["source"] = "room"
+        return result
+    if general:
+        result = general[0]
+        result["source"] = "role"
+        return result
     return None
 
 
 def send_staff_alert(room, role, message, fallback_phone=None):
-    """Route a generic internal alert through today's Staff_Roster."""
+    """Route a service request to the Sheet-assigned on-duty staff member."""
     staff = find_on_duty_staff(room, role)
-    target = staff["phone"] if staff and staff.get("phone") else fallback_phone
+
+    # Once a role exists in Staff_Roster, the Sheet is authoritative. If everyone
+    # for that role is OFF/LEAVE or the room is assigned elsewhere, do not bypass
+    # the roster by silently messaging an old environment-variable number.
+    role_managed_in_sheet = _staff_roster_has_role(role)
+    target = staff["phone"] if staff and staff.get("phone") else (
+        None if role_managed_in_sheet else format_whatsapp_number(fallback_phone)
+    )
     if not target:
-        print(f"STAFF ROUTING: no on-duty recipient for role={role} room={room}", flush=True)
+        print(f"STAFF ROUTING: no eligible on-duty recipient for role={role} room={room}", flush=True)
         return False
+
     ok = send_notification(target, message, "STAFF")
     print(
         f"STAFF ROUTING: role={role} room={room} recipient={staff.get('name') if staff else 'legacy'} "
@@ -1299,22 +1402,38 @@ def send_staff_alert(room, role, message, fallback_phone=None):
     return ok
 
 
-def send_reception_alert(message):
-    """Send reception alerts only to the configured reception operator.
+def send_reception_alert(room, message):
+    """Route reception dynamically from Staff_Roster, with legacy fallback only when unmanaged."""
+    staff = find_on_duty_staff(room, "Reception")
+    role_managed_in_sheet = _staff_roster_has_role("Reception")
 
-    A stable dedicated operator is required because their quoted WhatsApp replies
-    are used as an authenticated bridge back to the exact guest request.
-    """
-    target = format_whatsapp_number(RECEPTION_PHONE)
+    if staff:
+        target = staff["phone"]
+        operator = dict(staff)
+    elif role_managed_in_sheet:
+        print(f"RECEPTION ROUTING: no eligible on-duty receptionist for room={room}", flush=True)
+        return False, None, None
+    else:
+        target = format_whatsapp_number(RECEPTION_PHONE)
+        operator = {
+            "name": "Legacy Reception",
+            "phone": target,
+            "source": "fallback",
+            "role": "Reception",
+            "assigned_rooms": "All",
+        } if target else None
+
     if not target:
-        print("RECEPTION ROUTING: RECEPTION_PHONE missing/invalid", flush=True)
-        return False, None
+        print("RECEPTION ROUTING: no receptionist configured", flush=True)
+        return False, None, None
+
     ok, remote_id = send_notification_with_id(target, message, "RECEPTION")
     print(
-        f"RECEPTION ROUTING: recipient={target} accepted={ok} remote_id={bool(remote_id)}",
+        f"RECEPTION ROUTING: room={room} recipient={operator.get('name') if operator else 'unknown'} "
+        f"source={operator.get('source') if operator else 'unknown'} accepted={ok} remote_id={bool(remote_id)}",
         flush=True,
     )
-    return ok, remote_id
+    return ok, remote_id, operator
 
 
 def sync_sheets_in_background():
@@ -4637,7 +4756,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
             f"Fallback: message me {request_id} likh sakte hain."
         )
 
-        ok, remote_id = send_reception_alert(message)
+        ok, remote_id, operator = send_reception_alert(room, message)
         ticket = {
             "request_id": request_id,
             "guest_phone": guest_phone or sender_phone,
@@ -4647,6 +4766,9 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
             "status": "pending" if ok else "send_failed",
             "delivery_status": "accepted" if ok else "failed",
             "alert_message_id": remote_id,
+            "reception_phone": (operator or {}).get("phone"),
+            "reception_name": (operator or {}).get("name"),
+            "reception_source": (operator or {}).get("source"),
             "source": source,
             "created": time.time(),
         }
@@ -4723,9 +4845,32 @@ def _pending_reception_summary():
     return items
 
 
+def _reception_tickets_for_operator(phone):
+    wanted = format_whatsapp_number(phone)
+    now = time.time()
+    items = []
+    with state_lock:
+        for ticket in reception_requests_by_id.values():
+            if now - ticket.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
+                continue
+            if format_whatsapp_number(ticket.get("reception_phone")) != wanted:
+                continue
+            if ticket.get("status") in {"send_failed", "delivery_failed"}:
+                continue
+            items.append(dict(ticket))
+    items.sort(key=lambda item: item.get("created", 0), reverse=True)
+    return items
+
+
 def handle_reception_operator_message(message, sender_phone, msg_type):
-    """Bridge a reception operator reply to the exact guest without guessing."""
-    if format_whatsapp_number(sender_phone) != format_whatsapp_number(RECEPTION_PHONE):
+    """Bridge replies from the receptionist assigned by Staff_Roster.
+
+    New requests follow the current Sheet role/room assignment. A pending ticket
+    remains bound to the receptionist who actually received that alert, so a
+    mid-shift roster change cannot cause a reply to reach the wrong guest.
+    """
+    sender = format_whatsapp_number(sender_phone)
+    if not sender:
         return False
 
     if msg_type == "text":
@@ -4736,26 +4881,32 @@ def handle_reception_operator_message(message, sender_phone, msg_type):
     elif msg_type == "button":
         reply_text = str((message.get("button") or {}).get("text", "")).strip()
     else:
-        send_whatsapp_message(
-            sender_phone,
-            "Reception mode active hai. Guest ko update bhejne ke liye guest request wale alert par text Reply karein."
-        )
-        return True
-
-    if not reply_text:
-        send_whatsapp_message(sender_phone, "Khali reply forward nahi kiya gaya. Kripya update text me bhejein.")
-        return True
+        reply_text = ""
 
     context_id = str((message.get("context") or {}).get("id", "")).strip()
     guest_phone, pending = _find_reception_request_by_alert_id(context_id)
-    if not guest_phone:
+    if not guest_phone and reply_text:
         guest_phone, pending = _find_reception_request_by_request_id(reply_text)
 
+    # A mapped ticket is authorized only for the receptionist that received it.
     if guest_phone and pending:
-        # Strip the fallback request id from the guest-facing text when present.
+        assigned_phone = format_whatsapp_number(pending.get("reception_phone"))
+        if not assigned_phone or sender != assigned_phone:
+            return False
+
+        if msg_type not in {"text", "interactive", "button"}:
+            send_whatsapp_message(
+                sender,
+                "Guest update ke liye isi request alert par text Reply karein."
+            )
+            return True
+        if not reply_text:
+            send_whatsapp_message(sender, "Khali reply forward nahi kiya gaya. Kripya update text me bhejein.")
+            return True
+
         clean_reply = re.sub(r"\bR-[A-F0-9]{6}\b\s*[:\-]?\s*", "", reply_text, flags=re.I).strip()
         if not clean_reply:
-            send_whatsapp_message(sender_phone, "Request ID mil gaya, lekin update text missing hai.")
+            send_whatsapp_message(sender, "Request ID mil gaya, lekin update text missing hai.")
             return True
 
         sent = send_whatsapp_message(guest_phone, "Reception update: " + clean_reply)
@@ -4766,47 +4917,50 @@ def handle_reception_operator_message(message, sender_phone, msg_type):
                 current["last_reply"] = clean_reply[:1000]
                 current["responded_at"] = time.time()
                 current["reception_message_id"] = message.get("id")
-                # Keep the guest's latest-status view aligned when this is still
-                # their latest ticket, without overwriting a newer request.
                 latest = reception_request_sessions.get(guest_phone, {})
                 if latest.get("request_id") == current.get("request_id"):
                     reception_request_sessions[guest_phone] = current
 
         request_id = pending.get("request_id", "")
         room = pending.get("room") or "?"
-        if sent:
-            send_whatsapp_message(
-                sender_phone,
-                f"Update guest ko bhej diya. Room {room} | {request_id}"
-            )
-        else:
-            send_whatsapp_message(
-                sender_phone,
-                f"Guest ko update deliver nahi ho paaya. Room {room} | {request_id}"
-            )
+        send_whatsapp_message(
+            sender,
+            (f"Update guest ko bhej diya. Room {room} | {request_id}"
+             if sent else
+             f"Guest ko update deliver nahi ho paaya. Room {room} | {request_id}")
+        )
         return True
 
-    # Never guess the target when reception sends an unquoted/unmapped message.
-    pending_items = _pending_reception_summary()[:3]
-    if pending_items:
+    # No ticket was quoted. Only a CURRENT on-duty Reception role from the Sheet
+    # is treated as an operator; changing Role/Status in the Sheet changes this.
+    if not is_on_duty_staff_phone(sender, "Reception"):
+        return False
+
+    if msg_type not in {"text", "interactive", "button"}:
+        send_whatsapp_message(
+            sender,
+            "Reception mode active hai. Guest ko update bhejne ke liye us request alert par text Reply karein."
+        )
+        return True
+
+    assigned = _reception_tickets_for_operator(sender)[:3]
+    if assigned:
         refs = ", ".join(
             f"{item.get('request_id')} (Room {item.get('room') or '?'})"
-            for _, item in pending_items
+            for item in assigned
         )
         send_whatsapp_message(
-            sender_phone,
-            "Ye message kisi guest ko auto-forward nahi kiya gaya. "
-            "Sahi guest request wale alert par WhatsApp Reply karein. "
-            f"Pending: {refs}"
+            sender,
+            "Ye standalone message kisi guest ko auto-forward nahi kiya gaya. "
+            "Sahi request alert par WhatsApp Reply karein. "
+            f"Aapki pending requests: {refs}"
         )
     else:
         send_whatsapp_message(
-            sender_phone,
-            "Reception mode active hai. Abhi koi mapped pending guest request nahi mili. "
-            "Nayi request aane par us alert par Reply karke update bhejein."
+            sender,
+            "Reception mode active hai. Abhi aapke number par koi mapped pending guest request nahi hai."
         )
     return True
-
 
 
 # ============================================================
@@ -5845,9 +5999,9 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
 
 
 def process_and_reply(message, sender_phone, msg_type):
-    """Record guest turns; reception operator messages use the mapped bridge."""
-    if format_whatsapp_number(sender_phone) == format_whatsapp_number(RECEPTION_PHONE):
-        return handle_reception_operator_message(message, sender_phone, msg_type)
+    """Record guest turns; Sheet-authorized reception operators use the mapped bridge."""
+    if handle_reception_operator_message(message, sender_phone, msg_type):
+        return
 
     before = get_conversation_history(sender_phone)
     capture = {"phone": sender_phone, "user": "", "replies": []}

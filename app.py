@@ -136,7 +136,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V44-DYNAMIC-STAFF-ROUTING"
+APP_VERSION = "HOTEL-AI-V45-NATURAL-EMOJI-CONCIERGE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -489,23 +489,33 @@ def get_guest_response_language(sender_phone,text=None):
     with state_lock: return guest_language_cache.get(sender_phone,'english')
 
 
+def _strip_emoji_modifiers(text):
+    """Normalize emoji variants (skin tone / variation selector) for intent checks."""
+    raw = str(text or "")
+    raw = raw.replace("\ufe0f", "").replace("\ufe0e", "")
+    raw = re.sub(r"[\U0001F3FB-\U0001F3FF]", "", raw)
+    return raw.strip()
+
+
 def is_yes(text):
     t = normalize_text(text)
+    emoji = _strip_emoji_modifiers(text)
     return t in {
         "yes", "y", "haan", "ha", "ji", "ok", "okay", "theek", "thik",
         "confirm", "confirmed", "confirm kiya", "confirm kar diya",
         "haan confirm", "yes confirm", "done", "kar diya", "kar do",
         "kardo", "bhej do", "bhejo", "sure",
         "हाँ", "हां", "जी", "ठीक है", "haan ji", "yes please", "theek hai", "thik hai"
-    }
+    } or emoji in {"👍", "👌", "✅", "🙌"}
 
 
 def is_no(text):
     t = normalize_text(text)
+    emoji = _strip_emoji_modifiers(text)
     return t in {
         "no", "n", "nahi", "nahin", "cancel", "rehne do", "rehne",
         "stop", "exit", "chodo", "नहीं", "नही", "रहने 2", "रहने दो", "मत भेजो"
-    }
+    } or emoji in {"👎", "❌", "🚫"}
 
 
 def extract_room_number(text):
@@ -1984,6 +1994,64 @@ def _transport_request(payload):
     except Exception as exc:
         print("WHATSAPP REQUEST ERROR:", exc, flush=True)
         return None
+
+
+def send_whatsapp_reaction(to_number, message_id, emoji):
+    """React to a guest WhatsApp message. Best-effort; never blocks the main reply."""
+    number = format_whatsapp_number(to_number)
+    message_id = str(message_id or "").strip()
+    emoji = _strip_emoji_modifiers(emoji)
+    if not number or not message_id or not emoji:
+        return False
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": number,
+        "type": "reaction",
+        "reaction": {"message_id": message_id, "emoji": emoji},
+    }
+    try:
+        res = whatsapp_request(payload)
+        return res is not None and res.status_code in (200, 201)
+    except Exception as exc:
+        print("WHATSAPP REACTION ERROR:", type(exc).__name__, flush=True)
+        return False
+
+
+def _positive_reaction_for_message(text):
+    """Return one restrained reaction for clearly positive guest messages."""
+    raw = str(text or "").strip()
+    emoji = _strip_emoji_modifiers(raw)
+    if emoji in {"😍", "🥰", "❤", "💖", "💯", "👏", "🎉", "🥳"}:
+        return "❤️"
+    if emoji in {"👍", "👌", "✅", "🙌", "🙏", "😊", "🙂"}:
+        return "👍"
+
+    t = normalize_text(raw)
+    positive_phrases = (
+        "thank you", "thanks", "shukriya", "dhanyavad", "dhanyavaad",
+        "bahut acha", "bahut accha", "bohot acha", "mast", "kamaal",
+        "kamal", "great", "awesome", "perfect", "lovely", "love it",
+        "badiya", "badhiya", "super"
+    )
+    if any(x in t for x in positive_phrases):
+        return "👍"
+    return ""
+
+
+def maybe_react_to_guest_message(to_number, message):
+    """React only to obvious positive messages so the bot does not feel spammy."""
+    if not isinstance(message, dict):
+        return False
+    message_id = str(message.get("id") or "").strip()
+    msg_type = str(message.get("type") or "").strip()
+    if msg_type == "text":
+        text = str((message.get("text") or {}).get("body", "")).strip()
+    elif msg_type == "reaction":
+        text = str((message.get("reaction") or {}).get("emoji", "")).strip()
+    else:
+        return False
+    emoji = _positive_reaction_for_message(text)
+    return send_whatsapp_reaction(to_number, message_id, emoji) if emoji else False
 
 
 def send_whatsapp_message(to_number, text):
@@ -5514,6 +5582,37 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     lang = get_guest_response_language(sender_phone, user_text)
     name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
 
+    # Emoji is a real part of WhatsApp language. Handle common emoji-only turns
+    # naturally instead of falling into "I don't understand".
+    emoji_only = _strip_emoji_modifiers(user_text)
+    if emoji_only in {"🙏"}:
+        msg = "Bilkul ji 🙏"
+    elif emoji_only in {"😍", "🥰", "❤", "💖", "💕"}:
+        msg = "Bahut khushi hui 😊"
+    elif emoji_only in {"😂", "🤣", "😄", "😁"}:
+        msg = "Haha 😄"
+    elif emoji_only in {"👍", "👌", "✅", "🙌"}:
+        msg = "Bilkul 👍"
+    elif emoji_only in {"😊", "🙂"}:
+        msg = "Khushi hui 😊"
+    elif emoji_only in {"😢", "😭", "😞", "😔"}:
+        msg = "Oh, sab theek hai? Bataiye kya hua — main help karta hoon."
+    elif emoji_only in {"😡", "😠", "🤬"}:
+        msg = "Lagta hai kuch theek nahi hua. Bataiye kya problem hui, main help karta hoon."
+    elif emoji_only in {"🤒", "🤕", "😷"}:
+        msg = "Aapki tabiyat theek nahi lag rahi. Kya main reception se medical help ke liye baat karwa doon?"
+    elif emoji_only in {"😴", "🥱"}:
+        msg = "Aaram kijiye 😊 Agar room me kisi cheez ki zarurat ho to bata dein."
+    else:
+        msg = ""
+
+    if msg:
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        print("LOCAL CONVERSATION: emoji", flush=True)
+        return True
+
     thanks = {
         "thanks", "thank you", "thankyou", "thx", "ty", "thanks ji",
         "thank you ji", "thankyou ji", "dhanyavad", "dhanyavaad",
@@ -6059,6 +6158,10 @@ def process_and_reply(message, sender_phone, msg_type):
     if handle_reception_operator_message(message, sender_phone, msg_type):
         return
 
+    # A small WhatsApp reaction on clearly positive messages makes the bot feel
+    # more like a real front desk. It is deliberately best-effort and selective.
+    maybe_react_to_guest_message(sender_phone, message)
+
     before = get_conversation_history(sender_phone)
     capture = {"phone": sender_phone, "user": "", "replies": []}
     turn_capture.current = capture
@@ -6201,6 +6304,15 @@ def _process_and_reply(message, sender_phone, msg_type):
         user_text = choice.get("title", "")
     elif msg_type == "button":
         user_text = (message.get("button") or {}).get("text", "")
+
+    # -------- reaction --------
+    elif msg_type == "reaction":
+        # A guest may react to one of the bot's messages with 👍 ❤️ 😂 etc.
+        # Treat the emoji as their conversational turn. An empty emoji means
+        # the reaction was removed, so no reply is needed.
+        user_text = str((message.get("reaction") or {}).get("emoji", "")).strip()
+        if not user_text:
+            return
 
     # -------- image --------
     elif msg_type == "image":

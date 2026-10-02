@@ -7,8 +7,8 @@ For a new customer, **do not edit app.py, durable_runtime.py, reliability.py, bo
 You only need:
 
 1. `customer_config.json` — hotel name, timings, rooms, menu, policies, photos, local guide.
-2. Render environment variables — WhatsApp credentials, Sheet ID, reception/kitchen/staff numbers, and AI key.
-3. The hotel's Google Sheet using the existing Rooms / Kitchen_Orders / Staff_Roster structure.
+2. Render environment variables — WhatsApp credentials, Sheet ID, AI key, and optional legacy fallback staff numbers.
+3. The hotel's Google Sheet using the existing Rooms / Kitchen_Orders / Staff_Roster structure. In production, Staff_Roster is the live source of truth for staff role, duty status and room assignment.
 
 Everything else is the reusable bot engine.
 
@@ -32,7 +32,7 @@ Everything else is the reusable bot engine.
 
 The bot automatically prefers `customer_config.json` when it exists. Existing legacy deployments without that file keep using `hotel_data.txt`.
 
-Phone values in `customer_config.json` are convenience defaults only. For production, Render environment variables win and should be used for staff numbers.
+Phone values in `customer_config.json` and Render are fallback values only. For production, `Staff_Roster` should be authoritative. Changing a staff member's Role, Status or Assigned Rooms in the Sheet changes future routing automatically (normally within about 10 seconds).
 
 ## Safe rule
 
@@ -45,3 +45,22 @@ Never copy these between hotels: WhatsApp token, Phone Number ID, App Secret, Go
 - `hotel-ai-customer-name`
 
 When the core engine improves, apply the same tested core changes to customer repos; hotel-specific data stays isolated in `customer_config.json`.
+
+
+## Staff_Roster — no code edits for staff changes
+
+| Staff Name | Role | WhatsApp | Status | Duty Date | Assigned Rooms |
+|---|---|---|---|---|---|
+| Priya | Reception | 91XXXXXXXXXX | ON DUTY | Daily | All |
+| Ravi | Housekeeping | 91XXXXXXXXXX | ON DUTY | Daily | 201,202,203,205 |
+| Mohan | Housekeeping | 91XXXXXXXXXX | LEAVE | Daily | 204,206 |
+| Amit | Maintenance | 91XXXXXXXXXX | ON DUTY | Daily | 201-210 |
+
+Rules:
+- `Role` may be Reception, Housekeeping, Maintenance, Kitchen, Room Service, etc.
+- `Status` values such as ON DUTY / ACTIVE / AVAILABLE are eligible. LEAVE / OFF / HOLIDAY are skipped.
+- One staff member may have many rooms: `201,202,203`, `201/202/203`, or a range such as `201-210`.
+- `All` or a blank Assigned Rooms cell means role-wide staff.
+- Exact room assignment wins over role-wide staff.
+- If a role exists in Staff_Roster but nobody eligible is on duty, the bot does not silently route to an old fallback number.
+- Reception requests are sent to the current Sheet-assigned receptionist. Each ticket remembers who received it, so their quoted reply is mapped back to the correct guest.

@@ -67,4 +67,18 @@ check(handled, "wellbeing fallback did not handle a simple headache message")
 check(captured and ("medical help" in captured[-1].lower() or "paani" in captured[-1].lower()),
       "wellbeing fallback reply is not useful/natural")
 
+check(app.is_yes("👍"), "thumbs-up should confirm a pending yes/no action")
+check(app.is_yes("👍🏻"), "skin-tone thumbs-up should confirm a pending yes/no action")
+check(app.is_no("👎"), "thumbs-down should decline a pending yes/no action")
+check(app.is_no("❌"), "cross mark should decline a pending yes/no action")
+
+captured.clear()
+handled = app._local_conversation_fallback(
+    "919555555555",
+    "😍",
+    {"name": "Guest", "room": "203", "is_inhouse": True},
+)
+check(handled, "heart-eyes emoji should be handled conversationally")
+check(captured and "khushi" in captured[-1].lower(), "heart-eyes emoji response was not natural")
+
 print("SMOKE TESTS PASSED")

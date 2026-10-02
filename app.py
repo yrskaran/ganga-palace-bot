@@ -9192,19 +9192,28 @@ def monitor_guest_status_lifecycle():
                 # IN-HOUSE LIFECYCLE
                 # -----------------------------
                 if is_in:
-                    # Welcome is tied to the Sheet's current IN record.
-                    if not _lifecycle_sent(row, cols["welcome_sent"]):
-                        lang = get_guest_response_language(phone)
-                        welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
-                        if welcome_text:
-                            send_lifecycle_notification(
-                                phone, welcome_text, "WELCOME", row_index, cols["welcome_sent"],
-                                current.strftime("%d-%b-%Y %I:%M %p"), "WELCOME"
-                            )
+                    # One-time arrival messages must never be sent days late after a
+                    # deploy/repair. Retry only within a sensible post-check-in window.
+                    stay_age_seconds = (
+                        (current - check_in_at).total_seconds()
+                        if check_in_at else None
+                    )
 
-                    # 30-minute message uses the actual Sheet IN TIME.
+                    if not _lifecycle_sent(row, cols["welcome_sent"]):
+                        if stay_age_seconds is not None and 0 <= stay_age_seconds <= 2 * 60 * 60:
+                            lang = get_guest_response_language(phone)
+                            welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
+                            if welcome_text:
+                                send_lifecycle_notification(
+                                    phone, welcome_text, "WELCOME", row_index, cols["welcome_sent"],
+                                    current.strftime("%d-%b-%Y %I:%M %p"), "WELCOME"
+                                )
+                        elif stay_age_seconds is not None and stay_age_seconds > 2 * 60 * 60:
+                            _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], "SKIPPED - late sync")
+
+                    # 30-minute comfort check: only useful shortly after arrival.
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
-                        if current >= check_in_at + timedelta(minutes=30):
+                        if 30 * 60 <= stay_age_seconds <= 3 * 60 * 60:
                             lang = get_guest_response_language(phone)
                             thirty_text = get_ai_lifecycle_message("30_MINUTE", lang, name, room, {"name": name, "room": room, "status": status})
                             if thirty_text:
@@ -9212,6 +9221,8 @@ def monitor_guest_status_lifecycle():
                                     phone, thirty_text, "COMFORT", row_index, cols["thirty_sent"],
                                     current.strftime("%d-%b-%Y %I:%M %p"), "30_MINUTE"
                                 )
+                        elif stay_age_seconds > 3 * 60 * 60:
+                            _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], "SKIPPED - late sync")
 
                     # Meal reminders remain time-window based and persist their sent date.
                     if breakfast_window and not _lifecycle_sent_today(row, cols["breakfast_sent"], today):

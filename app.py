@@ -125,6 +125,9 @@ STAFF_PHONE = os.getenv("STAFF_PHONE", CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", 
 # reception replies can be authenticated and mapped back to the correct guest.
 RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", CUSTOMER_ENV_DEFAULTS.get("RECEPTION_PHONE", STAFF_PHONE)).strip()
 RECEPTION_REQUEST_TTL_SECONDS = max(1800, int(os.getenv("RECEPTION_REQUEST_TTL_SECONDS", "21600")))
+SERVICE_CONFIRM_TIMEOUT_MINUTES = max(5, int(os.getenv("SERVICE_CONFIRM_TIMEOUT_MINUTES", "20")))
+SERVICE_TASK_RETENTION_HOURS = max(24, int(os.getenv("SERVICE_TASK_RETENTION_HOURS", "72")))
+LIFECYCLE_LOOP_SECONDS = max(30, int(os.getenv("LIFECYCLE_LOOP_SECONDS", "60")))
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
@@ -136,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V46-RESPECTFUL-CONCIERGE"
+APP_VERSION = "HOTEL-AI-V47-SERVICE-CLOSURE-LIFECYCLE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -180,6 +183,8 @@ shared_store = {
     "payment_history_headers": [],
     "lifecycle_rows": [],
     "lifecycle_headers": [],
+    "service_request_rows": [],
+    "service_request_headers": [],
     "last_synced": 0,
 }
 
@@ -202,6 +207,14 @@ order_sessions = {}
 duplicate_order_sessions = {}
 checkin_sessions = {}
 service_sessions = {}
+service_tasks_by_id = {}
+service_tasks_by_alert = {}
+service_guest_pending = {}
+# Outgoing lifecycle message id -> marker metadata. A marker is written only
+# after Meta reports the message as sent/delivered, never on mere API acceptance.
+lifecycle_pending_by_message_id = {}
+lifecycle_pending_keys = {}
+lifecycle_retry_after = {}
 # Latest reception handoff per guest. This prevents an older food-confirmation
 # state from hijacking follow-up questions such as "meri request confirm hui?".
 reception_request_sessions = {}
@@ -1152,6 +1165,12 @@ def fetch_sheet_data_sync(force=False):
         except Exception:
             payment_history = []
 
+        service_requests = []
+        try:
+            service_requests = sh.worksheet("Service_Requests").get_all_values()
+        except Exception:
+            service_requests = []
+
         with state_lock:
             shared_store["room_headers"] = [str(x).strip() for x in (rooms[0] if rooms else [])]
             shared_store["rooms"] = rooms[1:] if len(rooms) > 1 else []
@@ -1165,8 +1184,11 @@ def fetch_sheet_data_sync(force=False):
             shared_store["complaint_rows"] = complaints[1:] if len(complaints) > 1 else []
             shared_store["payment_history_headers"] = [str(x).strip() for x in (payment_history[0] if payment_history else [])]
             shared_store["payment_history_rows"] = payment_history[1:] if len(payment_history) > 1 else []
+            shared_store["service_request_headers"] = [str(x).strip() for x in (service_requests[0] if service_requests else [])]
+            shared_store["service_request_rows"] = service_requests[1:] if len(service_requests) > 1 else []
             shared_store["last_synced"] = time.time()
 
+        _rebuild_service_task_cache()
         return True
     except Exception as exc:
         print("SHEET SYNC ERROR:", exc, flush=True)
@@ -1412,6 +1434,490 @@ def find_on_duty_staff(room, role):
         result["source"] = "role"
         return result
     return None
+
+
+SERVICE_REQUEST_HEADERS = [
+    "Request ID", "Created At", "Room", "Guest Name", "Guest Phone",
+    "Role", "Service", "Details", "Assigned Staff", "Staff Phone",
+    "Status", "Staff Done At", "Guest Confirmed At", "Auto Resolved At",
+    "Closed At", "Alert Message ID", "Last Update"
+]
+
+
+def _service_task_id():
+    return "S-" + hashlib.sha256(f"{time.time_ns()}|{os.getpid()}".encode()).hexdigest()[:6].upper()
+
+
+def _service_task_row(task):
+    return [
+        task.get("request_id", ""),
+        task.get("created_at", ""),
+        task.get("room", ""),
+        task.get("guest_name", ""),
+        task.get("guest_phone", ""),
+        task.get("role", ""),
+        task.get("service", ""),
+        task.get("details", ""),
+        task.get("assigned_staff", ""),
+        task.get("staff_phone", ""),
+        task.get("status", ""),
+        task.get("staff_done_at", ""),
+        task.get("guest_confirmed_at", ""),
+        task.get("auto_resolved_at", ""),
+        task.get("closed_at", ""),
+        task.get("alert_message_id", ""),
+        task.get("last_update", ""),
+    ]
+
+
+def _parse_sheet_row_number(updated_range):
+    m = re.search(r"![A-Z]+(\d+)(?::[A-Z]+\d+)?$", str(updated_range or ""))
+    return int(m.group(1)) if m else 0
+
+
+def _ensure_service_requests_sheet():
+    client = get_gspread_client()
+    if not client:
+        return None
+    sh = client.open_by_key(SHEET_ID)
+    try:
+        sheet = sh.worksheet("Service_Requests")
+    except Exception:
+        sheet = sh.add_worksheet(title="Service_Requests", rows=2000, cols=len(SERVICE_REQUEST_HEADERS))
+        sheet.append_row(SERVICE_REQUEST_HEADERS, value_input_option="RAW")
+        with state_lock:
+            shared_store["service_request_headers"] = list(SERVICE_REQUEST_HEADERS)
+            shared_store["service_request_rows"] = []
+        print("SERVICE REQUEST SHEET CREATED", flush=True)
+        return sheet
+
+    values = sheet.row_values(1)
+    if not values:
+        sheet.append_row(SERVICE_REQUEST_HEADERS, value_input_option="RAW")
+        values = list(SERVICE_REQUEST_HEADERS)
+    if [str(x).strip() for x in values[:len(SERVICE_REQUEST_HEADERS)]] != SERVICE_REQUEST_HEADERS:
+        # Do not silently write into an incompatible sheet.
+        raise RuntimeError("Service_Requests headers changed; expected standard service task columns")
+    return sheet
+
+
+def _append_service_task_sheet(task):
+    try:
+        sheet = _ensure_service_requests_sheet()
+        if not sheet:
+            return False
+        response = sheet.append_row(_service_task_row(task), value_input_option="RAW")
+        updated = ((response or {}).get("updates") or {}).get("updatedRange")
+        task["sheet_row"] = _parse_sheet_row_number(updated)
+        with state_lock:
+            shared_store.setdefault("service_request_rows", []).append(_service_task_row(task))
+        print(f"SERVICE SHEET APPEND: id={task.get('request_id')} row={task.get('sheet_row')}", flush=True)
+        return True
+    except Exception as exc:
+        print("SERVICE SHEET APPEND ERROR:", exc, flush=True)
+        return False
+
+
+def _service_sheet_row(task):
+    row = int(task.get("sheet_row") or 0)
+    if row >= 2:
+        return row
+    try:
+        sheet = _ensure_service_requests_sheet()
+        if not sheet:
+            return 0
+        cell = sheet.find(task.get("request_id", ""), in_column=1)
+        row = int(cell.row) if cell else 0
+        task["sheet_row"] = row
+        return row
+    except Exception as exc:
+        print("SERVICE SHEET FIND ERROR:", exc, flush=True)
+        return 0
+
+
+def _update_service_task_sheet(task):
+    try:
+        sheet = _ensure_service_requests_sheet()
+        if not sheet:
+            return False
+        row = _service_sheet_row(task)
+        if row < 2:
+            return False
+        sheet.update(f"A{row}:Q{row}", [_service_task_row(task)], value_input_option="RAW")
+        with state_lock:
+            cache = shared_store.setdefault("service_request_rows", [])
+            idx = row - 2
+            if 0 <= idx < len(cache):
+                cache[idx] = _service_task_row(task)
+        print(f"SERVICE SHEET UPDATE: id={task.get('request_id')} status={task.get('status')}", flush=True)
+        return True
+    except Exception as exc:
+        print("SERVICE SHEET UPDATE ERROR:", exc, flush=True)
+        return False
+
+
+def _service_header_map(headers):
+    return {normalize_text(h).replace(" ", "_"): i for i, h in enumerate(headers) if str(h).strip()}
+
+
+def _rebuild_service_task_cache():
+    with state_lock:
+        headers = list(shared_store.get("service_request_headers", []))
+        rows = list(shared_store.get("service_request_rows", []))
+    if not headers or not rows:
+        return
+
+    h = _service_header_map(headers)
+    required = {
+        "request_id": "request_id", "created_at": "created_at", "room": "room",
+        "guest_name": "guest_name", "guest_phone": "guest_phone", "role": "role",
+        "service": "service", "details": "details", "assigned_staff": "assigned_staff",
+        "staff_phone": "staff_phone", "status": "status", "staff_done_at": "staff_done_at",
+        "guest_confirmed_at": "guest_confirmed_at", "auto_resolved_at": "auto_resolved_at",
+        "closed_at": "closed_at", "alert_message_id": "alert_message_id", "last_update": "last_update"
+    }
+    if any(v not in h for v in required.values()):
+        return
+
+    cutoff = now_ist() - timedelta(hours=SERVICE_TASK_RETENTION_HOURS)
+    rebuilt = {}
+    by_alert = {}
+    guest_pending = {}
+    for sheet_row, row in enumerate(rows, start=2):
+        def val(key):
+            idx = h.get(required[key], -1)
+            return str(row[idx]).strip() if 0 <= idx < len(row) else ""
+        created_text = val("created_at")
+        created_dt = _parse_sheet_datetime(created_text)
+        if created_dt and created_dt < cutoff:
+            continue
+        request_id = val("request_id").upper()
+        if not re.fullmatch(r"S-[A-F0-9]{6}", request_id):
+            continue
+        task = {key: val(key) for key in required}
+        task["request_id"] = request_id
+        task["guest_phone"] = format_whatsapp_number(task.get("guest_phone")) or task.get("guest_phone")
+        task["staff_phone"] = format_whatsapp_number(task.get("staff_phone")) or task.get("staff_phone")
+        task["sheet_row"] = sheet_row
+        rebuilt[request_id] = task
+        if task.get("alert_message_id"):
+            by_alert[task["alert_message_id"]] = task
+        if task.get("status") == "STAFF_COMPLETED" and task.get("guest_phone"):
+            guest_pending[task["guest_phone"]] = request_id
+
+    with state_lock:
+        service_tasks_by_id.update(rebuilt)
+        service_tasks_by_alert.update(by_alert)
+        service_guest_pending.update(guest_pending)
+
+
+def _resolve_staff_recipient(room, role, fallback_phone=None):
+    staff = find_on_duty_staff(room, role)
+    managed = _staff_roster_has_role(role)
+    if staff:
+        return dict(staff)
+    if managed:
+        return None
+    fallback = format_whatsapp_number(fallback_phone)
+    if not fallback:
+        return None
+    return {
+        "name": "Legacy Staff",
+        "phone": fallback,
+        "source": "fallback",
+        "role": role,
+        "assigned_rooms": "All",
+    }
+
+
+def create_service_task(sender_phone, guest_info, role, service, details):
+    room = clean_room((guest_info or {}).get("room", ""))
+    operator = _resolve_staff_recipient(room, role, STAFF_PHONE)
+    if not operator:
+        print(f"SERVICE TASK: no recipient role={role} room={room}", flush=True)
+        return None
+
+    request_id = _service_task_id()
+    guest_phone = format_whatsapp_number(sender_phone) or str(sender_phone)
+    created = now_ist().strftime("%d-%b-%Y %I:%M %p")
+    message = (
+        f"STAFF SERVICE REQUEST [{request_id}]\n"
+        f"Room: {room or '?'} ({(guest_info or {}).get('name','Guest')})\n"
+        f"Service: {service}\nDetails: {str(details or '').strip()[:1000]}\n"
+        f"Guest: +{guest_phone}\n\n"
+        "Task complete hone par ISI message par Reply karke 'done' likhein. "
+        f"Fallback: {request_id} done"
+    )
+    ok, remote_id = send_notification_with_id(operator["phone"], message, "STAFF")
+    if not ok:
+        print(f"SERVICE TASK SEND FAILED: id={request_id}", flush=True)
+        return None
+
+    task = {
+        "request_id": request_id,
+        "created_at": created,
+        "room": room,
+        "guest_name": str((guest_info or {}).get("name", "Guest") or "Guest"),
+        "guest_phone": guest_phone,
+        "role": role,
+        "service": str(service or "General Assistance"),
+        "details": str(details or "").strip()[:1000],
+        "assigned_staff": operator.get("name", ""),
+        "staff_phone": operator.get("phone", ""),
+        "status": "OPEN",
+        "staff_done_at": "",
+        "guest_confirmed_at": "",
+        "auto_resolved_at": "",
+        "closed_at": "",
+        "alert_message_id": remote_id or "",
+        "last_update": created,
+    }
+    with state_lock:
+        service_tasks_by_id[request_id] = task
+        if remote_id:
+            service_tasks_by_alert[remote_id] = task
+        service_sessions[guest_phone] = {"request_id": request_id, "created": time.time()}
+    _append_service_task_sheet(task)
+    print(
+        f"SERVICE TASK CREATED: id={request_id} room={room} role={role} staff={operator.get('name')}",
+        flush=True,
+    )
+    return task
+
+
+def _service_done_intent(text):
+    t = normalize_text(text)
+    return t in {
+        "done", "complete", "completed", "task done", "done hai", "ho gaya",
+        "ho gya", "kar diya", "kar dia", "complete ho gaya", "resolved", "resolve ho gaya"
+    } or bool(re.fullmatch(r"S-[A-F0-9]{6}\s+(?:done|complete|completed)", str(text or "").strip(), re.I))
+
+
+def _service_guest_result(text):
+    t = normalize_text(text)
+    negatives = (
+        "nahi hua", "nhi hua", "abhi nahi", "abhi nhi", "nahi mila", "nhi mila",
+        "not resolved", "not fixed", "still not", "issue hai", "problem hai"
+    )
+    positives = (
+        "ho gaya", "ho gya", "mil gaya", "mil gya", "resolve ho gaya",
+        "resolved", "fixed", "issue solve", "problem solve", "thanks done"
+    )
+    if any(x in t for x in negatives) or is_no(text):
+        return "no"
+    if any(x in t for x in positives) or is_yes(text):
+        return "yes"
+    return ""
+
+
+def _service_task_from_message(message, text=""):
+    context_id = str((message.get("context") or {}).get("id", "")).strip() if isinstance(message, dict) else ""
+    with state_lock:
+        if context_id and context_id in service_tasks_by_alert:
+            return service_tasks_by_alert[context_id]
+    m = re.search(r"\bS-[A-F0-9]{6}\b", str(text or "").upper())
+    if m:
+        with state_lock:
+            return service_tasks_by_id.get(m.group(0))
+    return None
+
+
+def _open_service_tasks_for_staff(phone):
+    wanted = format_whatsapp_number(phone)
+    with state_lock:
+        items = [
+            dict(t) for t in service_tasks_by_id.values()
+            if format_whatsapp_number(t.get("staff_phone")) == wanted
+            and t.get("status") in {"OPEN", "REOPENED"}
+        ]
+    items.sort(key=lambda t: t.get("created_at", ""), reverse=True)
+    return items
+
+
+def _mark_service_staff_done(task):
+    stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
+    task["status"] = "STAFF_COMPLETED"
+    task["staff_done_at"] = stamp
+    task["last_update"] = stamp
+    with state_lock:
+        service_guest_pending[task.get("guest_phone")] = task.get("request_id")
+        service_sessions[task.get("guest_phone")] = {"request_id": task.get("request_id"), "created": time.time()}
+    _update_service_task_sheet(task)
+
+    guest_name = task.get("guest_name") or "Guest"
+    guest_msg = (
+        f"Ji {guest_name} ji, staff ne aapki request '{task.get('service')}' complete mark ki hai. "
+        "Kya aapka issue resolve ho gaya? Haan / Nahi"
+    )
+    send_whatsapp_message(task.get("guest_phone"), guest_msg)
+    send_whatsapp_message(
+        task.get("staff_phone"),
+        f"{task.get('request_id')} staff-completed mark ho gaya. Guest confirmation ka wait hai."
+    )
+    print(f"SERVICE STAFF DONE: id={task.get('request_id')}", flush=True)
+    return True
+
+
+def handle_service_staff_message(message, sender_phone, msg_type):
+    if msg_type == "text":
+        text_value = str((message.get("text") or {}).get("body", "")).strip()
+    elif msg_type == "interactive":
+        choice = (message.get("interactive") or {}).get("button_reply") or (message.get("interactive") or {}).get("list_reply") or {}
+        text_value = str(choice.get("title", "")).strip()
+    elif msg_type == "button":
+        text_value = str((message.get("button") or {}).get("text", "")).strip()
+    else:
+        return False
+
+    if not _service_done_intent(text_value):
+        return False
+
+    sender = format_whatsapp_number(sender_phone)
+    task = _service_task_from_message(message, text_value)
+    if task:
+        if format_whatsapp_number(task.get("staff_phone")) != sender:
+            return False
+        if task.get("status") not in {"OPEN", "REOPENED"}:
+            send_whatsapp_message(sender, f"{task.get('request_id')} already {task.get('status')}.")
+            return True
+        return _mark_service_staff_done(task)
+
+    open_tasks = _open_service_tasks_for_staff(sender)
+    if len(open_tasks) == 1:
+        with state_lock:
+            live = service_tasks_by_id.get(open_tasks[0].get("request_id"))
+        return _mark_service_staff_done(live) if live else True
+    if len(open_tasks) > 1:
+        choices = "\n".join(
+            f"{i+1}. {t.get('request_id')} — Room {t.get('room')} — {t.get('service')}"
+            for i, t in enumerate(open_tasks[:5])
+        )
+        send_whatsapp_message(
+            sender,
+            "Aapke paas multiple open tasks hain. Kaunsa complete hua? "
+            "Us request message par Reply karke 'done' likhein ya ID ke saath done bhejein:\n" + choices
+        )
+        return True
+    return False
+
+
+def _reroute_service_task(task):
+    operator = _resolve_staff_recipient(task.get("room"), task.get("role"), STAFF_PHONE)
+    if not operator:
+        return False
+    message = (
+        f"REOPENED SERVICE REQUEST [{task.get('request_id')}]\n"
+        f"Room: {task.get('room')} ({task.get('guest_name')})\n"
+        f"Service: {task.get('service')}\nDetails: {task.get('details')}\n"
+        "Guest ne confirm kiya hai ki issue abhi resolve nahi hua. "
+        "Complete hone par isi message par Reply karke 'done' likhein."
+    )
+    ok, remote_id = send_notification_with_id(operator["phone"], message, "STAFF")
+    if ok:
+        old_alert = task.get("alert_message_id")
+        task["assigned_staff"] = operator.get("name", "")
+        task["staff_phone"] = operator.get("phone", "")
+        task["alert_message_id"] = remote_id or ""
+        task["last_update"] = now_ist().strftime("%d-%b-%Y %I:%M %p")
+        with state_lock:
+            if old_alert:
+                service_tasks_by_alert.pop(old_alert, None)
+            if remote_id:
+                service_tasks_by_alert[remote_id] = task
+        _update_service_task_sheet(task)
+    return ok
+
+
+def handle_service_guest_confirmation(phone, text):
+    guest_phone = format_whatsapp_number(phone) or str(phone)
+    with state_lock:
+        request_id = service_guest_pending.get(guest_phone)
+        task = service_tasks_by_id.get(request_id) if request_id else None
+    if not task or task.get("status") != "STAFF_COMPLETED":
+        return False
+
+    result = _service_guest_result(text)
+    if not result:
+        return False
+
+    stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
+    if result == "yes":
+        task["status"] = "COMPLETED"
+        task["guest_confirmed_at"] = stamp
+        task["closed_at"] = stamp
+        task["last_update"] = stamp
+        with state_lock:
+            service_guest_pending.pop(guest_phone, None)
+        _update_service_task_sheet(task)
+        print(f"SERVICE GUEST CONFIRMED: id={task.get('request_id')}", flush=True)
+        # Keep confirmation quiet; the guest has already said yes.
+        return True
+
+    task["status"] = "REOPENED"
+    task["last_update"] = stamp
+    with state_lock:
+        service_guest_pending.pop(guest_phone, None)
+    _update_service_task_sheet(task)
+    rerouted = _reroute_service_task(task)
+    send_whatsapp_message(
+        guest_phone,
+        "Theek hai ji, issue abhi resolve nahi hua. Request dobara assigned staff ko bhej di hai."
+        if rerouted else
+        "Theek hai ji, issue abhi resolve nahi hua. Abhi koi eligible staff nahi mila; reception se confirm karwa dein."
+    )
+    print(f"SERVICE REOPENED: id={task.get('request_id')} rerouted={rerouted}", flush=True)
+    return True
+
+
+def process_service_auto_resolve():
+    current = now_ist()
+    due = []
+    with state_lock:
+        for task in service_tasks_by_id.values():
+            if task.get("status") != "STAFF_COMPLETED":
+                continue
+            done_at = _parse_sheet_datetime(task.get("staff_done_at", ""))
+            if done_at and current >= done_at + timedelta(minutes=SERVICE_CONFIRM_TIMEOUT_MINUTES):
+                due.append(task)
+
+    for task in due:
+        stamp = current.strftime("%d-%b-%Y %I:%M %p")
+        task["status"] = "AUTO_RESOLVED"
+        task["auto_resolved_at"] = stamp
+        task["closed_at"] = stamp
+        task["last_update"] = stamp
+        with state_lock:
+            service_guest_pending.pop(task.get("guest_phone"), None)
+        _update_service_task_sheet(task)
+        print(f"SERVICE AUTO RESOLVED: id={task.get('request_id')} after={SERVICE_CONFIRM_TIMEOUT_MINUTES}m", flush=True)
+
+
+def monitor_service_confirmations():
+    while True:
+        try:
+            process_service_auto_resolve()
+        except Exception as exc:
+            print("SERVICE AUTO-RESOLVE ERROR:", exc, flush=True)
+        time.sleep(30)
+
+
+def _update_service_alert_delivery(remote_id, delivery_status, codes):
+    if not remote_id:
+        return
+    with state_lock:
+        task = service_tasks_by_alert.get(remote_id)
+    if not task:
+        return
+    task["delivery_status"] = delivery_status
+    if delivery_status == "failed" and task.get("status") in {"OPEN", "REOPENED"}:
+        task["status"] = "DELIVERY_FAILED"
+        task["last_update"] = now_ist().strftime("%d-%b-%Y %I:%M %p")
+        _update_service_task_sheet(task)
+        send_whatsapp_message(
+            task.get("guest_phone"),
+            "Staff ko WhatsApp alert deliver nahi ho paaya. Kripya reception se seedhe contact karein."
+        )
+        print(f"SERVICE DELIVERY FAILED: id={task.get('request_id')} codes={list(codes or [])}", flush=True)
 
 
 def send_staff_alert(room, role, message, fallback_phone=None):
@@ -1988,7 +2494,11 @@ def record_delivery_statuses(statuses):
         with state_lock:
             shared_store["last_delivery_event"] = event
         print(f"WHATSAPP DELIVERY: status={event['status']} codes={codes}", flush=True)
-        _update_reception_alert_delivery(status.get("id"), status.get("status"), codes)
+        remote_id = status.get("id")
+        delivery_state = status.get("status")
+        _update_reception_alert_delivery(remote_id, delivery_state, codes)
+        _update_service_alert_delivery(remote_id, delivery_state, codes)
+        _update_lifecycle_delivery(remote_id, delivery_state, codes)
         if 131047 in codes:
             print("WHATSAPP ACTION: recipient service window expired; use an approved template or wait for a new recipient message.", flush=True)
 
@@ -2157,6 +2667,10 @@ def send_notification_with_id(phone, text, purpose):
         return False, None
 
     template = os.getenv("WA_" + purpose.upper() + "_TEMPLATE", "").strip()
+    if not template and purpose.upper() in {
+        "WELCOME", "COMFORT", "BREAKFAST", "LUNCH", "AARTI", "DINNER", "CHECKOUT"
+    }:
+        template = os.getenv("WA_LIFECYCLE_TEMPLATE", "").strip()
     if template:
         payload = {
             "messaging_product": "whatsapp",
@@ -6157,16 +6671,8 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
         "RECEPTION": "Reception",
     }
     role = mapping.get(str(result.get("category", "")).upper(), "Housekeeping" if "house" in normalize_text(service) else "Maintenance" if "maint" in normalize_text(service) or "ac" in normalize_text(service) or "tv" in normalize_text(service) else "Reception")
-    staff_ok = send_staff_alert(
-        room=guest_info.get("room", ""),
-        role=role,
-        message=(
-            f"STAFF SERVICE REQUEST\nRoom: {guest_info.get('room')} ({guest_info.get('name','Guest')})\n"
-            f"Service: {service}\nDetails: {user_text}\nPhone: +{sender_phone}"
-        ),
-        fallback_phone=STAFF_PHONE,
-    )
-    if staff_ok:
+    task = create_service_task(sender_phone, guest_info, role, service, user_text)
+    if task:
         send_whatsapp_message(
             sender_phone,
             f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai. Assigned staff ko inform kar diya gaya hai. 🙏"
@@ -6180,7 +6686,9 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
 
 
 def process_and_reply(message, sender_phone, msg_type):
-    """Record guest turns; Sheet-authorized reception operators use the mapped bridge."""
+    """Record guest turns; staff/reception operators use mapped task bridges."""
+    if handle_service_staff_message(message, sender_phone, msg_type):
+        return
     if handle_reception_operator_message(message, sender_phone, msg_type):
         return
 
@@ -6401,6 +6909,9 @@ def _process_and_reply(message, sender_phone, msg_type):
         old_checkin = checkin_sessions.get(sender_phone)
         if old_checkin and (is_inhouse or time.time() - old_checkin.get("created", time.time()) > 1800):
             checkin_sessions.pop(sender_phone, None)
+
+    if handle_service_guest_confirmation(sender_phone, user_text):
+        return
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
         reply_to_reception_request(sender_phone, guest_info, user_text)
@@ -8193,6 +8704,85 @@ def maybe_send_owner_report(current):
         with state_lock:
             shared_store.get("owner_report_sent", set()).discard(key)
 
+def _lifecycle_template_configured(purpose):
+    return bool(
+        os.getenv("WA_" + purpose.upper() + "_TEMPLATE", "").strip()
+        or os.getenv("WA_LIFECYCLE_TEMPLATE", "").strip()
+    )
+
+
+def send_lifecycle_notification(phone, text, purpose, row_index, col_index, marker_value, event):
+    key = f"{row_index}:{col_index}:{marker_value}"
+    now_ts = time.time()
+    with state_lock:
+        pending_id = lifecycle_pending_keys.get(key)
+        retry_after = float(lifecycle_retry_after.get(key, 0) or 0)
+    if pending_id or now_ts < retry_after:
+        return False
+
+    ok, remote_id = send_notification_with_id(phone, text, purpose)
+    print(
+        f"LIFECYCLE SEND: event={event} row={row_index} accepted={ok} remote_id={bool(remote_id)} "
+        f"template={_lifecycle_template_configured(purpose)}",
+        flush=True,
+    )
+    if not ok:
+        with state_lock:
+            lifecycle_retry_after[key] = now_ts + 10 * 60
+        return False
+    if not remote_id:
+        with state_lock:
+            lifecycle_retry_after[key] = now_ts + 5 * 60
+        return False
+
+    meta = {
+        "key": key,
+        "row": row_index,
+        "col": col_index,
+        "value": marker_value,
+        "event": event,
+        "purpose": purpose,
+        "phone": format_whatsapp_number(phone) or str(phone),
+    }
+    with state_lock:
+        lifecycle_pending_by_message_id[remote_id] = meta
+        lifecycle_pending_keys[key] = remote_id
+    return True
+
+
+def _update_lifecycle_delivery(remote_id, delivery_status, codes):
+    if not remote_id:
+        return
+    with state_lock:
+        meta = lifecycle_pending_by_message_id.get(remote_id)
+    if not meta:
+        return
+
+    if delivery_status in {"sent", "delivered", "read"}:
+        if _mark_room_lifecycle_cell(meta["row"], meta["col"], meta["value"]):
+            with state_lock:
+                lifecycle_pending_by_message_id.pop(remote_id, None)
+                lifecycle_pending_keys.pop(meta["key"], None)
+                lifecycle_retry_after.pop(meta["key"], None)
+            print(
+                f"LIFECYCLE CONFIRMED: event={meta.get('event')} status={delivery_status} row={meta.get('row')}",
+                flush=True,
+            )
+        return
+
+    if delivery_status == "failed":
+        cooldown = 60 * 60 if 131047 in set(codes or []) else 10 * 60
+        with state_lock:
+            lifecycle_pending_by_message_id.pop(remote_id, None)
+            lifecycle_pending_keys.pop(meta["key"], None)
+            lifecycle_retry_after[meta["key"]] = time.time() + cooldown
+        print(
+            f"LIFECYCLE DELIVERY FAILED: event={meta.get('event')} codes={list(codes or [])} "
+            f"template={_lifecycle_template_configured(meta.get('purpose',''))}",
+            flush=True,
+        )
+
+
 def monitor_guest_status_lifecycle():
     """
     Guest lifecycle automation whose source of truth is the Google Sheet.
@@ -8215,8 +8805,10 @@ def monitor_guest_status_lifecycle():
             # Google Sheets per-user read quota.
             global last_lifecycle_reconcile
             if time.time() - last_lifecycle_reconcile >= LIFECYCLE_RECONCILE_MIN_INTERVAL:
-                if reconcile_lifecycle_from_room_sheet():
-                    last_lifecycle_reconcile = time.time()
+                # Advance the throttle even when nothing changed; otherwise a
+                # no-op reconciliation runs every loop and can exhaust Sheets quota.
+                reconcile_lifecycle_from_room_sheet()
+                last_lifecycle_reconcile = time.time()
             process_complaint_followups()
             current = now_ist()
             maybe_send_owner_report(current)
@@ -8317,41 +8909,55 @@ def monitor_guest_status_lifecycle():
                     if not _lifecycle_sent(row, cols["welcome_sent"]):
                         lang = get_guest_response_language(phone)
                         welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
-                        if welcome_text and send_notification(phone, welcome_text, "WELCOME"):
-                            _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
+                        if welcome_text:
+                            send_lifecycle_notification(
+                                phone, welcome_text, "WELCOME", row_index, cols["welcome_sent"],
+                                current.strftime("%d-%b-%Y %I:%M %p"), "WELCOME"
+                            )
 
                     # 30-minute message uses the actual Sheet IN TIME.
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
                         if current >= check_in_at + timedelta(minutes=30):
                             lang = get_guest_response_language(phone)
                             thirty_text = get_ai_lifecycle_message("30_MINUTE", lang, name, room, {"name": name, "room": room, "status": status})
-                            if thirty_text and send_notification(phone, thirty_text, "COMFORT"):
-                                _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
+                            if thirty_text:
+                                send_lifecycle_notification(
+                                    phone, thirty_text, "COMFORT", row_index, cols["thirty_sent"],
+                                    current.strftime("%d-%b-%Y %I:%M %p"), "30_MINUTE"
+                                )
 
                     # Meal reminders remain time-window based and persist their sent date.
                     if breakfast_window and not _lifecycle_sent(row, cols["breakfast_sent"]):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("BREAKFAST", lang, name, room, {"name": name, "room": room, "status": status})
-                        if text and send_notification(phone, text, "BREAKFAST"):
-                            _mark_room_lifecycle_cell(row_index, cols["breakfast_sent"], today)
+                        if text:
+                            send_lifecycle_notification(
+                                phone, text, "BREAKFAST", row_index, cols["breakfast_sent"], today, "GOOD_MORNING_BREAKFAST"
+                            )
 
                     if lunch_window and not _lifecycle_sent(row, cols["lunch_sent"]):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("LUNCH", lang, name, room, {"name": name, "room": room, "status": status})
-                        if text and send_notification(phone, text, "LUNCH"):
-                            _mark_room_lifecycle_cell(row_index, cols["lunch_sent"], today)
+                        if text:
+                            send_lifecycle_notification(
+                                phone, text, "LUNCH", row_index, cols["lunch_sent"], today, "LUNCH"
+                            )
 
                     if aarti_window and not _lifecycle_sent(row, cols["aarti_sent"]):
                         lang = get_guest_response_language(phone)
                         event_text = get_ai_lifecycle_message("GANGA_AARTI", lang, name, room, {"name": name, "room": room, "status": status})
-                        if event_text and send_notification(phone, event_text, "AARTI"):
-                            _mark_room_lifecycle_cell(row_index, cols["aarti_sent"], today)
+                        if event_text:
+                            send_lifecycle_notification(
+                                phone, event_text, "AARTI", row_index, cols["aarti_sent"], today, "GANGA_AARTI"
+                            )
 
                     if dinner_window and not _lifecycle_sent(row, cols["dinner_sent"]):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("DINNER", lang, name, room, {"name": name, "room": room, "status": status})
-                        if text and send_notification(phone, text, "DINNER"):
-                            _mark_room_lifecycle_cell(row_index, cols["dinner_sent"], today)
+                        if text:
+                            send_lifecycle_notification(
+                                phone, text, "DINNER", row_index, cols["dinner_sent"], today, "DINNER"
+                            )
 
                 # -----------------------------
                 # CHECK-OUT LIFECYCLE
@@ -8362,15 +8968,18 @@ def monitor_guest_status_lifecycle():
                     if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
                         lang = get_guest_response_language(phone)
                         checkout_text = get_ai_lifecycle_message("CHECKOUT", lang, name, room, {"name": name, "room": room, "status": status})
-                        if checkout_text and send_notification(phone, checkout_text, "CHECKOUT"):
-                            _mark_room_lifecycle_cell(row_index, cols["checkout_sent"], current.strftime("%d-%b-%Y %I:%M %p"))
+                        if checkout_text:
+                            send_lifecycle_notification(
+                                phone, checkout_text, "CHECKOUT", row_index, cols["checkout_sent"],
+                                current.strftime("%d-%b-%Y %I:%M %p"), "CHECKOUT"
+                            )
 
             # Give Sheets time to propagate before the next 30-second cycle.
         except Exception as exc:
             print("LIFECYCLE ERROR:", exc, flush=True)
             traceback.print_exc()
 
-        time.sleep(30)
+        time.sleep(LIFECYCLE_LOOP_SECONDS)
 
 
 # ============================================================
@@ -8598,6 +9207,12 @@ def startup():
           + " reception=" + str(bool(format_whatsapp_number(RECEPTION_PHONE)))
           + " kitchen=" + str(bool(format_whatsapp_number(KITCHEN_PHONE)))
           + " owner_slots=" + str(OWNER_REPORT_TIMES), flush=True)
+    print(
+        "LIFECYCLE TEMPLATE CONFIG: generic=" + str(bool(os.getenv("WA_LIFECYCLE_TEMPLATE", "").strip()))
+        + " breakfast=" + str(bool(os.getenv("WA_BREAKFAST_TEMPLATE", "").strip()))
+        + " aarti=" + str(bool(os.getenv("WA_AARTI_TEMPLATE", "").strip())),
+        flush=True,
+    )
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
     try:
         fetch_sheet_data_sync()
@@ -8615,6 +9230,12 @@ def startup():
         target=monitor_guest_status_lifecycle,
         daemon=True,
         name="guest-lifecycle"
+    ).start()
+
+    threading.Thread(
+        target=monitor_service_confirmations,
+        daemon=True,
+        name="service-confirmations"
     ).start()
 
     for target,name in ((durable_runtime.inbox_loop,"durable-inbox"),(durable_runtime.loop,"durable-outbox")):

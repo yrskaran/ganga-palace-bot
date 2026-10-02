@@ -1,0 +1,91 @@
+{
+  "hotel": {
+    "name": "YOUR HOTEL NAME",
+    "location": "City, State",
+    "address": "Full hotel address",
+    "check_in": "12:00 PM",
+    "check_out": "11:00 AM",
+    "reception_hours": "24/7",
+    "amenities": "Free Wi-Fi, parking",
+    "parking": "Free on-site parking",
+    "wifi": "Complimentary Wi-Fi"
+  },
+  "contacts": {
+    "reception_phone": "91XXXXXXXXXX",
+    "kitchen_phone": "91XXXXXXXXXX",
+    "staff_phone": "91XXXXXXXXXX"
+  },
+  "rooms": [
+    {
+      "name": "Deluxe Room",
+      "price": 1500,
+      "details": "AC"
+    },
+    {
+      "name": "Family Room",
+      "price": 2800,
+      "details": "4 Bed AC"
+    }
+  ],
+  "room_rules": [
+    "Never invent live availability; ask dates and guest count, then request reception confirmation.",
+    "Quote only configured room rates."
+  ],
+  "menu_intro": "This is the hotel's current room-service menu. Only listed items may be ordered.",
+  "menu": [
+    {
+      "name": "Masala Chai",
+      "price": 30
+    },
+    {
+      "name": "Hot Coffee",
+      "price": 50
+    },
+    {
+      "name": "Veg Sandwich",
+      "price": 120
+    }
+  ],
+  "food_rules": [
+    "Food orders require guest confirmation before kitchen dispatch.",
+    "Do not quote food prices unless the guest asks for price, rate, cost or bill."
+  ],
+  "policies": {
+    "pets": "Reception confirmation required",
+    "outside_food": "Reception confirmation required",
+    "early_check_in": "Subject to availability",
+    "late_check_out": "Subject to availability"
+  },
+  "lifecycle": {
+    "breakfast_prompt": "08:00-10:00",
+    "lunch_prompt": "13:00-15:00",
+    "dinner_prompt": "19:00-21:00"
+  },
+  "faq": [
+    {
+      "question": "Is parking available?",
+      "answer": "Yes, on-site parking is available."
+    }
+  ],
+  "local_guide": [
+    {
+      "name": "Nearest attraction",
+      "category": "Sightseeing",
+      "distance": "Approx. 2 km",
+      "best_time": "Evening",
+      "maps_query": "Nearest attraction City"
+    }
+  ],
+  "media": {
+    "photos": {
+      "Exterior": "https://example.com/hotel-exterior.jpg",
+      "Deluxe Room": "https://example.com/deluxe-room.jpg"
+    }
+  },
+  "maps": {
+    "Hotel": "https://maps.google.com/?q=HOTEL+NAME+CITY"
+  },
+  "custom_rules": [
+    "Any hotel-specific fact not listed here must be confirmed by reception."
+  ]
+}

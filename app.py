@@ -197,6 +197,10 @@ service_sessions = {}
 # Latest reception handoff per guest. This prevents an older food-confirmation
 # state from hijacking follow-up questions such as "meri request confirm hui?".
 reception_request_sessions = {}
+# Request-level indexes preserve multiple simultaneous reception tickets, even
+# when the same guest creates more than one request before staff replies.
+reception_requests_by_id = {}
+reception_requests_by_alert = {}
 active_orders = {}
 last_bill_reply = {}
 # Last language used by each guest; reused for proactive messages.
@@ -4610,18 +4614,23 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
         )
 
         ok, remote_id = send_reception_alert(message)
+        ticket = {
+            "request_id": request_id,
+            "guest_phone": guest_phone or sender_phone,
+            "request": clean_request,
+            "room": str(room or ""),
+            "guest_name": str(name or "Guest"),
+            "status": "pending" if ok else "send_failed",
+            "delivery_status": "accepted" if ok else "failed",
+            "alert_message_id": remote_id,
+            "source": source,
+            "created": time.time(),
+        }
         with state_lock:
-            reception_request_sessions[guest_phone or sender_phone] = {
-                "request_id": request_id,
-                "request": clean_request,
-                "room": str(room or ""),
-                "guest_name": str(name or "Guest"),
-                "status": "pending" if ok else "send_failed",
-                "delivery_status": "accepted" if ok else "failed",
-                "alert_message_id": remote_id,
-                "source": source,
-                "created": time.time(),
-            }
+            reception_request_sessions[guest_phone or sender_phone] = ticket
+            reception_requests_by_id[request_id] = ticket
+            if remote_id:
+                reception_requests_by_alert[remote_id] = ticket
         return ok
     except Exception as exc:
         print("RECEPTION NOTIFY ERROR:", exc, flush=True)
@@ -4633,11 +4642,9 @@ def _find_reception_request_by_alert_id(alert_message_id):
         return None, None
     now = time.time()
     with state_lock:
-        for guest_phone, pending in reception_request_sessions.items():
-            if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
-                continue
-            if pending.get("alert_message_id") == alert_message_id:
-                return guest_phone, dict(pending)
+        pending = reception_requests_by_alert.get(alert_message_id)
+        if pending and now - pending.get("created", now) <= RECEPTION_REQUEST_TTL_SECONDS:
+            return pending.get("guest_phone"), dict(pending)
     return None, None
 
 
@@ -4648,11 +4655,9 @@ def _find_reception_request_by_request_id(text):
     wanted = match.group(0)
     now = time.time()
     with state_lock:
-        for guest_phone, pending in reception_request_sessions.items():
-            if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
-                continue
-            if str(pending.get("request_id", "")).upper() == wanted:
-                return guest_phone, dict(pending)
+        pending = reception_requests_by_id.get(wanted)
+        if pending and now - pending.get("created", now) <= RECEPTION_REQUEST_TTL_SECONDS:
+            return pending.get("guest_phone"), dict(pending)
     return None, None
 
 
@@ -4663,17 +4668,15 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
     guest_phone = None
     correction_needed = False
     with state_lock:
-        for phone, pending in reception_request_sessions.items():
-            if pending.get("alert_message_id") != remote_id:
-                continue
+        pending = reception_requests_by_alert.get(remote_id)
+        if pending:
             previous = pending.get("delivery_status")
             pending["delivery_status"] = delivery_status
             pending["delivery_codes"] = list(codes or [])
             if delivery_status == "failed":
                 pending["status"] = "delivery_failed"
-                guest_phone = phone
+                guest_phone = pending.get("guest_phone")
                 correction_needed = previous != "failed"
-            break
 
     if correction_needed and guest_phone:
         send_whatsapp_message(
@@ -4686,12 +4689,12 @@ def _pending_reception_summary():
     now = time.time()
     items = []
     with state_lock:
-        for guest_phone, pending in reception_request_sessions.items():
+        for pending in reception_requests_by_id.values():
             if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
                 continue
             if pending.get("status") in {"send_failed", "delivery_failed"}:
                 continue
-            items.append((guest_phone, dict(pending)))
+            items.append((pending.get("guest_phone"), dict(pending)))
     items.sort(key=lambda item: item[1].get("created", 0), reverse=True)
     return items
 
@@ -4733,12 +4736,17 @@ def handle_reception_operator_message(message, sender_phone, msg_type):
 
         sent = send_whatsapp_message(guest_phone, "Reception update: " + clean_reply)
         with state_lock:
-            current = reception_request_sessions.get(guest_phone, {})
-            if current.get("request_id") == pending.get("request_id"):
+            current = reception_requests_by_id.get(pending.get("request_id"), {})
+            if current:
                 current["status"] = "responded" if sent else "guest_delivery_failed"
                 current["last_reply"] = clean_reply[:1000]
                 current["responded_at"] = time.time()
                 current["reception_message_id"] = message.get("id")
+                # Keep the guest's latest-status view aligned when this is still
+                # their latest ticket, without overwriting a newer request.
+                latest = reception_request_sessions.get(guest_phone, {})
+                if latest.get("request_id") == current.get("request_id"):
+                    reception_request_sessions[guest_phone] = current
 
         request_id = pending.get("request_id", "")
         room = pending.get("room") or "?"

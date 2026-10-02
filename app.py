@@ -8725,7 +8725,10 @@ def _lifecycle_template_configured(purpose):
 
 
 def send_lifecycle_notification(phone, text, purpose, row_index, col_index, marker_value, event):
-    key = f"{row_index}:{col_index}:{marker_value}"
+    # Row+column identifies the lifecycle event slot. Do not include a
+    # timestamp marker in the key, otherwise one-time events could be queued
+    # again every loop while the first Meta delivery callback is still pending.
+    key = f"{row_index}:{col_index}"
     now_ts = time.time()
     with state_lock:
         pending_id = lifecycle_pending_keys.get(key)

@@ -102,4 +102,8 @@ a0, a1 = app._lifecycle_time_window("Ganga Aarti Reminder Window", 0, 0)
 check((b0, b1) == (8 * 60, 10 * 60), "Good Morning/Breakfast window config not loaded")
 check((a0, a1) == (17 * 60, 18 * 60), "Ganga Aarti window config not loaded")
 
+today_iso = app.now_ist().strftime("%Y-%m-%d")
+check(app._lifecycle_sent_today([today_iso], 0, today_iso), "today's lifecycle marker not recognized")
+check(not app._lifecycle_sent_today(["2020-01-01"], 0, today_iso), "old lifecycle marker incorrectly blocks today's reminder")
+
 print("SMOKE TESTS PASSED")

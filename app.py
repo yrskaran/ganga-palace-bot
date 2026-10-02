@@ -8597,10 +8597,11 @@ def reconcile_lifecycle_from_room_sheet():
 
         # Clear values only; formatting/validation remain. Then write one row per active stay.
         last_row = max(len(vals), 2)
-        life.batch_clear([f"A2:{_column_letter(width)}{last_row}"])
+        end_col = re.sub(r"\d", "", gspread.utils.rowcol_to_a1(1, width))
+        life.batch_clear([f"A2:{end_col}{last_row}"])
         if desired:
             life.update(
-                f"A2:{_column_letter(width)}{len(desired) + 1}",
+                f"A2:{end_col}{len(desired) + 1}",
                 desired,
                 value_input_option="RAW",
             )

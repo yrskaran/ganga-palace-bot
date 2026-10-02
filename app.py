@@ -136,7 +136,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V45-NATURAL-EMOJI-CONCIERGE"
+APP_VERSION = "HOTEL-AI-V46-RESPECTFUL-CONCIERGE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -495,6 +495,32 @@ def _strip_emoji_modifiers(text):
     raw = raw.replace("\ufe0f", "").replace("\ufe0e", "")
     raw = re.sub(r"[\U0001F3FB-\U0001F3FF]", "", raw)
     return raw.strip()
+
+
+def _is_symbolic_only_message(text):
+    """True for emoji/punctuation-only turns with no letters or digits."""
+    raw = _strip_emoji_modifiers(text)
+    return bool(raw) and not any(ch.isalnum() for ch in raw)
+
+
+def _respectful_guest_reply(text, guest_info):
+    """Prevent AI replies from addressing a known guest by bare name.
+
+    We only modify direct-address uses (name followed by punctuation/end), so
+    possessive or factual uses of the name are not rewritten.
+    """
+    reply = str(text or "")
+    name = str((guest_info or {}).get("name", "") or "").strip()
+    if not reply or not name or normalize_text(name) in {"guest", "customer"}:
+        return reply
+
+    # Examples: "Hello Kitty!" -> "Hello Kitty ji!" and
+    # "Thank you, Kitty." -> "Thank you, Kitty ji."
+    pattern = rf"(?<![\w]){re.escape(name)}(?!\s+ji\b)(?=\s*[,!?.:]|\s*$)"
+    try:
+        return re.sub(pattern, f"{name} ji", reply, flags=re.I)
+    except re.error:
+        return reply
 
 
 def is_yes(text):
@@ -6405,11 +6431,23 @@ def _process_and_reply(message, sender_phone, msg_type):
     _skip_semantic_ai = bool(_checkin_now) or bool((_dup_pending_now or _order_pending_now) and (is_yes(user_text) or is_no(user_text)))
     semantic_ai_unavailable = False
 
-    # AI is the semantic brain. It gets the first opportunity to interpret the
-    # current message and its conversation context. Deterministic local fallbacks
-    # are safety/quota fallbacks only and must never steal an ambiguous message
-    # from the semantic layer (for example "haan", "wahi", "sabse sasta",
-    # compound food/price questions, or context-dependent photo requests).
+    # Obvious social/emoji turns should feel like WhatsApp, not an AI diagnosis.
+    # Keep transactional confirmations (pending orders/check-in) on their normal path.
+    social_first = _is_symbolic_only_message(user_text) or normalize_text(user_text) in {
+        "hi", "hello", "hey", "namaste", "namaskar", "good morning", "good afternoon", "good evening",
+        "thanks", "thank you", "thankyou", "thx", "shukriya", "dhanyavad", "dhanyavaad",
+        "bye", "goodbye", "good night", "gn", "ok", "okay", "theek hai", "thik hai", "great", "nice", "perfect"
+    }
+    if social_first and not _skip_semantic_ai:
+        if _local_conversation_fallback(sender_phone, user_text, guest_info):
+            return
+        # Unknown emoji/punctuation-only input gets no canned "I don't understand"
+        # response. Silence is more natural than a robotic error bubble.
+        if _is_symbolic_only_message(user_text):
+            print("SILENT SOCIAL TURN: unknown emoji/symbol input", flush=True)
+            return
+
+    # AI is the semantic brain for actual language/contextual requests.
     if not _skip_semantic_ai:
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
@@ -6419,13 +6457,20 @@ def _process_and_reply(message, sender_phone, msg_type):
         action = ai_understanding.get("action")
         confidence = ai_understanding.get("confidence", 0)
         if action == "NONE" or confidence < 0.55:
-            send_whatsapp_message(sender_phone, ai_understanding["reply"])
+            unclear_reply = _respectful_guest_reply(ai_understanding["reply"], guest_info)
+            # Do not emit generic confusion for symbol-only chatter. Specific
+            # clarification questions for real text are still allowed.
+            if _is_symbolic_only_message(user_text):
+                print("SILENT AI CLARIFICATION: symbolic-only input", flush=True)
+                return
+            send_whatsapp_message(sender_phone, unclear_reply)
             return
         # A side question must not get trapped in the Haan/Nahi confirmation loop.
         if (_dup_pending_now or _order_pending_now) and action in {
             "ANSWER", "WIFI", "HOTEL_TIMINGS", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE"
         }:
-            send_whatsapp_message(sender_phone, ai_understanding["reply"])
+            side_reply = _respectful_guest_reply(ai_understanding["reply"], guest_info)
+            send_whatsapp_message(sender_phone, side_reply)
             return
 
     # If semantic AI is unavailable, use the configured deterministic hotel rules
@@ -7051,6 +7096,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             if reply:
                 reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", reply).strip()
                 reply = attach_google_maps_links(reply).strip()
+                reply = _respectful_guest_reply(reply, guest_info)
                 if reply:
                     if ai_action == "RECEPTION" or ai_understanding.get("needs_reception"):
                         reply_to_reception_request(sender_phone, guest_info, user_text)
@@ -7535,6 +7581,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             ai_reply
         ).strip()
         ai_reply = attach_google_maps_links(ai_reply).strip()
+        ai_reply = _respectful_guest_reply(ai_reply, guest_info)
 
         if ai_reply:
             # AI may explicitly request a reception handoff with a private marker.
@@ -7563,9 +7610,14 @@ def _process_and_reply(message, sender_phone, msg_type):
     if _local_conversation_fallback(sender_phone, user_text, guest_info):
         return
 
-    # Never leave an ordinary guest question unanswered.
+    # Unknown emoji/symbol chatter is intentionally silent. For real text, keep
+    # one short clarification during an AI outage rather than pretending to know.
     # ========================================================
     fallback_lang = get_guest_response_language(sender_phone)
+    if _is_symbolic_only_message(user_text):
+        print("SILENT FALLBACK: unrecognized symbolic-only message", flush=True)
+        return
+
     # When every AI provider is unavailable, do NOT turn an ordinary chat turn
     # into a Reception ticket. Unknown factual requests can be handed to Reception
     # only when an AI/local rule explicitly identifies a property-specific handoff.

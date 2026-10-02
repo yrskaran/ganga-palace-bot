@@ -10,7 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify Python syntax
-        run: python -m py_compile app.py durable_runtime.py reliability.py admin.py bot.py serve.py customer_config.py validate_customer.py
+        run: python -m py_compile app.py durable_runtime.py reliability.py admin.py bot.py serve.py customer_config.py validate_customer.py smoke_test.py
+      - name: Install runtime dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Run core smoke tests
+        env:
+          BOT_AUTOSTART: "0"
+          BOT_STORAGE_MODE: "demo"
+        run: python smoke_test.py
       - name: Upload repository backup
         uses: actions/upload-artifact@v4
         with:

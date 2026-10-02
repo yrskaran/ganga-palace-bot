@@ -190,6 +190,9 @@ order_sessions = {}
 duplicate_order_sessions = {}
 checkin_sessions = {}
 service_sessions = {}
+# Latest reception handoff per guest. This prevents an older food-confirmation
+# state from hijacking follow-up questions such as "meri request confirm hui?".
+reception_request_sessions = {}
 active_orders = {}
 last_bill_reply = {}
 # Last language used by each guest; reused for proactive messages.
@@ -473,7 +476,9 @@ def is_yes(text):
     t = normalize_text(text)
     return t in {
         "yes", "y", "haan", "ha", "ji", "ok", "okay", "theek", "thik",
-        "confirm", "confirmed", "kardo", "bhej do", "bhejo", "sure",
+        "confirm", "confirmed", "confirm kiya", "confirm kar diya",
+        "haan confirm", "yes confirm", "done", "kar diya", "kar do",
+        "kardo", "bhej do", "bhejo", "sure",
         "हाँ", "हां", "जी", "ठीक है", "haan ji", "yes please", "theek hai", "thik hai"
     }
 
@@ -5592,6 +5597,14 @@ def reply_to_reception_request(phone, guest_info, user_text):
     ok = notify_reception_request(phone, guest_info,
         "Recent guest conversation:\n" + context + "\nCurrent request: " + user_text,
         "explicit_reception_request")
+
+    with state_lock:
+        reception_request_sessions[phone] = {
+            "request": str(user_text or "").strip()[:500],
+            "status": "pending" if ok else "send_failed",
+            "created": time.time(),
+        }
+
     if ok:
         reply = bilingual_text(phone,
             "I've submitted the request to reception. Their confirmation is still pending.",
@@ -5604,6 +5617,48 @@ def reply_to_reception_request(phone, guest_info, user_text):
             "रिसेप्शन को अनुरोध अभी नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
     send_whatsapp_message(phone,reply)
     return ok
+
+
+def handle_reception_request_followup(phone, user_text):
+    """Answer status follow-ups for the most recent reception handoff.
+
+    This runs before food-order confirmation handling so an older pending chai/order
+    cannot hijack messages like "confirm kiya", "meri request hui?" or
+    "Saridon ki request kab bataoge?".
+    """
+    t = normalize_text(user_text)
+    with state_lock:
+        pending = reception_request_sessions.get(phone)
+
+    if not pending:
+        return False
+
+    # Expire stale handoff memory after two hours.
+    if time.time() - pending.get("created", time.time()) > 7200:
+        with state_lock:
+            reception_request_sessions.pop(phone, None)
+        return False
+
+    status_terms = (
+        "request", "confirm", "confirmation", "hua", "hui", "kiya", "status",
+        "kab", "reception", "saridon", "seridon", "medicine", "dawai", "goli"
+    )
+    if not any(term in t for term in status_terms):
+        return False
+
+    request_text = pending.get("request", "aapki request")
+    if pending.get("status") == "send_failed":
+        reply = bilingual_text(phone,
+            f"I couldn't send your reception request ({request_text}) automatically. Please contact the front desk directly.",
+            f"Aapki reception request ({request_text}) automatic nahi bhej paaya. Kripya front desk se seedhe confirm karein.",
+            f"आपकी रिसेप्शन रिक्वेस्ट ({request_text}) अपने-आप नहीं भेजी जा सकी। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
+    else:
+        reply = bilingual_text(phone,
+            f"Your reception request ({request_text}) has been sent. I still don't have a confirmed response from reception.",
+            f"Aapki request ({request_text}) reception ko bhej di gayi hai. Reception se confirmed response abhi nahi mila hai.",
+            f"आपकी रिक्वेस्ट ({request_text}) रिसेप्शन को भेज दी गई है। रिसेप्शन से पुष्टि अभी नहीं मिली है।")
+    send_whatsapp_message(phone, reply)
+    return True
 
 
 def _process_and_reply(message, sender_phone, msg_type):
@@ -5712,6 +5767,10 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
         reply_to_reception_request(sender_phone, guest_info, user_text)
+        return
+
+    # Reception follow-ups take priority over any older food confirmation state.
+    if handle_reception_request_followup(sender_phone, user_text):
         return
 
     if handle_notification_question(sender_phone, user_text, guest_info):

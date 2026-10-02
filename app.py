@@ -9232,6 +9232,9 @@ def startup():
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
     try:
         fetch_sheet_data_sync()
+        # Keep the service audit tab visible/ready even before the first guest
+        # creates a staff task. Existing sheets/data are preserved.
+        _ensure_service_requests_sheet()
     except Exception:
         traceback.print_exc()
 

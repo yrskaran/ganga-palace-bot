@@ -27,6 +27,11 @@ with app.state_lock:
     app.shared_store["staff_headers"] = headers
     app.shared_store["staff_roster"] = rows
 
+from datetime import datetime
+check(app._staff_shift_matches("Full Day", datetime(2026, 10, 3, 1, 0, tzinfo=app.IST)), "full-day shift should always match")
+check(app._staff_shift_matches("22:00-06:00", datetime(2026, 10, 3, 1, 0, tzinfo=app.IST)), "overnight shift parsing failed")
+check(not app._staff_shift_matches("08:00-16:00", datetime(2026, 10, 3, 1, 0, tzinfo=app.IST)), "off-shift staff incorrectly matched")
+
 check(app._room_in_assignment("203", "201,202,203,205"), "comma-separated room assignment failed")
 check(app._room_in_assignment("205", "201/205/209"), "slash-separated room assignment failed")
 check(app._room_in_assignment("207", "201-210"), "room range assignment failed")

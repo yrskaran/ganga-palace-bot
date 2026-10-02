@@ -59,6 +59,8 @@ When the core engine improves, apply the same tested core changes to customer re
 Rules:
 - `Role` may be Reception, Housekeeping, Maintenance, Kitchen, Room Service, etc.
 - `Status` values such as ON DUTY / ACTIVE / AVAILABLE are eligible. LEAVE / OFF / HOLIDAY are skipped.
+- `Date` / `Duty Date`: use `Daily` for recurring staff, or a real duty date such as `03-10-2026`. Old dated rows are ignored automatically.
+- `Shift`: prefer explicit 24-hour ranges such as `08:00-16:00`, `16:00-00:00`, or `22:00-06:00`. `Morning`, `Evening`, `Night`, and `Full Day` are also supported.
 - One staff member may have many rooms: `201,202,203`, `201/202/203`, or a range such as `201-210`.
 - `All` or a blank Assigned Rooms cell means role-wide staff.
 - Exact room assignment wins over role-wide staff.

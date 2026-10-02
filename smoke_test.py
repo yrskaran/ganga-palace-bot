@@ -81,4 +81,12 @@ handled = app._local_conversation_fallback(
 check(handled, "heart-eyes emoji should be handled conversationally")
 check(captured and "khushi" in captured[-1].lower(), "heart-eyes emoji response was not natural")
 
+check(app._respectful_guest_reply("Hello Kitty!", {"name": "Kitty"}) == "Hello Kitty ji!",
+      "bare guest name was not made respectful")
+check(app._respectful_guest_reply("Thank you, Kitty.", {"name": "Kitty"}) == "Thank you, Kitty ji.",
+      "direct-address guest name was not made respectful")
+check(app._is_symbolic_only_message("😆"), "emoji-only message was not recognized as symbolic")
+check(app._is_symbolic_only_message("???"), "punctuation-only message was not recognized as symbolic")
+check(not app._is_symbolic_only_message("help 😆"), "real text was incorrectly treated as symbolic-only")
+
 print("SMOKE TESTS PASSED")

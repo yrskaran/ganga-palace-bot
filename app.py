@@ -114,6 +114,10 @@ SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY")
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
+# Dedicated reception operator. Keep this separate from generic staff routing so
+# reception replies can be authenticated and mapped back to the correct guest.
+RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", STAFF_PHONE).strip()
+RECEPTION_REQUEST_TTL_SECONDS = max(1800, int(os.getenv("RECEPTION_REQUEST_TTL_SECONDS", "21600")))
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
@@ -125,7 +129,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V42-DEMO-CONVERSATION-FIX"
+APP_VERSION = "HOTEL-AI-V43-RECEPTION-BRIDGE"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -1252,11 +1256,7 @@ def find_on_duty_staff(room, role):
 
 
 def send_staff_alert(room, role, message, fallback_phone=None):
-    """Route an internal alert through today's Staff_Roster.
-
-    If a room is explicitly assigned, only that staff member receives the alert.
-    If no roster match exists, fall back to the legacy role phone number.
-    """
+    """Route a generic internal alert through today's Staff_Roster."""
     staff = find_on_duty_staff(room, role)
     target = staff["phone"] if staff and staff.get("phone") else fallback_phone
     if not target:
@@ -1269,6 +1269,24 @@ def send_staff_alert(room, role, message, fallback_phone=None):
         flush=True,
     )
     return ok
+
+
+def send_reception_alert(message):
+    """Send reception alerts only to the configured reception operator.
+
+    A stable dedicated operator is required because their quoted WhatsApp replies
+    are used as an authenticated bridge back to the exact guest request.
+    """
+    target = format_whatsapp_number(RECEPTION_PHONE)
+    if not target:
+        print("RECEPTION ROUTING: RECEPTION_PHONE missing/invalid", flush=True)
+        return False, None
+    ok, remote_id = send_notification_with_id(target, message, "RECEPTION")
+    print(
+        f"RECEPTION ROUTING: recipient={target} accepted={ok} remote_id={bool(remote_id)}",
+        flush=True,
+    )
+    return ok, remote_id
 
 
 def sync_sheets_in_background():
@@ -1787,6 +1805,7 @@ def record_delivery_statuses(statuses):
         with state_lock:
             shared_store["last_delivery_event"] = event
         print(f"WHATSAPP DELIVERY: status={event['status']} codes={codes}", flush=True)
+        _update_reception_alert_delivery(status.get("id"), status.get("status"), codes)
         if 131047 in codes:
             print("WHATSAPP ACTION: recipient service window expired; use an approved template or wait for a new recipient message.", flush=True)
 
@@ -1858,6 +1877,70 @@ def send_whatsapp_message(to_number, text):
     if capture is not None and format_whatsapp_number(capture["phone"]) == number:
         capture["replies"].append(str(text))
     return True
+
+
+def _extract_outgoing_message_id(response, payload=None):
+    """Return Meta's wamid for a successful send, including durable dedupe replays."""
+    if response is not None:
+        try:
+            body = response.json() or {}
+            remote_id = ((body.get("messages") or [{}])[0] or {}).get("id")
+            if remote_id:
+                return str(remote_id)
+        except Exception:
+            pass
+
+    if durable_store is None or not payload:
+        return None
+
+    # durable_runtime.request uses this exact idempotency key. Looking it up here
+    # preserves the original Meta message id when a send is replayed/deduplicated.
+    try:
+        event = getattr(durable_runtime.context, "event", None) or ("background:" + now_ist().date().isoformat())
+        part = getattr(durable_runtime.context, "part", 0)
+        key = hashlib.sha256(
+            (event + str(part) + json.dumps(payload, sort_keys=True)).encode()
+        ).hexdigest()
+        with durable_store.db() as db:
+            row = db.execute("SELECT remote_id FROM outbox WHERE id=?", (key,)).fetchone()
+        return str(row["remote_id"]) if row and row["remote_id"] else None
+    except Exception as exc:
+        print("OUTGOING MESSAGE ID LOOKUP ERROR:", type(exc).__name__, flush=True)
+        return None
+
+
+def send_notification_with_id(phone, text, purpose):
+    """Send one internal notification and return (accepted, Meta message id)."""
+    number = format_whatsapp_number(phone)
+    if not number or not str(text or "").strip():
+        return False, None
+
+    template = os.getenv("WA_" + purpose.upper() + "_TEMPLATE", "").strip()
+    if template:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": number,
+            "type": "template",
+            "template": {
+                "name": template,
+                "language": {"code": os.getenv("WA_TEMPLATE_LANGUAGE", "en")},
+                "components": [{
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(text)[:1000]}],
+                }],
+            },
+        }
+    else:
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": number,
+            "type": "text",
+            "text": {"body": str(text)[:4000]},
+        }
+
+    response = whatsapp_request(payload)
+    accepted = response is not None and response.status_code in (200, 201)
+    return accepted, (_extract_outgoing_message_id(response, payload) if accepted else None)
 
 
 def upload_image_to_whatsapp(image_url):
@@ -4502,22 +4585,195 @@ def send_reception_fallback(sender_phone, guest_info, guest_message, request_tex
     return sent_guest
 
 
+def _new_reception_request_id(sender_phone, room=""):
+    seed = f"{sender_phone}|{room}|{time.time_ns()}"
+    return "R-" + hashlib.sha256(seed.encode()).hexdigest()[:6].upper()
+
+
 def notify_reception_request(sender_phone, guest_info, request_text, source="bot_fallback"):
-    """Notify reception whenever the bot tells the guest reception will handle something."""
+    """Create a mapped reception ticket and send it to the dedicated operator."""
     try:
+        guest_phone = format_whatsapp_number(sender_phone)
         room = (guest_info or {}).get("room", "") if guest_info else ""
         name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
         status = (guest_info or {}).get("status", "") if guest_info else ""
+        request_id = _new_reception_request_id(guest_phone or sender_phone, room)
+        clean_request = str(request_text or "").strip()[:1000]
+
         message = (
-            "RECEPTION REQUEST\n"
-            f"Guest: {name}\nPhone: +{sender_phone}\n"
+            f"RECEPTION REQUEST [{request_id}]\n"
+            f"Guest: {name}\nPhone: +{guest_phone or sender_phone}\n"
             f"Room: {room or 'Not assigned'}\nStatus: {status or 'Unknown'}\n"
-            f"Request: {str(request_text or '').strip()[:1000]}"
+            f"Request: {clean_request}\n\n"
+            "Guest ko update bhejne ke liye ISI WhatsApp message par Reply karein. "
+            f"Fallback: message me {request_id} likh sakte hain."
         )
-        return send_staff_alert(room=room, role="Reception", message=message, fallback_phone=STAFF_PHONE)
+
+        ok, remote_id = send_reception_alert(message)
+        with state_lock:
+            reception_request_sessions[guest_phone or sender_phone] = {
+                "request_id": request_id,
+                "request": clean_request,
+                "room": str(room or ""),
+                "guest_name": str(name or "Guest"),
+                "status": "pending" if ok else "send_failed",
+                "delivery_status": "accepted" if ok else "failed",
+                "alert_message_id": remote_id,
+                "source": source,
+                "created": time.time(),
+            }
+        return ok
     except Exception as exc:
         print("RECEPTION NOTIFY ERROR:", exc, flush=True)
         return False
+
+
+def _find_reception_request_by_alert_id(alert_message_id):
+    if not alert_message_id:
+        return None, None
+    now = time.time()
+    with state_lock:
+        for guest_phone, pending in reception_request_sessions.items():
+            if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
+                continue
+            if pending.get("alert_message_id") == alert_message_id:
+                return guest_phone, dict(pending)
+    return None, None
+
+
+def _find_reception_request_by_request_id(text):
+    match = re.search(r"\bR-[A-F0-9]{6}\b", str(text or "").upper())
+    if not match:
+        return None, None
+    wanted = match.group(0)
+    now = time.time()
+    with state_lock:
+        for guest_phone, pending in reception_request_sessions.items():
+            if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
+                continue
+            if str(pending.get("request_id", "")).upper() == wanted:
+                return guest_phone, dict(pending)
+    return None, None
+
+
+def _update_reception_alert_delivery(remote_id, delivery_status, codes):
+    """Tie Meta delivery callbacks back to the guest-facing reception ticket."""
+    if not remote_id:
+        return
+    guest_phone = None
+    correction_needed = False
+    with state_lock:
+        for phone, pending in reception_request_sessions.items():
+            if pending.get("alert_message_id") != remote_id:
+                continue
+            previous = pending.get("delivery_status")
+            pending["delivery_status"] = delivery_status
+            pending["delivery_codes"] = list(codes or [])
+            if delivery_status == "failed":
+                pending["status"] = "delivery_failed"
+                guest_phone = phone
+                correction_needed = previous != "failed"
+            break
+
+    if correction_needed and guest_phone:
+        send_whatsapp_message(
+            guest_phone,
+            "Reception ko WhatsApp alert deliver nahi ho paaya. Kripya front desk se seedhe contact karein; main is request ko confirmed nahi bataunga."
+        )
+
+
+def _pending_reception_summary():
+    now = time.time()
+    items = []
+    with state_lock:
+        for guest_phone, pending in reception_request_sessions.items():
+            if now - pending.get("created", now) > RECEPTION_REQUEST_TTL_SECONDS:
+                continue
+            if pending.get("status") in {"send_failed", "delivery_failed"}:
+                continue
+            items.append((guest_phone, dict(pending)))
+    items.sort(key=lambda item: item[1].get("created", 0), reverse=True)
+    return items
+
+
+def handle_reception_operator_message(message, sender_phone, msg_type):
+    """Bridge a reception operator reply to the exact guest without guessing."""
+    if format_whatsapp_number(sender_phone) != format_whatsapp_number(RECEPTION_PHONE):
+        return False
+
+    if msg_type == "text":
+        reply_text = str((message.get("text") or {}).get("body", "")).strip()
+    elif msg_type == "interactive":
+        choice = (message.get("interactive") or {}).get("button_reply") or (message.get("interactive") or {}).get("list_reply") or {}
+        reply_text = str(choice.get("title", "")).strip()
+    elif msg_type == "button":
+        reply_text = str((message.get("button") or {}).get("text", "")).strip()
+    else:
+        send_whatsapp_message(
+            sender_phone,
+            "Reception mode active hai. Guest ko update bhejne ke liye guest request wale alert par text Reply karein."
+        )
+        return True
+
+    if not reply_text:
+        send_whatsapp_message(sender_phone, "Khali reply forward nahi kiya gaya. Kripya update text me bhejein.")
+        return True
+
+    context_id = str((message.get("context") or {}).get("id", "")).strip()
+    guest_phone, pending = _find_reception_request_by_alert_id(context_id)
+    if not guest_phone:
+        guest_phone, pending = _find_reception_request_by_request_id(reply_text)
+
+    if guest_phone and pending:
+        # Strip the fallback request id from the guest-facing text when present.
+        clean_reply = re.sub(r"\bR-[A-F0-9]{6}\b\s*[:\-]?\s*", "", reply_text, flags=re.I).strip()
+        if not clean_reply:
+            send_whatsapp_message(sender_phone, "Request ID mil gaya, lekin update text missing hai.")
+            return True
+
+        sent = send_whatsapp_message(guest_phone, "Reception update: " + clean_reply)
+        with state_lock:
+            current = reception_request_sessions.get(guest_phone, {})
+            if current.get("request_id") == pending.get("request_id"):
+                current["status"] = "responded" if sent else "guest_delivery_failed"
+                current["last_reply"] = clean_reply[:1000]
+                current["responded_at"] = time.time()
+                current["reception_message_id"] = message.get("id")
+
+        request_id = pending.get("request_id", "")
+        room = pending.get("room") or "?"
+        if sent:
+            send_whatsapp_message(
+                sender_phone,
+                f"Update guest ko bhej diya. Room {room} | {request_id}"
+            )
+        else:
+            send_whatsapp_message(
+                sender_phone,
+                f"Guest ko update deliver nahi ho paaya. Room {room} | {request_id}"
+            )
+        return True
+
+    # Never guess the target when reception sends an unquoted/unmapped message.
+    pending_items = _pending_reception_summary()[:3]
+    if pending_items:
+        refs = ", ".join(
+            f"{item.get('request_id')} (Room {item.get('room') or '?'})"
+            for _, item in pending_items
+        )
+        send_whatsapp_message(
+            sender_phone,
+            "Ye message kisi guest ko auto-forward nahi kiya gaya. "
+            "Sahi guest request wale alert par WhatsApp Reply karein. "
+            f"Pending: {refs}"
+        )
+    else:
+        send_whatsapp_message(
+            sender_phone,
+            "Reception mode active hai. Abhi koi mapped pending guest request nahi mili. "
+            "Nayi request aane par us alert par Reply karke update bhejein."
+        )
+    return True
 
 
 
@@ -5557,7 +5813,10 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
 
 
 def process_and_reply(message, sender_phone, msg_type):
-    """Record every text/audio turn, including deterministic confirmations and errors."""
+    """Record guest turns; reception operator messages use the mapped bridge."""
+    if format_whatsapp_number(sender_phone) == format_whatsapp_number(RECEPTION_PHONE):
+        return handle_reception_operator_message(message, sender_phone, msg_type)
+
     before = get_conversation_history(sender_phone)
     capture = {"phone": sender_phone, "user": "", "replies": []}
     turn_capture.current = capture
@@ -5592,18 +5851,9 @@ def handle_notification_question(phone, text, guest_info=None):
 
 
 def reply_to_reception_request(phone, guest_info, user_text):
-    history = get_conversation_history(phone)
-    context = "\n".join(item.get("content", "") for item in history[-4:])
-    ok = notify_reception_request(phone, guest_info,
-        "Recent guest conversation:\n" + context + "\nCurrent request: " + user_text,
-        "explicit_reception_request")
-
-    with state_lock:
-        reception_request_sessions[phone] = {
-            "request": str(user_text or "").strip()[:500],
-            "status": "pending" if ok else "send_failed",
-            "created": time.time(),
-        }
+    ok = notify_reception_request(
+        phone, guest_info, user_text, "explicit_reception_request"
+    )
 
     if ok:
         reply = bilingual_text(phone,
@@ -5633,8 +5883,8 @@ def handle_reception_request_followup(phone, user_text):
     if not pending:
         return False
 
-    # Expire stale handoff memory after two hours.
-    if time.time() - pending.get("created", time.time()) > 7200:
+    # Expire stale handoff memory after the configured reception TTL.
+    if time.time() - pending.get("created", time.time()) > RECEPTION_REQUEST_TTL_SECONDS:
         with state_lock:
             reception_request_sessions.pop(phone, None)
         return False
@@ -5647,11 +5897,18 @@ def handle_reception_request_followup(phone, user_text):
         return False
 
     request_text = pending.get("request", "aapki request")
-    if pending.get("status") == "send_failed":
+    status = pending.get("status")
+    if status in {"send_failed", "delivery_failed"}:
         reply = bilingual_text(phone,
-            f"I couldn't send your reception request ({request_text}) automatically. Please contact the front desk directly.",
-            f"Aapki reception request ({request_text}) automatic nahi bhej paaya. Kripya front desk se seedhe confirm karein.",
-            f"आपकी रिसेप्शन रिक्वेस्ट ({request_text}) अपने-आप नहीं भेजी जा सकी। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
+            f"I couldn't deliver your reception request ({request_text}) automatically. Please contact the front desk directly.",
+            f"Aapki reception request ({request_text}) reception tak deliver nahi ho paayi. Kripya front desk se seedhe confirm karein.",
+            f"आपकी रिसेप्शन रिक्वेस्ट ({request_text}) रिसेप्शन तक नहीं पहुँच पाई। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
+    elif status == "responded" and pending.get("last_reply"):
+        update = pending.get("last_reply")
+        reply = bilingual_text(phone,
+            f"Reception's latest update: {update}",
+            f"Reception ka latest update: {update}",
+            f"रिसेप्शन का नवीनतम अपडेट: {update}")
     else:
         reply = bilingual_text(phone,
             f"Your reception request ({request_text}) has been sent. I still don't have a confirmed response from reception.",
@@ -7861,7 +8118,8 @@ def session_snapshot(phone):
     with state_lock:
         return {name: globals()[name].get(phone) for name in (
             "order_sessions","duplicate_order_sessions","checkin_sessions","service_sessions",
-            "active_orders","photo_sessions","guest_language_cache","conversation_memory")}
+            "reception_request_sessions","active_orders","photo_sessions",
+            "guest_language_cache","conversation_memory")}
 
 
 def database_path():
@@ -7926,6 +8184,7 @@ def startup():
     ]
     print("NOTIFICATION CONFIG: owner=" + str(bool(format_whatsapp_number(OWNER_PHONE)))
           + " staff=" + str(bool(format_whatsapp_number(STAFF_PHONE)))
+          + " reception=" + str(bool(format_whatsapp_number(RECEPTION_PHONE)))
           + " kitchen=" + str(bool(format_whatsapp_number(KITCHEN_PHONE)))
           + " owner_slots=" + str(OWNER_REPORT_TIMES), flush=True)
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)

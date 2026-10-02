@@ -1278,6 +1278,43 @@ def _staff_date_matches(value, today):
     return today.strftime("%Y-%m-%d") in value or today.strftime("%d-%m-%Y") in value
 
 
+def _staff_shift_matches(value, current=None):
+    """Support hotel-managed shifts from Staff_Roster.
+
+    Recommended format is HH:MM-HH:MM (24h), e.g. 08:00-16:00.
+    Friendly labels are also supported for simple hotels.
+    """
+    current = current or now_ist()
+    raw = str(value or "").strip()
+    t = normalize_text(raw)
+    if not raw or t in {"all", "full day", "fullday", "24/7", "24x7", "any", "daily"}:
+        return True
+
+    m = re.search(r"\b(\d{1,2}):(\d{2})\s*(?:-|to)\s*(\d{1,2}):(\d{2})\b", raw)
+    if m:
+        start = int(m.group(1)) * 60 + int(m.group(2))
+        end = int(m.group(3)) * 60 + int(m.group(4))
+        now_min = current.hour * 60 + current.minute
+        if start <= end:
+            return start <= now_min < end
+        return now_min >= start or now_min < end
+
+    # Sensible defaults; hotels can always use explicit HH:MM-HH:MM instead.
+    named = {
+        "morning": (6 * 60, 14 * 60),
+        "day": (8 * 60, 20 * 60),
+        "evening": (14 * 60, 22 * 60),
+        "night": (22 * 60, 6 * 60),
+    }
+    if t in named:
+        start, end = named[t]
+        now_min = current.hour * 60 + current.minute
+        if start <= end:
+            return start <= now_min < end
+        return now_min >= start or now_min < end
+    return False
+
+
 def _room_in_assignment(room, assigned_rooms):
     """Match one room against a staff member's multi-room assignment.
 
@@ -1349,11 +1386,29 @@ def _role_matches(row_role, target_role):
 
 
 def _staff_roster_has_role(role):
+    """Sheet becomes authoritative only when the role has a usable row for today.
+
+    Old demo rows, placeholder phones, or stale one-day rosters must not disable
+    the production fallback numbers accidentally. OFF/LEAVE still counts as a
+    managed role once the row itself is valid for today.
+    """
     headers, rows = _staff_rows_snapshot()
     if not headers or not rows:
         return False
     h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
-    return any(_role_matches(_staff_value(row, h, "Role", "Department", "Service"), role) for row in rows)
+    today = now_ist().date()
+    for row in rows:
+        if not _role_matches(_staff_value(row, h, "Role", "Department", "Service"), role):
+            continue
+        phone = format_whatsapp_number(_staff_value(
+            row, h, "WhatsApp", "WhatsApp Number", "Phone", "Phone Number", "Mobile"
+        ))
+        if not phone:
+            continue
+        if not _staff_date_matches(_staff_value(row, h, "Duty Date", "Date"), today):
+            continue
+        return True
+    return False
 
 
 def is_on_duty_staff_phone(phone, role):
@@ -1377,6 +1432,8 @@ def is_on_duty_staff_phone(phone, role):
         if not _staff_is_on_duty(_staff_value(row, h, "Status", "Duty Status", "On Duty")):
             continue
         if not _staff_date_matches(_staff_value(row, h, "Duty Date", "Date"), today):
+            continue
+        if not _staff_shift_matches(_staff_value(row, h, "Shift", "Duty Shift", "Timing"), now_ist()):
             continue
         return True
     return False
@@ -1411,6 +1468,9 @@ def find_on_duty_staff(room, role):
         if not name or not normalized_phone or not _staff_is_on_duty(status):
             continue
         if not _staff_date_matches(date_value, today):
+            continue
+        shift_value = _staff_value(row, h, "Shift", "Duty Shift", "Timing")
+        if not _staff_shift_matches(shift_value, now_ist()):
             continue
         if target_role and not _role_matches(row_role, target_role):
             continue

@@ -18,6 +18,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from customer_config import CustomerConfigError, env_defaults_from_config, load_customer_config, render_hotel_data
 from urllib.parse import quote_plus
 
 import requests
@@ -112,11 +113,17 @@ COHERE_RATE_LIMIT_COOLDOWN = max(60, int(os.getenv("COHERE_RATE_LIMIT_COOLDOWN",
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 
-KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", "919058929796").strip()
-STAFF_PHONE = os.getenv("STAFF_PHONE", "917668426524").strip()
+try:
+    CUSTOMER_CONFIG, CUSTOMER_CONFIG_PATH = load_customer_config(Path(__file__).resolve().parent)
+except CustomerConfigError as exc:
+    raise RuntimeError(f"Customer configuration error: {exc}") from exc
+CUSTOMER_ENV_DEFAULTS = env_defaults_from_config(CUSTOMER_CONFIG or {})
+
+KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "919058929796")).strip()
+STAFF_PHONE = os.getenv("STAFF_PHONE", CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", "917668426524")).strip()
 # Dedicated reception operator. Keep this separate from generic staff routing so
 # reception replies can be authenticated and mapped back to the correct guest.
-RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", STAFF_PHONE).strip()
+RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", CUSTOMER_ENV_DEFAULTS.get("RECEPTION_PHONE", STAFF_PHONE)).strip()
 RECEPTION_REQUEST_TTL_SECONDS = max(1800, int(os.getenv("RECEPTION_REQUEST_TTL_SECONDS", "21600")))
 OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
@@ -532,6 +539,14 @@ def get_hotel_value(label, default=""):
 
 
 def get_hotel_data():
+    # New customer deployments use one structured JSON file. Existing deployments
+    # remain backward-compatible with hotel_data.txt when no customer config exists.
+    if CUSTOMER_CONFIG:
+        try:
+            return render_hotel_data(CUSTOMER_CONFIG).strip()
+        except Exception as exc:
+            print("CUSTOMER CONFIG RENDER ERROR:", exc, flush=True)
+
     path = os.getenv("HOTEL_DATA_FILE", str(Path(__file__).with_name("hotel_data.txt")))
     try:
         if os.path.exists(path):
@@ -679,6 +694,15 @@ def get_hotel_config():
     Hot-reload hotel_data.txt when the file changes.
     No Python redeploy is needed for normal hotel-information edits.
     """
+    if CUSTOMER_CONFIG:
+        raw = render_hotel_data(CUSTOMER_CONFIG)
+        signature = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        if HOTEL_CONFIG_CACHE["signature"] != signature:
+            HOTEL_CONFIG_CACHE["data"] = _parse_hotel_config(raw)
+            HOTEL_CONFIG_CACHE["signature"] = signature
+            print("CUSTOMER CONFIG LOADED", flush=True)
+        return HOTEL_CONFIG_CACHE["data"]
+
     path = os.getenv("HOTEL_DATA_FILE", str(Path(__file__).with_name("hotel_data.txt")))
 
     try:
@@ -8180,6 +8204,11 @@ def startup():
         startup_started = True
 
     print(f"========== {APP_VERSION} STARTING ==========", flush=True)
+    print(
+        "HOTEL CONFIG SOURCE: " +
+        (str(CUSTOMER_CONFIG_PATH) if CUSTOMER_CONFIG else "hotel_data.txt"),
+        flush=True,
+    )
     configured = [
         name for name, key in (
             ("OpenAI", OPENAI_API_KEY),

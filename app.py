@@ -139,7 +139,8 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V47-SERVICE-CLOSURE-LIFECYCLE"
+APP_VERSION = "HOTEL-AI-V48-ACTIVE-LIFECYCLE-QUEUE"
+ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
 SHEET_SYNC_MIN_INTERVAL = max(45, int(os.getenv("SHEET_SYNC_MIN_INTERVAL", "60")))
@@ -8347,15 +8348,8 @@ def _room_lifecycle_columns():
         "checkout_sent": _lifecycle_header_index(("CHECKOUT SENT", "CHECK-OUT SENT")),
     }
 
-def _mark_room_lifecycle_cell(row_number, col_index, value):
+def _mark_named_sheet_cell(sheet_name, row_number, col_index, value):
     require_operational_layout()
-    """Persist lifecycle marker and immediately mirror it into the local cache.
-
-    The lifecycle loop can run again before the next allowed Google Sheets refresh
-    (the refresh is intentionally throttled).  Updating the local cache here is
-    therefore essential: without it, a successfully sent message could look
-    unsent for up to one sync interval and be delivered twice.
-    """
     if col_index < 0:
         return False
     try:
@@ -8363,14 +8357,13 @@ def _mark_room_lifecycle_cell(row_number, col_index, value):
         if not client:
             return False
         sh = client.open_by_key(SHEET_ID)
-        sheet = sh.worksheet("Lifecycle_Automation")
+        sheet = sh.worksheet(sheet_name) if sheet_name != "Rooms" else sh.get_worksheet(0)
         sheet.update_cell(row_number, col_index + 1, value)
 
-        # Keep the in-process cache consistent immediately.  The next Google
-        # Sheets sync will refresh it from the persistent marker as usual.
         with state_lock:
-            rows = shared_store.get("lifecycle_rows", [])
-            cache_index = row_number - 2  # sheet row 2 == cache row 0
+            cache_name = "lifecycle_rows" if sheet_name == "Lifecycle_Automation" else "rooms"
+            rows = shared_store.get(cache_name, [])
+            cache_index = row_number - 2
             if isinstance(rows, list) and 0 <= cache_index < len(rows):
                 row = rows[cache_index]
                 while len(row) <= col_index:
@@ -8378,8 +8371,33 @@ def _mark_room_lifecycle_cell(row_number, col_index, value):
                 row[col_index] = value
         return True
     except Exception as exc:
-        print(f"LIFECYCLE SHEET WRITE ERROR: row={row_number} col={col_index + 1}: {exc}", flush=True)
+        print(f"SHEET MARKER WRITE ERROR: sheet={sheet_name} row={row_number} col={col_index + 1}: {exc}", flush=True)
         return False
+
+
+def _mark_room_lifecycle_cell(row_number, col_index, value):
+    return _mark_named_sheet_cell("Lifecycle_Automation", row_number, col_index, value)
+
+
+def _ensure_room_checkout_message_column():
+    """Keep checkout delivery history in Rooms so Lifecycle_Automation can stay active-only."""
+    try:
+        client = get_gspread_client()
+        if not client:
+            return -1
+        sh = client.open_by_key(SHEET_ID)
+        sheet = sh.get_worksheet(0)
+        headers = [str(x).strip() for x in sheet.row_values(1)]
+        for i, header in enumerate(headers):
+            if normalize_text(header).replace(" ", "_") in {"checkout_msg_sent", "checkout_message_sent"}:
+                return i
+        col = max(len(headers), sheet.get_last_column()) + 1
+        sheet.update_cell(1, col, ROOM_CHECKOUT_MESSAGE_SENT_HEADER)
+        print(f"ROOMS COLUMN CREATED: {ROOM_CHECKOUT_MESSAGE_SENT_HEADER}", flush=True)
+        return col - 1
+    except Exception as exc:
+        print("ROOM CHECKOUT MARKER COLUMN ERROR:", exc, flush=True)
+        return -1
 
 
 def _lifecycle_sent(row, idx):
@@ -8724,11 +8742,11 @@ def _lifecycle_template_configured(purpose):
     )
 
 
-def send_lifecycle_notification(phone, text, purpose, row_index, col_index, marker_value, event):
-    # Row+column identifies the lifecycle event slot. Do not include a
+def send_lifecycle_notification(phone, text, purpose, row_index, col_index, marker_value, event, sheet_name="Lifecycle_Automation"):
+    # Sheet+row+column identifies the lifecycle event slot. Do not include a
     # timestamp marker in the key, otherwise one-time events could be queued
     # again every loop while the first Meta delivery callback is still pending.
-    key = f"{row_index}:{col_index}"
+    key = f"{sheet_name}:{row_index}:{col_index}"
     now_ts = time.time()
     with state_lock:
         pending_id = lifecycle_pending_keys.get(key)
@@ -8759,6 +8777,7 @@ def send_lifecycle_notification(phone, text, purpose, row_index, col_index, mark
         "event": event,
         "purpose": purpose,
         "phone": format_whatsapp_number(phone) or str(phone),
+        "sheet": sheet_name,
     }
     with state_lock:
         lifecycle_pending_by_message_id[remote_id] = meta
@@ -8775,7 +8794,7 @@ def _update_lifecycle_delivery(remote_id, delivery_status, codes):
         return
 
     if delivery_status in {"sent", "delivered", "read"}:
-        if _mark_room_lifecycle_cell(meta["row"], meta["col"], meta["value"]):
+        if _mark_named_sheet_cell(meta.get("sheet", "Lifecycle_Automation"), meta["row"], meta["col"], meta["value"]):
             with state_lock:
                 lifecycle_pending_by_message_id.pop(remote_id, None)
                 lifecycle_pending_keys.pop(meta["key"], None)
@@ -9232,6 +9251,9 @@ def startup():
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
     try:
         fetch_sheet_data_sync()
+        # Keep checkout delivery state in Rooms; Lifecycle_Automation is only for active stays.
+        if _ensure_room_checkout_message_column() >= 0:
+            fetch_sheet_data_sync()
         # Keep the service audit tab visible/ready even before the first guest
         # creates a staff task. Existing sheets/data are preserved.
         _ensure_service_requests_sheet()

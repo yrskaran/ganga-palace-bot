@@ -8436,74 +8436,168 @@ def _room_status_column_index(headers):
 
 
 def reconcile_lifecycle_from_room_sheet():
+    """Keep Lifecycle_Automation as an active-stay queue only.
+
+    Rooms remains the permanent stay/history source. CHECKED_OUT guests keep their
+    checkout timestamp in Rooms, while their lifecycle row is removed.
+    """
     require_operational_layout()
-    """Mirror guest identity/status into the marker ledger; Rooms owns timestamps."""
     try:
         with state_lock:
-            rooms=list(shared_store.get("rooms",[])); rh=list(shared_store.get("room_headers",[]))
-            lifecycle_headers=list(shared_store.get("lifecycle_headers",[]))
-        if not lifecycle_headers: return False
-        status_idx=_room_status_column_index(rh)
-        if status_idx<0: return False
-        client=get_gspread_client()
-        if not client: return False
-        sh=client.open_by_key(SHEET_ID); life=sh.worksheet("Lifecycle_Automation")
-        # Rooms owns the actual event timestamps. Apps Script handles manual
-        # edits; this Render-side reconciliation handles API/gspread edits so
-        # checkout/check-in never depends on a staff member opening Sheets.
-        try:
-            rooms_sheet = sh.get_worksheet(0)
-        except Exception:
-            rooms_sheet = sh.sheet1
-        room_values = rooms_sheet.get_all_values()
-        vals=life.get_all_values(); headers=vals[0] if vals else lifecycle_headers
-        hm=_complaint_header_map(headers)
-        def find(names, default=-1):
-            for n in names:
-                k=normalize_text(n).replace(" ","_")
-                if k in hm:return hm[k]
-            return default
-        li={"room":find(("Room",),0),"name":find(("Guest Name",),1),"phone":find(("Phone",),2),"status":find(("Status",),3)}
-        room_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_")=="room"),0)
-        name_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"guest_name_(d)","guest_name","guest"}),3)
-        phone_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"phone_(e)","phone","whatsapp","mobile"}),4)
-        room_in_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_in_time","in_time","check-in_time"}),-1)
-        room_out_col=next((i for i,h in enumerate(rh) if normalize_text(h).replace(" ","_") in {"check_out_time","out_time","check-out_time"}),-1)
-        existing={}
-        for r,row in enumerate(vals[1:],start=2):
-            key=clean_phone(row[li["phone"]] if len(row)>li["phone"] else "")+":"+clean_room(row[li["room"]] if len(row)>li["room"] else "")
-            if key!=":":existing[key]=r
-        changed=False
-        for rr_idx, rr in enumerate(rooms, start=2):
-            room=clean_room(rr[room_col] if len(rr)>room_col else ""); phone=clean_phone(rr[phone_col] if len(rr)>phone_col else ""); name=str(rr[name_col] if len(rr)>name_col else "Guest").strip(); status=str(rr[status_idx] if len(rr)>status_idx else "").strip().upper()
-            if not room or not phone or not status:continue
-            key=phone+":"+room; rownum=existing.get(key)
-            previous_status = ""
-            if rownum:
-                life_row = vals[rownum-1] if rownum-1 < len(vals) else []
-                previous_status = str(life_row[li["status"]] if len(life_row)>li["status"] else "").strip().upper()
-            if not rownum:
-                # A brand-new OUT row may be historical data; do not stamp it
-                # with the current time unless we observe a real transition.
-                life.append_row([room,name,phone,status,"","","","","","",""]); rownum=life.get_last_row(); existing[key]=rownum; changed=True
-            life.update_cell(rownum,li["room"]+1,room); life.update_cell(rownum,li["name"]+1,name); life.update_cell(rownum,li["phone"]+1,phone); life.update_cell(rownum,li["status"]+1,status)
+            rooms = list(shared_store.get("rooms", []))
+            rh = list(shared_store.get("room_headers", []))
+            lifecycle_headers = list(shared_store.get("lifecycle_headers", []))
+        if not lifecycle_headers:
+            return False
 
-            now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
+        status_idx = _room_status_column_index(rh)
+        if status_idx < 0:
+            return False
+
+        client = get_gspread_client()
+        if not client:
+            return False
+        sh = client.open_by_key(SHEET_ID)
+        life = sh.worksheet("Lifecycle_Automation")
+        rooms_sheet = sh.get_worksheet(0)
+
+        vals = life.get_all_values()
+        headers = vals[0] if vals else lifecycle_headers
+        hm = _complaint_header_map(headers)
+
+        def find(names, default=-1):
+            for name in names:
+                key = normalize_text(name).replace(" ", "_")
+                if key in hm:
+                    return hm[key]
+            return default
+
+        li = {
+            "room": find(("Room",), 0),
+            "name": find(("Guest Name",), 1),
+            "phone": find(("Phone",), 2),
+            "status": find(("Status",), 3),
+        }
+
+        room_col = next((i for i, h in enumerate(rh)
+                         if normalize_text(h).replace(" ", "_") in {"room", "room_(a)"}), 0)
+        name_col = next((i for i, h in enumerate(rh)
+                         if normalize_text(h).replace(" ", "_") in {"guest_name_(d)", "guest_name", "guest"}), 3)
+        phone_col = next((i for i, h in enumerate(rh)
+                          if normalize_text(h).replace(" ", "_") in {"phone_(e)", "phone", "whatsapp", "mobile"}), 4)
+        room_in_col = next((i for i, h in enumerate(rh)
+                            if normalize_text(h).replace(" ", "_") in {"check_in_time", "in_time", "check-in_time"}), -1)
+        room_out_col = next((i for i, h in enumerate(rh)
+                             if normalize_text(h).replace(" ", "_") in {"check_out_time", "out_time", "check-out_time"}), -1)
+
+        active = {}
+        changed = False
+        now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
+
+        # Build the active-stay set and maintain authoritative Rooms timestamps.
+        for rr_idx, row in enumerate(rooms, start=2):
+            room = clean_room(row[room_col] if len(row) > room_col else "")
+            phone = clean_phone(row[phone_col] if len(row) > phone_col else "")
+            name = str(row[name_col] if len(row) > name_col else "Guest").strip() or "Guest"
+            status = str(row[status_idx] if len(row) > status_idx else "").strip().upper()
+            if not room or not phone or not status:
+                continue
+
             in_status = ("IN" in status and "OUT" not in status)
             out_status = ("OUT" in status)
-            if in_status and room_in_col >= 0:
-                current_in = str(rr[room_in_col] if len(rr)>room_in_col else "").strip()
-                if not current_in and (not previous_status or not ("IN" in previous_status and "OUT" not in previous_status)):
-                    rooms_sheet.update_cell(rr_idx, room_in_col + 1, now_text)
-                    changed = True
-            if out_status and room_out_col >= 0:
-                current_out = str(rr[room_out_col] if len(rr)>room_out_col else "").strip()
-                if not current_out and previous_status and not ("OUT" in previous_status):
+
+            if in_status:
+                if room_in_col >= 0:
+                    current_in = str(row[room_in_col] if len(row) > room_in_col else "").strip()
+                    if not current_in:
+                        rooms_sheet.update_cell(rr_idx, room_in_col + 1, now_text)
+                        changed = True
+                active[f"{phone}:{room}"] = {
+                    "room": room, "name": name, "phone": phone, "status": status,
+                }
+            elif out_status and room_out_col >= 0:
+                current_out = str(row[room_out_col] if len(row) > room_out_col else "").strip()
+                if not current_out:
                     rooms_sheet.update_cell(rr_idx, room_out_col + 1, now_text)
                     changed = True
+
+        # Existing lifecycle rows: remove checked-out/stale rows and collapse duplicates.
+        groups = {}
+        rows_to_delete = set()
+        for sheet_row, row in enumerate(vals[1:], start=2):
+            room = clean_room(row[li["room"]] if len(row) > li["room"] else "")
+            phone = clean_phone(row[li["phone"]] if len(row) > li["phone"] else "")
+            status = str(row[li["status"]] if len(row) > li["status"] else "").strip().upper()
+            key = f"{phone}:{room}" if phone and room else ""
+            if not key or key not in active or ("OUT" in status):
+                rows_to_delete.add(sheet_row)
+                continue
+            groups.setdefault(key, []).append(sheet_row)
+
+        marker_names = (
+            "WELCOME SENT", "30 MIN SENT", "BREAKFAST SENT", "LUNCH SENT",
+            "AARTI SENT", "DINNER SENT", "CHECKOUT SENT"
+        )
+        for key, group_rows in groups.items():
+            if len(group_rows) <= 1:
+                continue
+            keeper = group_rows[0]
+            for duplicate in group_rows[1:]:
+                for marker in marker_names:
+                    idx = find((marker,), -1)
+                    if idx < 0:
+                        continue
+                    keeper_val = str(life.cell(keeper, idx + 1).value or "").strip()
+                    duplicate_val = str(life.cell(duplicate, idx + 1).value or "").strip()
+                    if not keeper_val and duplicate_val:
+                        life.update_cell(keeper, idx + 1, duplicate_val)
+                rows_to_delete.add(duplicate)
+
+        if rows_to_delete:
+            for sheet_row in sorted(rows_to_delete, reverse=True):
+                life.delete_rows(sheet_row)
+            changed = True
+
+        # Re-read after deletions so row numbers are correct, then ensure one row per active stay.
+        vals = life.get_all_values()
+        existing = {}
+        for sheet_row, row in enumerate(vals[1:], start=2):
+            room = clean_room(row[li["room"]] if len(row) > li["room"] else "")
+            phone = clean_phone(row[li["phone"]] if len(row) > li["phone"] else "")
+            if room and phone:
+                existing[f"{phone}:{room}"] = sheet_row
+
+        width = max(len(headers), 11)
+        for key, guest in active.items():
+            rownum = existing.get(key)
+            if rownum:
+                life.update(
+                    f"A{rownum}:D{rownum}",
+                    [[guest["room"], guest["name"], guest["phone"], guest["status"]]],
+                    value_input_option="RAW",
+                )
+            else:
+                out = [""] * width
+                out[li["room"]] = guest["room"]
+                out[li["name"]] = guest["name"]
+                out[li["phone"]] = guest["phone"]
+                out[li["status"]] = guest["status"]
+                life.append_row(out, value_input_option="RAW")
+                changed = True
+
+        if changed:
+            try:
+                fresh = life.get_all_values()
+                with state_lock:
+                    shared_store["lifecycle_headers"] = [str(x).strip() for x in (fresh[0] if fresh else [])]
+                    shared_store["lifecycle_rows"] = fresh[1:] if len(fresh) > 1 else []
+            except Exception:
+                pass
+
         return changed
     except Exception as exc:
-        print("LIFECYCLE MARKER SYNC ERROR:",exc,flush=True); return False
+        print("LIFECYCLE MARKER SYNC ERROR:", exc, flush=True)
+        return False
 
 
 # ============================================================

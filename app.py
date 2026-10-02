@@ -8391,7 +8391,7 @@ def _ensure_room_checkout_message_column():
         for i, header in enumerate(headers):
             if normalize_text(header).replace(" ", "_") in {"checkout_msg_sent", "checkout_message_sent"}:
                 return i
-        col = max(len(headers), sheet.get_last_column()) + 1
+        col = len(headers) + 1
         sheet.update_cell(1, col, ROOM_CHECKOUT_MESSAGE_SENT_HEADER)
         print(f"ROOMS COLUMN CREATED: {ROOM_CHECKOUT_MESSAGE_SENT_HEADER}", flush=True)
         return col - 1

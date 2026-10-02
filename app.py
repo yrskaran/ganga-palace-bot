@@ -8999,12 +8999,48 @@ def monitor_guest_status_lifecycle():
             room_status_col=_room_status_column_index(room_headers)
             room_in_col=_find_room_col(("CHECK IN TIME","IN TIME","Check-In Time"),-1)
             room_out_col=_find_room_col(("CHECK OUT TIME","OUT TIME","Check-Out Time"),-1)
+            room_checkout_sent_col=_find_room_col((ROOM_CHECKOUT_MESSAGE_SENT_HEADER,"CHECKOUT MESSAGE SENT"),-1)
             room_phone_col=_find_room_col(("PHONE (E)","PHONE","WHATSAPP","MOBILE"),4)
             room_room_col=_find_room_col(("ROOM (A)","ROOM"),0)
+            room_name_col=_find_room_col(("GUEST NAME (D)","GUEST NAME","GUEST"),3)
             room_time_map={}
             for rr in room_data:
                 rp=clean_phone(rr[room_phone_col] if len(rr)>room_phone_col else ""); rm=clean_room(rr[room_room_col] if len(rr)>room_room_col else "")
                 if rp and rm: room_time_map[f"{rp}:{rm}"]=(rr[room_in_col] if room_in_col>=0 and len(rr)>room_in_col else "", rr[room_out_col] if room_out_col>=0 and len(rr)>room_out_col else "")
+
+            # Checkout notifications are tracked in Rooms, not Lifecycle_Automation.
+            # This lets the lifecycle tab contain active guests only.
+            if room_checkout_sent_col < 0:
+                if _ensure_room_checkout_message_column() >= 0:
+                    fetch_sheet_data_sync()
+                print("CHECKOUT MARKER COLUMN: waiting for refreshed Rooms headers", flush=True)
+            else:
+                for room_row_index, rr in enumerate(room_data, start=2):
+                    status_value = str(rr[room_status_col] if room_status_col >= 0 and len(rr) > room_status_col else "").upper().strip()
+                    if "OUT" not in status_value:
+                        continue
+                    rp = clean_phone(rr[room_phone_col] if len(rr) > room_phone_col else "")
+                    rm = clean_room(rr[room_room_col] if len(rr) > room_room_col else "")
+                    rn = str(rr[room_name_col] if len(rr) > room_name_col else "Guest").strip() or "Guest"
+                    checkout_value = rr[room_out_col] if room_out_col >= 0 and len(rr) > room_out_col else ""
+                    checkout_at = _parse_sheet_datetime(checkout_value)
+                    already_sent = str(rr[room_checkout_sent_col] if len(rr) > room_checkout_sent_col else "").strip()
+                    if not rp or not rm or not checkout_at or already_sent:
+                        continue
+                    age_seconds = (current - checkout_at).total_seconds()
+                    # Never blast old historical checkouts after a deploy/config migration.
+                    if age_seconds < 0 or age_seconds > 6 * 60 * 60:
+                        continue
+                    lang = get_guest_response_language(rp)
+                    checkout_text = get_ai_lifecycle_message(
+                        "CHECKOUT", lang, rn, rm,
+                        {"name": rn, "room": rm, "status": status_value}
+                    )
+                    if checkout_text:
+                        send_lifecycle_notification(
+                            rp, checkout_text, "CHECKOUT", room_row_index, room_checkout_sent_col,
+                            current.strftime("%d-%b-%Y %I:%M %p"), "CHECKOUT", sheet_name="Rooms"
+                        )
 
             for row_index, row in enumerate(rows, start=2):
                 if len(row) <= max(cols.values()):
@@ -9088,20 +9124,6 @@ def monitor_guest_status_lifecycle():
                                 phone, text, "DINNER", row_index, cols["dinner_sent"], today, "DINNER"
                             )
 
-                # -----------------------------
-                # CHECK-OUT LIFECYCLE
-                # -----------------------------
-                elif is_out:
-                    # OUT TIME is the authoritative checkout event timestamp.
-                    # If an old OUT row has already been acknowledged, no duplicate.
-                    if check_out_at and not _lifecycle_sent(row, cols["checkout_sent"]):
-                        lang = get_guest_response_language(phone)
-                        checkout_text = get_ai_lifecycle_message("CHECKOUT", lang, name, room, {"name": name, "room": room, "status": status})
-                        if checkout_text:
-                            send_lifecycle_notification(
-                                phone, checkout_text, "CHECKOUT", row_index, cols["checkout_sent"],
-                                current.strftime("%d-%b-%Y %I:%M %p"), "CHECKOUT"
-                            )
 
             # Give Sheets time to propagate before the next 30-second cycle.
         except Exception as exc:

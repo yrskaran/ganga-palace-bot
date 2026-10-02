@@ -8386,6 +8386,19 @@ def _lifecycle_sent(row, idx):
     return idx >= 0 and len(row) > idx and str(row[idx]).strip() != ""
 
 
+def _lifecycle_sent_today(row, idx, today_date):
+    """Daily reminders must reset by date while one-time lifecycle markers do not."""
+    if idx < 0 or len(row) <= idx:
+        return False
+    value = str(row[idx]).strip()
+    if not value:
+        return False
+    if value == str(today_date):
+        return True
+    parsed = _owner_report_date(value)
+    return bool(parsed and parsed == now_ist().date())
+
+
 def _lifecycle_time_window(label, default_start, default_end):
     """Read a configurable HH:MM-HH:MM window from hotel_data.txt."""
     raw = get_hotel_value(label, "")
@@ -8927,7 +8940,7 @@ def monitor_guest_status_lifecycle():
                                 )
 
                     # Meal reminders remain time-window based and persist their sent date.
-                    if breakfast_window and not _lifecycle_sent(row, cols["breakfast_sent"]):
+                    if breakfast_window and not _lifecycle_sent_today(row, cols["breakfast_sent"], today):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("BREAKFAST", lang, name, room, {"name": name, "room": room, "status": status})
                         if text:
@@ -8935,7 +8948,7 @@ def monitor_guest_status_lifecycle():
                                 phone, text, "BREAKFAST", row_index, cols["breakfast_sent"], today, "GOOD_MORNING_BREAKFAST"
                             )
 
-                    if lunch_window and not _lifecycle_sent(row, cols["lunch_sent"]):
+                    if lunch_window and not _lifecycle_sent_today(row, cols["lunch_sent"], today):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("LUNCH", lang, name, room, {"name": name, "room": room, "status": status})
                         if text:
@@ -8943,7 +8956,7 @@ def monitor_guest_status_lifecycle():
                                 phone, text, "LUNCH", row_index, cols["lunch_sent"], today, "LUNCH"
                             )
 
-                    if aarti_window and not _lifecycle_sent(row, cols["aarti_sent"]):
+                    if aarti_window and not _lifecycle_sent_today(row, cols["aarti_sent"], today):
                         lang = get_guest_response_language(phone)
                         event_text = get_ai_lifecycle_message("GANGA_AARTI", lang, name, room, {"name": name, "room": room, "status": status})
                         if event_text:
@@ -8951,7 +8964,7 @@ def monitor_guest_status_lifecycle():
                                 phone, event_text, "AARTI", row_index, cols["aarti_sent"], today, "GANGA_AARTI"
                             )
 
-                    if dinner_window and not _lifecycle_sent(row, cols["dinner_sent"]):
+                    if dinner_window and not _lifecycle_sent_today(row, cols["dinner_sent"], today):
                         lang = get_guest_response_language(phone)
                         text = get_ai_lifecycle_message("DINNER", lang, name, room, {"name": name, "room": room, "status": status})
                         if text:

@@ -89,4 +89,17 @@ check(app._is_symbolic_only_message("😆"), "emoji-only message was not recogni
 check(app._is_symbolic_only_message("???"), "punctuation-only message was not recognized as symbolic")
 check(not app._is_symbolic_only_message("help 😆"), "real text was incorrectly treated as symbolic-only")
 
+check(app._service_done_intent("done"), "staff done intent not recognized")
+check(app._service_done_intent("S-ABC123 done"), "task-id staff done intent not recognized")
+check(app._service_guest_result("haan ho gaya") == "yes", "guest resolved confirmation not recognized")
+check(app._service_guest_result("abhi nahi hua") == "no", "guest unresolved confirmation not recognized")
+check(app.SERVICE_CONFIRM_TIMEOUT_MINUTES == 20, "service auto-resolve default must be 20 minutes")
+check(len(app._service_task_row({"request_id": "S-ABC123"})) == len(app.SERVICE_REQUEST_HEADERS),
+      "Service_Requests row/header shape mismatch")
+
+b0, b1 = app._lifecycle_time_window("Breakfast Reminder Window", 0, 0)
+a0, a1 = app._lifecycle_time_window("Ganga Aarti Reminder Window", 0, 0)
+check((b0, b1) == (8 * 60, 10 * 60), "Good Morning/Breakfast window config not loaded")
+check((a0, a1) == (17 * 60, 18 * 60), "Ganga Aarti window config not loaded")
+
 print("SMOKE TESTS PASSED")

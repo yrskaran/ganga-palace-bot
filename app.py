@@ -8615,7 +8615,7 @@ def reconcile_lifecycle_from_room_sheet():
         def stay_key_matches(row_stay_key, guest):
             row_stay_key = str(row_stay_key or "").strip()
             if not row_stay_key:
-                return True  # legacy active row; accepted as a migration fallback
+                return False  # never migrate unknown legacy markers into a live stay
             parts = row_stay_key.split(":", 2)
             if len(parts) < 3:
                 return False
@@ -8662,10 +8662,27 @@ def reconcile_lifecycle_from_room_sheet():
             out[li["name"]] = guest["name"]
             out[li["phone"]] = guest["phone"]
             out[li["status"]] = guest["status"]
+            checkin_dt = _parse_sheet_datetime(guest.get("checkin", ""))
             if li["stay_key"] >= 0:
-                parsed = _parse_sheet_datetime(guest.get("checkin", ""))
-                stamp = parsed.isoformat() if parsed else (guest.get("checkin") or "ACTIVE")
+                stamp = checkin_dt.isoformat() if checkin_dt else (guest.get("checkin") or "ACTIVE")
                 out[li["stay_key"]] = f"{guest['phone']}:{guest['room']}:{stamp}"
+
+            # Active-stay markers must never pre-date this stay. This cleans old
+            # lifecycle history that was previously merged into a re-used room.
+            if checkin_dt:
+                for label in ("WELCOME SENT", "30 MIN SENT"):
+                    idx = find((label,), -1)
+                    if idx >= 0 and str(out[idx] or "").strip():
+                        marker_dt = _parse_sheet_datetime(out[idx])
+                        if not marker_dt or marker_dt < checkin_dt:
+                            out[idx] = ""
+                for label in ("BREAKFAST SENT", "LUNCH SENT", "AARTI SENT", "DINNER SENT"):
+                    idx = find((label,), -1)
+                    if idx >= 0 and str(out[idx] or "").strip():
+                        marker_date = _owner_report_date(out[idx])
+                        if not marker_date or marker_date < checkin_dt.date():
+                            out[idx] = ""
+
             checkout_idx = find(("CHECKOUT SENT",), -1)
             if checkout_idx >= 0:
                 out[checkout_idx] = ""

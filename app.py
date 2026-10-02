@@ -8609,13 +8609,37 @@ def reconcile_lifecycle_from_room_sheet():
 
         width = max(len(headers), 11)
 
-        # Merge useful marker values from any duplicate active rows already present.
+        # Merge markers only from rows that belong to the CURRENT active stay.
+        # A previous stay in the same room/phone must never carry welcome/checkout
+        # markers into the new stay.
+        def stay_key_matches(row_stay_key, guest):
+            row_stay_key = str(row_stay_key or "").strip()
+            if not row_stay_key:
+                return True  # legacy active row; accepted as a migration fallback
+            parts = row_stay_key.split(":", 2)
+            if len(parts) < 3:
+                return False
+            if clean_phone(parts[0]) != clean_phone(guest.get("phone")):
+                return False
+            if clean_room(parts[1]) != clean_room(guest.get("room")):
+                return False
+            row_dt = _parse_sheet_datetime(parts[2])
+            guest_dt = _parse_sheet_datetime(guest.get("checkin", ""))
+            if row_dt and guest_dt:
+                return abs((row_dt - guest_dt).total_seconds()) <= 120
+            return normalize_text(parts[2]) == normalize_text(guest.get("checkin", ""))
+
         merged = {}
         for row in vals[1:]:
             room = clean_room(row[li["room"]] if len(row) > li["room"] else "")
             phone = clean_phone(row[li["phone"]] if len(row) > li["phone"] else "")
+            status = str(row[li["status"]] if len(row) > li["status"] else "").strip().upper()
             key = f"{phone}:{room}" if phone and room else ""
-            if not key or key not in active:
+            if not key or key not in active or "OUT" in status:
+                continue
+
+            row_stay_key = row[li["stay_key"]] if li["stay_key"] >= 0 and len(row) > li["stay_key"] else ""
+            if not stay_key_matches(row_stay_key, active[key]):
                 continue
 
             out = merged.setdefault(key, [""] * width)
@@ -8626,10 +8650,8 @@ def reconcile_lifecycle_from_room_sheet():
                 if value and not str(out[idx]).strip():
                     out[idx] = value
 
-            if li["stay_key"] >= 0:
-                value = str(row[li["stay_key"]] if len(row) > li["stay_key"] else "").strip()
-                if value and not str(out[li["stay_key"]]).strip():
-                    out[li["stay_key"]] = value
+            if li["stay_key"] >= 0 and row_stay_key and not str(out[li["stay_key"]]).strip():
+                out[li["stay_key"]] = str(row_stay_key).strip()
 
         desired = []
         for key, guest in active.items():
@@ -8644,6 +8666,9 @@ def reconcile_lifecycle_from_room_sheet():
                 parsed = _parse_sheet_datetime(guest.get("checkin", ""))
                 stamp = parsed.isoformat() if parsed else (guest.get("checkin") or "ACTIVE")
                 out[li["stay_key"]] = f"{guest['phone']}:{guest['room']}:{stamp}"
+            checkout_idx = find(("CHECKOUT SENT",), -1)
+            if checkout_idx >= 0:
+                out[checkout_idx] = ""
             desired.append(out[:width])
 
         current_rows = []

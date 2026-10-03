@@ -111,4 +111,24 @@ today_iso = app.now_ist().strftime("%Y-%m-%d")
 check(app._lifecycle_sent_today([today_iso], 0, today_iso), "today's lifecycle marker not recognized")
 check(not app._lifecycle_sent_today(["2020-01-01"], 0, today_iso), "old lifecycle marker incorrectly blocks today's reminder")
 
+guide = app.get_hotel_guide()
+check(len(guide.get("facts", [])) >= 15, "Haridwar fact bank did not load")
+check(app._is_haridwar_fact_request("Haridwar ka koi fact batao", "919666666666"),
+      "explicit Haridwar fact request not detected")
+
+fact_phone = "919666666666"
+with app.state_lock:
+    app.conversation_memory[fact_phone] = []
+fact1 = app.build_unique_haridwar_fact(fact_phone, "Haridwar ka fact batao")
+check(fact1 and "Haridwar ka fact" in fact1, "first Haridwar fact reply missing")
+with app.state_lock:
+    app.conversation_memory[fact_phone] = [
+        {"role": "user", "content": "Haridwar ka fact batao"},
+        {"role": "assistant", "content": fact1},
+    ]
+check(app._is_haridwar_fact_request("aur batao", fact_phone),
+      "fact follow-up was not recognized from conversation context")
+fact2 = app.build_unique_haridwar_fact(fact_phone, "aur batao")
+check(fact2 and fact2 != fact1, "Haridwar fact rotation repeated the previous fact")
+
 print("SMOKE TESTS PASSED")

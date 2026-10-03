@@ -1,4 +1,16 @@
-# Guest concierge V50
+# Guest concierge V51
+
+## AI outage and assistance questions
+
+The 3 October 11:29–11:30 IST failures came from Groq rejecting roughly 9,400 input tokens against the account's 7,000 ITPM allowance. Gemini returned 503, OpenRouter was rate-limited, Cohere's monthly trial calls were exhausted, and Cerebras/OpenAI reported payment/credit exhaustion. An active HTTP server did not establish a working semantic AI provider.
+
+Hotel knowledge now obeys a UTF-8 budget and ranks complete source paragraphs/lines by the question. Groq uses 3,800 bytes of hotel facts, up to 1,600 bytes of recent role-separated history, and a shorter concierge contract. A 413 opens a short circuit; truncated JSON is rejected. The full hotel knowledge remains unchanged for backend decisions.
+
+Capability questions including “How you assist me” and “Kaise assist kroge” answer before external AI. English, Roman Hinglish and Devanagari replies are verified, and pending food orders are preserved. Actual service/medical requests do not match this route. During a genuine AI outage the message identifies a temporary chat failure rather than blaming the guest's understandable question.
+
+`AI_STARTUP_CHECK=1` enables one asynchronous Groq semantic probe on startup. It does not send WhatsApp messages or create Sheet/staff records. `/health` now includes the last semantic AI check status and timestamp separately from HTTP and Sheet readiness. This status describes the last observed check, not guaranteed future availability.
+
+48 offline regressions, smoke tests, compilation, dependency consistency and the example customer configuration passed.
 
 The 30-minute WhatsApp message now introduces useful hotel assistance in natural language. It waits for the welcome marker and cannot send before 30 minutes have passed since both check-in and welcome. Old arrivals are skipped instead of receiving a backlog of messages after deployment.
 

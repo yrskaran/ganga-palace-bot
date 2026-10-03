@@ -42,6 +42,8 @@ class GuestFlows(unittest.TestCase):
                      'lifecycle_retry_after'):
             self.mock(name, {})
         self.mock('durable_store', None)
+        self.mock('AI_READINESS', {"status":"not_checked", "checked_at":None})
+        self.mock('guest_language_cache', {})
         self.mock('shared_store', {'last_synced':__import__('time').time(), 'rooms':[], 'lifecycle_headers':[], 'lifecycle_rows':[]})
 
     def mock(self, name, *args, **kwargs):
@@ -121,6 +123,107 @@ class GuestFlows(unittest.TestCase):
             self.assertEqual(text.count('😊'),1)
         self.assertIn('Room 203', app.get_ai_lifecycle_message('WELCOME','english','Kitty','203'))
         self.assertNotIn('Ji Kitty ji',app.get_ai_lifecycle_message('WELCOME','hinglish','Kitty','203'))
+
+    def test_screenshot_help_questions_answer_before_ai(self):
+        ai=self.mock('understand_guest_request', side_effect=AssertionError('capability must not depend on AI'))
+        app.get_guest_response_language.side_effect=lambda phone,text=None: (
+            app.remember_guest_language(phone,text) if text is not None else app.guest_language_cache.get(phone,'english'))
+        self.turn('Hi')
+        self.turn('How you assist me')
+        english=self.sent.call_args.args[1]
+        self.assertIn("I'm the hotel's WhatsApp assistant",english)
+        self.assertIn('food orders',english)
+        self.turn('Kaise assist kroge')
+        hinglish=self.sent.call_args.args[1]
+        self.assertIn('Main hotel ka WhatsApp assistant',hinglish)
+        self.assertIn('towel',hinglish)
+        self.assertNotIn('trouble understanding',hinglish)
+        ai.assert_not_called()
+        app.notify_reception_request.assert_not_called()
+
+    def test_help_variants_preserve_pending_orders(self):
+        pending={'order':'2 x Masala Chai','total':60,'created':__import__('time').time()}
+        app.order_sessions[GUEST]=pending
+        ai=self.mock('understand_guest_request',side_effect=AssertionError('no AI quota for basic help'))
+        for text in ('How can you assist me?', 'What can you do for me?', 'Help',
+                     'Aap meri help kaise kar sakte ho?', 'Kaise madad karoge?',
+                     'आप मेरी मदद कैसे कर सकते हैं?', 'क्या कर सकते हो?'):
+            with self.subTest(text=text):
+                self.turn(text)
+                self.assertEqual(app.order_sessions[GUEST],pending)
+                self.assertIn('WhatsApp',self.sent.call_args.args[1])
+        ai.assert_not_called()
+        app.notify_reception_request.assert_not_called()
+
+    def test_specific_requests_are_not_capability_questions(self):
+        for text in ('Can you help me with wifi?', 'How can you help with my bill?',
+                     'meri help karo towel bhej do', 'Kaise Har Ki Pauri jaun?',
+                     'help nahi chahiye', 'mujhe doctor ki help chahiye', 'what can you do for my AC?'):
+            self.assertFalse(app._is_capability_question(text),text)
+
+    def test_hindi_capability_reply_uses_guest_script(self):
+        app.get_guest_response_language.return_value='hindi'
+        self.turn('आप मेरी मदद कैसे कर सकते हैं?')
+        self.assertIn('मैं होटल का',self.sent.call_args.args[1])
+
+    def test_knowledge_budget_keeps_relevant_whole_facts(self):
+        raw=('1. HOTEL IDENTITY\n- Name: Test Hotel\n- Wi-Fi: Free\n- Check-out: 11 AM\n\n'
+             + '\n\n'.join(f'Place: Other {i}\nAbout: '+('old guide text '*100) for i in range(60))
+             + '\n\nPlace: Mansa Devi\nAbout: On Bilwa Parvat\nLive note: Confirm current ropeway operation.')
+        self.mock('get_hotel_data',return_value=raw)
+        packet=app._ai_knowledge_snapshot(1500,'Mansa Devi ropeway')
+        self.assertLessEqual(len(packet.encode('utf-8')),1500)
+        self.assertIn('On Bilwa Parvat',packet)
+        self.assertIn('Confirm current ropeway operation.',packet)
+        self.assertIn('Wi-Fi: Free',packet)
+        # A long non-ASCII line cannot be cut into an incomplete fact or price.
+        app.get_hotel_data.return_value='1. FOOD MENU\n- '+('चाय '*1000)+': Rs. 200\n- Coffee: Rs. 40'
+        packet=app._ai_knowledge_snapshot(500,'coffee')
+        self.assertLessEqual(len(packet.encode('utf-8')),500)
+        self.assertIn('- Coffee: Rs. 40',packet)
+        self.assertNotIn('चाय',packet)
+
+    def test_groq_input_bounded_with_long_history(self):
+        self.mock('GROQ_UNAVAILABLE_UNTIL',0)
+        self.mock('get_active_groq_model',return_value='qwen/qwen3.8-27b')
+        app.conversation_memory[GUEST]=[{'role':'assistant','content':'old menu '*5000},
+                                         {'role':'user','content':'Mansa Devi ropeway?'}]
+        response=Mock(status_code=200)
+        response.json.return_value={'choices':[{'message':{'content':'{"action":"ANSWER","reply":"Confirm current ropeway operation."}'},'finish_reason':'stop'}],
+                                    'usage':{'prompt_tokens':2200,'completion_tokens':40}}
+        with patch.object(app.requests,'post',return_value=response) as post:
+            prompt=app._ai_understanding_prompt('What about Mansa Devi?',{'name':'Kitty','room':'203'},GUEST)
+            self.assertTrue(app.ask_groq_chat(prompt,sender_phone=GUEST,structured=True))
+            messages=post.call_args.kwargs['json']['messages']
+        self.assertLess(sum(len(m['content'].encode('utf-8')) for m in messages),12500)
+        self.assertIn('Bilwa Parvat',messages[0]['content'])
+        self.assertEqual(messages[-2]['content'],'Mansa Devi ropeway?')
+        self.assertIn('What about Mansa Devi?',messages[-1]['content'])
+
+    def test_readiness_probe_has_no_guest_or_sheet_actions(self):
+        self.mock('GROQ_API_KEY','test-placeholder')
+        self.mock('ask_groq_chat',return_value=json.dumps({'action':'ANSWER','reply':'Wi-Fi and parking are complimentary; check-out is 11 AM.'}))
+        app.check_ai_readiness()
+        self.assertEqual(app.AI_READINESS['status'],'available')
+        self.sent.assert_not_called()
+        app.notify_reception_request.assert_not_called()
+        self.sheet.assert_not_called()
+        app.ask_groq_chat.return_value=None
+        app.check_ai_readiness()
+        self.assertEqual(app.AI_READINESS['status'],'unavailable')
+        self.assertEqual(app.app.test_client().get('/health').json['ai']['status'],'unavailable')
+
+    def test_groq_413_opens_circuit_and_truncated_json_is_rejected(self):
+        self.mock('GROQ_UNAVAILABLE_UNTIL',0)
+        self.mock('get_active_groq_model',return_value='qwen/qwen3.8-27b')
+        breaker=self.mock('_groq_set_circuit_breaker')
+        response=Mock(status_code=413,text='Request too large on input tokens per minute')
+        with patch.object(app.requests,'post',return_value=response):
+            self.assertIsNone(app.ask_groq_chat('test',structured=True))
+            self.assertEqual(breaker.call_args.args[0],120)
+            response.status_code=200
+            response.json.return_value={'choices':[{'message':{'content':'{"action":"ANSWER"'},'finish_reason':'length'}]}
+            self.assertIsNone(app.ask_groq_chat('test',structured=True))
 
     def test_onboarding_survives_ai_wording_enabled(self):
         self.mock('AI_LIFECYCLE_WORDING',True)

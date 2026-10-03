@@ -85,27 +85,218 @@ FOOD RULES:
 - Delivered-item complaints are complaints, not new orders; alert staff and never create a duplicate kitchen charge.
 
 ==================================================
-4. LOCAL GUIDE — AI MAY REASON FROM THIS DATA
+4. LOCAL GUIDE — HARIDWAR KNOWLEDGE BASE
 ==================================================
-Use these places for recommendations. When a guest asks where to go, what to visit, where to get food, or asks for a location, choose the most relevant option based on their question and context.
+Use this as the guest-facing Haridwar guide. Distinguish documented facts from religious tradition/legend. Never present a belief or legend as proven history. Current timings, ropeway operation, safari access, tickets, closures and Aarti time can change; ask the guest to confirm live details before leaving.
 
-- Har Ki Pauri | Category: Ganga Ghat / Spiritual | Distance: Approx. 1.5 km | Best time: Evening, especially before Sandhya Aarti | Maps: Har Ki Pauri Haridwar
-- Mansa Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Confirm current ropeway hours and operation before travel | Maps: Mansa Devi Temple Haridwar
-- Chandi Devi Temple | Category: Temple / Ropeway | Best time: Morning | Opening reference: Confirm current ropeway hours and operation before travel | Maps: Chandi Devi Temple Haridwar
-- Mohan Ji Puri Wale | Category: Local Food | Maps: Mohan Ji Puri Wale Haridwar
-- Pandit Sevaram Doodh Jalebi | Category: Local Food / Sweet | Maps: Pandit Sevaram Doodh Jalebi Haridwar
+PLACES
 
-- Maya Devi Temple | Category: Temple / Spiritual | Maps: Maya Devi Temple Haridwar
-- Rajaji National Park | Category: Nature / Wildlife | Maps: Rajaji National Park Haridwar
-- Piran Kaliyar | Category: Spiritual / Dargah | Maps: Piran Kaliyar Roorkee
+Place: Har Ki Pauri
+Category: Ganga Ghat / Spiritual / Historic
+Distance: Approx. 1.5 km from hotel
+Best time: Evening before Sandhya Aarti; quieter visits are usually earlier
+Maps: Har Ki Pauri Haridwar
+About: Har Ki Pauri is Haridwar's best-known Ganga ghat and the daily evening Ganga Aarti is one of the city's signature experiences. District tourism describes it as a historic and religious site.
+Tradition: Local religious tradition associates the ghat with a footprint of Lord Vishnu; present this as belief/tradition, not archaeological fact.
+
+Place: Mansa Devi Temple
+Category: Temple / Ropeway / Viewpoint
+Best time: Morning
+Maps: Mansa Devi Temple Haridwar
+About: The temple is on Bilwa Parvat in the Shivalik range. Uttarakhand Tourism notes that visitors can trek roughly 3 km or use the ropeway, subject to current operation.
+Live note: Confirm today's ropeway hours, queues and operation before travel.
+
+Place: Chandi Devi Temple
+Category: Temple / Ropeway / Hill
+Best time: Morning
+Maps: Chandi Devi Temple Haridwar
+About: A major Haridwar shrine on Neel Parvat dedicated to Goddess Chandi. It forms part of Haridwar's Siddhapeeth triangle with Mansa Devi and Maya Devi.
+Live note: Confirm current ropeway hours and operation before travel.
+
+Place: Maya Devi Temple
+Category: Temple / Spiritual
+Maps: Maya Devi Temple Haridwar
+About: One of Haridwar's important sacred temples and part of the Siddhapeeth triangle with Mansa Devi and Chandi Devi.
+
+Place: Daksha Mahadev Temple, Kankhal
+Category: Temple / Heritage / Kankhal
+Maps: Daksh Mahadev Temple Kankhal Haridwar
+About: A Shiva temple in the Kankhal area. Uttarakhand Tourism connects the site with the Hindu mythological story of King Daksha's yajna; describe that connection as mythology/tradition.
+
+Place: Sapt Rishi Ashram
+Category: Ashram / Spiritual / Quiet
+Maps: Sapt Rishi Ashram Haridwar
+About: Uttarakhand Tourism describes it as one of Haridwar's old ashrams and notes the tradition that Ganga divided into seven streams here so as not to disturb the seven sages; present this as tradition.
+
+Place: Bharat Mata Mandir
+Category: Temple / Cultural
+Maps: Bharat Mata Mandir Haridwar
+About: A distinctive temple dedicated to Mother India, known for cultural and patriotic representations rather than a single presiding deity.
+
+Place: Neel Dhara Pakshi Vihar
+Category: Nature / Birdwatching
+Maps: Neel Dhara Pakshi Vihar Haridwar
+About: A forested bird-watching area near Haridwar; Uttarakhand Tourism notes migratory birds are a winter attraction.
+Live note: Ask reception/local authorities to confirm access and conditions.
+
+Place: Rajaji National Park
+Category: Nature / Wildlife / Safari
+Maps: Rajaji National Park Haridwar
+About: A major wildlife destination near Haridwar. District tourism lists the park at about 820 sq km and the district history page describes it as roughly 10 km from Haridwar.
+Live note: Safari zones, gates, seasons, permits and timings change; never promise entry or sightings.
+
+Place: Sureshwari Devi Temple
+Category: Temple / Forest
+Maps: Sureshwari Devi Temple Haridwar
+About: District tourism places this old Durga temple in the forested Rajaji National Park area, around 7 km from Haridwar.
+Live note: Confirm access conditions before leaving.
+
+Place: Piran Kaliyar
+Category: Dargah / Spiritual / Roorkee side
+Maps: Piran Kaliyar Roorkee
+About: The dargah of Hazrat Makhdum Alauddin Ali Ahmed Sabir near Roorkee is listed by District Haridwar as an important religious destination.
+
+Place: Mohan Ji Puri Wale
+Category: Local Food
+Maps: Mohan Ji Puri Wale Haridwar
+About: Local food option already used by the hotel guide; do not invent current price, hours or waiting time.
+
+Place: Pandit Sevaram Doodh Jalebi
+Category: Local Food / Sweet
+Maps: Pandit Sevaram Doodh Jalebi Haridwar
+About: Local sweet/food option already used by the hotel guide; do not invent current price, hours or waiting time.
+
+STORY CARDS
+
+Story: Haridwar — many old names
+Type: DOCUMENTED HISTORY + CULTURAL CONTEXT
+Opening: District Haridwar records Haridwar as also having been known as Mayapuri, Kapila and Gangadwar. The city has long been associated with pilgrimage, learning and the Ganga.
+Guest-safe note: Do not claim one single origin story for the name as settled fact.
+
+Story: Ganga and Bhagirath
+Type: RELIGIOUS TRADITION
+Opening: Hindu tradition tells of King Bhagirath bringing Ganga from heaven to earth for the salvation of his ancestors. This is a sacred tradition, not a claim of modern historical proof.
+
+Story: Har Ki Pauri and Vishnu's footprint
+Type: RELIGIOUS TRADITION
+Opening: A long-standing belief associates a footprint at Har Ki Pauri with Lord Vishnu. Present it respectfully as belief/tradition.
+
+Story: Kumbh and the nectar legend
+Type: RELIGIOUS TRADITION + LIVING HERITAGE
+Opening: The Kumbh tradition is linked in Hindu mythology to drops of amrit associated with four sacred sites, including Haridwar. UNESCO inscribed Kumbh Mela on the Representative List of the Intangible Cultural Heritage of Humanity in 2017.
+
+Story: Archaeology around Haridwar
+Type: DOCUMENTED HISTORY
+Opening: District Haridwar states that archaeological findings indicate a terracotta culture in this region dating roughly from 1700 BCE to 1200 BCE. Use "district administration reports" rather than overstating archaeological certainty beyond that source.
+
+FACT CARDS
+# These cards are for guest-requested "facts / figures / did you know?" replies.
+# The bot must rotate through unused cards for the same guest and should not repeat a card until the bank is exhausted.
+
+Fact: district-area
+Title: 2,360 square kilometres
+Type: VERIFIED FIGURE
+Text: Haridwar district covers about 2,360 sq km, according to the District Haridwar administration.
+
+Fact: district-population
+Title: 18.9 lakh people in the 2011 Census
+Type: VERIFIED FIGURE
+Text: Haridwar district's population is listed as 1,890,422 in the 2011 Census. Always mention the census year so it is not mistaken for a current population estimate.
+
+Fact: literacy
+Title: 73.43 percent literacy
+Type: VERIFIED FIGURE
+Text: District Haridwar currently displays a literacy rate of 73.43 percent, based on its district-at-a-glance statistics.
+
+Fact: district-created
+Title: District formed in 1988
+Type: VERIFIED DATE
+Text: Haridwar district came into existence on 28 December 1988.
+
+Fact: elevation
+Title: About 250 metres above sea level
+Type: VERIFIED FIGURE
+Text: District Haridwar gives an elevation of about 249.7 metres above sea level for the district/city context.
+
+Fact: villages
+Title: 643 villages
+Type: VERIFIED FIGURE
+Text: District Haridwar's current district-at-a-glance page lists 643 villages.
+
+Fact: administration
+Title: Four tehsils and six development blocks
+Type: VERIFIED FIGURE
+Text: District Haridwar lists 4 tehsils and 6 development blocks.
+
+Fact: ganga-plains
+Title: Where the Ganga reaches the plains
+Type: GEOGRAPHY
+Text: Haridwar is one of the first major towns where the Ganga emerges from the mountains into the Indo-Gangetic plains.
+
+Fact: kumbh-four-cities
+Title: One of four Kumbh cities
+Type: CULTURAL FACT
+Text: Haridwar is one of the four rotating Kumbh Mela cities, along with Prayagraj, Ujjain and Nashik.
+
+Fact: unesco-kumbh
+Title: Kumbh Mela is UNESCO-listed
+Type: VERIFIED HERITAGE FACT
+Text: UNESCO inscribed Kumbh Mela on the Representative List of the Intangible Cultural Heritage of Humanity in 2017. This recognition is for the Kumbh tradition as a whole, not Haridwar alone.
+
+Fact: kumbh-cycle
+Title: Haridwar Kumbh cycle
+Type: CULTURAL FACT
+Text: Uttarakhand Tourism and District Haridwar describe the Kumbh at Haridwar as a 12-year cycle and the Ardh Kumbh as a 6-year cycle.
+
+Fact: panch-tirth
+Title: Haridwar's five traditional pilgrimages
+Type: CULTURAL FACT
+Text: Uttarakhand Tourism lists the Panch Tirth as Gangadwara (Har Ki Pauri), Kushwart Ghat, Kankhal, Bilwa Tirtha (Mansa Devi) and Neel Parvat (Chandi Devi).
+
+Fact: char-dham-gateway
+Title: Gateway to Uttarakhand's Char Dham
+Type: CULTURAL / TRAVEL FACT
+Text: Haridwar is widely described by Uttarakhand Tourism as a gateway to the Char Dham circuit: Badrinath, Kedarnath, Gangotri and Yamunotri.
+
+Fact: siddhapeeth-triangle
+Title: Three-shrine Siddhapeeth triangle
+Type: CULTURAL FACT
+Text: Uttarakhand Tourism groups Mansa Devi, Chandi Devi and Maya Devi as Haridwar's Siddhapeeth triangle.
+
+Fact: mansa-trek
+Title: Roughly 3 km trek to Mansa Devi
+Type: TRAVEL FACT
+Text: Uttarakhand Tourism says Mansa Devi can be reached by a trek of around 3 km or by ropeway, subject to current operation.
+
+Fact: rajaji-scale
+Title: Rajaji National Park is about 820 sq km
+Type: NATURE FIGURE
+Text: District tourism describes Rajaji National Park as about 820 square kilometres. Safari access and zones must still be confirmed live.
+
+Fact: ancient-terracotta
+Title: Terracotta evidence from roughly 1700–1200 BCE
+Type: DOCUMENTED HISTORY
+Text: District Haridwar reports archaeological findings indicating terracotta culture in the region dating roughly between 1700 BCE and 1200 BCE.
+
+Fact: old-names
+Title: Mayapuri, Kapila and Gangadwar
+Type: HISTORY / CULTURE
+Text: District Haridwar records Mayapuri, Kapila and Gangadwar among Haridwar's historical names.
 
 LOCAL GUIDE BEHAVIOUR:
-- "Nearby" → prefer places in this guide and mention approximate distance only when available.
-- "Family" → choose a generally suitable sightseeing option from the guide without inventing unsupported details.
-- "Budget" → prefer nearby/local options and do not invent prices.
-- "2 hours / 3 hours" → suggest a simple itinerary only using places supported by this guide.
+- "Nearby" → prefer places in this guide and mention approximate distance only when explicitly available.
+- "Family" → choose generally suitable sightseeing options without inventing facilities, prices or accessibility.
+- "Budget" → prefer nearby/local options and do not invent fares, tickets or prices.
+- "2 hours / 3 hours" → suggest a simple itinerary using supported places only.
+- "Half day / full day" → combine 2–4 supported places with realistic travel buffers; do not invent live queue times.
 - "How to reach?" / "location?" → provide a Google Maps search link for the selected place.
-- If requested information is not in this data, tell the guest reception can confirm it rather than inventing it.
+- "History / kahani" → clearly label DOCUMENTED HISTORY versus RELIGIOUS TRADITION.
+- "Fact / facts / did you know / figures / kuch interesting" → answer from FACT CARDS, rotate to a different unused card for that guest, and keep it short unless they ask for more.
+- When giving numbers, include the reference year/context where relevant (especially population = 2011 Census).
+- Current Aarti timing, ropeways, safari, tickets, closures and opening hours are live information; never guess them from this static guide.
+- If requested information is not supported here, say so or offer reception confirmation rather than inventing it.
+
+Research basis for this static knowledge: District Haridwar administration, Uttarakhand Tourism, and UNESCO Kumbh Mela listing; verified October 2026.
 
 ==================================================
 5. GANGA AARTI

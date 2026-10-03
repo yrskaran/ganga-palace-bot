@@ -936,6 +936,7 @@ def get_hotel_guide():
     raw = get_hotel_data()
     places = []
     stories = []
+    facts = []
 
     current = None
     mode = ""
@@ -955,7 +956,11 @@ def get_hotel_guide():
             mode = "stories"
             current = None
             continue
-        if upper == "AI GUIDE BEHAVIOUR" or upper == "PROACTIVE DISCOVERY MESSAGE":
+        if upper == "FACT CARDS":
+            mode = "facts"
+            current = None
+            continue
+        if upper in {"AI GUIDE BEHAVIOUR", "LOCAL GUIDE BEHAVIOUR:", "LOCAL GUIDE BEHAVIOUR", "PROACTIVE DISCOVERY MESSAGE"}:
             mode = ""
             current = None
             continue
@@ -972,6 +977,12 @@ def get_hotel_guide():
             stories.append(current)
             continue
 
+        if line.startswith("Fact:") or (mode == "facts" and line.startswith("Fact:")):
+            fact_id = line.split(":", 1)[1].strip()
+            current = {"id": fact_id}
+            facts.append(current)
+            continue
+
         if current and ":" in line:
             k, v = line.split(":", 1)
             current[k.strip().lower()] = v.strip()
@@ -981,7 +992,89 @@ def get_hotel_guide():
     for entry in get_local_guide():
         if normalize_text(entry["name"]) not in known:
             places.append({**entry, "maps": entry.get("maps_query", entry["name"])})
-    return {"places": places, "stories": stories}
+    return {"places": places, "stories": stories, "facts": facts}
+
+
+def _is_haridwar_fact_request(text, sender_phone=None):
+    """Detect explicit fact/figure requests and natural 'one more' follow-ups."""
+    t = normalize_text(text)
+    explicit = (
+        "fact" in t
+        or "facts" in t
+        or "did you know" in t
+        or "figure" in t
+        or "figures" in t
+        or "kuch interesting" in t
+        or "interesting bata" in t
+        or "interesting bta" in t
+        or "haridwar ke bare me kuch" in t
+        or "haridwar ke baare me kuch" in t
+        or "haridwar ka kuch" in t
+    )
+    if explicit:
+        return True
+
+    followups = {
+        "aur fact", "ek aur fact", "another fact", "one more fact",
+        "aur batao", "aur btao", "aur bataiye", "ek aur", "one more",
+        "next fact", "next"
+    }
+    if t not in followups or not sender_phone:
+        return False
+    history = get_conversation_history(sender_phone)
+    recent_assistant = " ".join(
+        str(x.get("content", ""))
+        for x in history[-4:]
+        if x.get("role") == "assistant"
+    )
+    return "Haridwar fact" in recent_assistant or "Haridwar ka fact" in recent_assistant
+
+
+def build_unique_haridwar_fact(sender_phone, user_text=""):
+    """Return a non-repeating fact card for the guest's recent conversation.
+
+    Rotation is data-driven from hotel_data.txt; no Haridwar facts are hardcoded
+    in Python. A card repeats only after the configured bank has been exhausted
+    within the remembered conversation window.
+    """
+    guide = get_hotel_guide()
+    facts = [f for f in guide.get("facts", []) if f.get("text")]
+    if not facts:
+        return None
+
+    history = get_conversation_history(sender_phone) if sender_phone else []
+    recent_assistant = normalize_text(" ".join(
+        str(x.get("content", ""))
+        for x in history[-CONVERSATION_MEMORY_LIMIT:]
+        if x.get("role") == "assistant"
+    ))
+
+    unused = []
+    for fact in facts:
+        title = normalize_text(fact.get("title", ""))
+        fact_id = normalize_text(fact.get("id", ""))
+        if (title and title in recent_assistant) or (fact_id and fact_id in recent_assistant):
+            continue
+        unused.append(fact)
+
+    pool = unused or facts
+    # Stable per-guest offset avoids every guest receiving the same first card.
+    seed = int(hashlib.sha256(str(sender_phone or "guest").encode("utf-8")).hexdigest()[:8], 16)
+    already_used = max(0, len(facts) - len(unused)) if unused else len(facts)
+    fact = pool[(seed + already_used) % len(pool)]
+
+    lang = get_guest_response_language(sender_phone, user_text) if sender_phone else guest_language(user_text)
+    if lang == "english":
+        body = fact.get("text", "").strip()
+        prefix = "✨ Haridwar fact:"
+    else:
+        body = fact.get("hinglish", "").strip() or fact.get("text", "").strip()
+        prefix = "✨ Haridwar ka fact:"
+
+    title = fact.get("title", "").strip()
+    # Hidden identifier is deliberately not exposed; the title helps recent-history
+    # deduplication and makes the fact readable to guests.
+    return f"{prefix} *{title}* — {body}".strip()
 
 
 def select_local_guide_suggestions(text):

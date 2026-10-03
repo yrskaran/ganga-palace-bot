@@ -1247,16 +1247,34 @@ def verify_meta_signature(raw_body, signature_header):
 # GOOGLE / SHEETS
 # ============================================================
 
+# Google HTTP sessions and credentials are reused within each worker. A Session
+# must not be shared across concurrent threads. Google refreshes tokens itself.
+_google_clients = threading.local()
+
+
 def get_credentials():
-    if not GOOGLE_SERVICE_ACCOUNT_JSON:
+    source = GOOGLE_SERVICE_ACCOUNT_JSON
+    if getattr(_google_clients, "source", None) != source:
+        old_client = getattr(_google_clients, "sheets", None)
+        if old_client is not None:
+            old_client.http_client.session.close()
+        _google_clients.sheets = None
+        _google_clients.credentials = None
+        _google_clients.source = source
+    if not source:
         return None
+    cached = getattr(_google_clients, "credentials", None)
+    if cached is not None:
+        return cached
     try:
-        data = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        data = json.loads(source)
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive",
         ]
-        return Credentials.from_service_account_info(data, scopes=scopes)
+        credentials = Credentials.from_service_account_info(data, scopes=scopes)
+        _google_clients.credentials = credentials
+        return credentials
     except Exception as exc:
         print("CREDENTIAL ERROR:", exc, flush=True)
         return None
@@ -1264,7 +1282,14 @@ def get_credentials():
 
 def get_gspread_client():
     creds = get_credentials()
-    return gspread.authorize(creds) if creds else None
+    if creds is None:
+        return None
+    client = getattr(_google_clients, "sheets", None)
+    if client is None:
+        client = gspread.authorize(creds)
+        client.set_timeout((10, 30))
+        _google_clients.sheets = client
+    return client
 
 
 def require_operational_layout():
@@ -2387,8 +2412,9 @@ def upload_image_to_google_drive(image_bytes, file_name):
     if not creds:
         return None
 
+    service = None
     try:
-        service = build("drive", "v3", credentials=creds)
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
         query = (
             "mimeType='application/vnd.google-apps.folder' "
@@ -2439,6 +2465,9 @@ def upload_image_to_google_drive(image_bytes, file_name):
     except Exception as exc:
         print("DRIVE UPLOAD ERROR:", exc, flush=True)
         return None
+    finally:
+        if service is not None:
+            service.close()
 
 
 # ============================================================
@@ -9961,6 +9990,17 @@ def index():
     return f"{get_hotel_name()} WhatsApp Bot is Live | {APP_VERSION}", 200
 
 
+def current_memory_mb():
+    """Linux resident memory without a monitoring dependency or guest data."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return round(int(line.split()[1]) / 1024, 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
 @app.route("/health", methods=["GET"])
 def health():
     with state_lock:
@@ -9971,6 +10011,7 @@ def health():
         "status": "active",
         "version": APP_VERSION,
         "hotel": get_hotel_name(),
+        "memory_rss_mb": current_memory_mb(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,
         "ai": ai_readiness,

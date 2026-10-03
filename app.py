@@ -4955,78 +4955,58 @@ def process_payment_notifications(kitchen_rows, room_phone_map, room_name_map):
 # ============================================================
 
 def find_menu_items(text):
-    """
-    Deterministic parser. It never creates an order for an item
-    outside MENU. Generic words are rejected for clarification.
-    """
+    """Match configured dishes before asking about unresolved generic words."""
     t = normalize_text(text)
-
-    # Generic item check first.
-    for generic in get_hotel_config().get("generic_menu", {}):
-        if re.search(rf"\b{re.escape(generic)}\b", t):
-            # If a specific menu item containing this word exists,
-            # do not classify it as generic.
-            specific_present = any(
-                key in t for key in get_hotel_menu()
-                if key != generic and generic in key
-            )
-            if not specific_present:
-                return {"generic": generic, "items": [], "total": 0}
-
-    found = []
-
-    # Longest keys first avoids "roti" matching before "butter roti".
-    keys = sorted(get_hotel_menu().keys(), key=len, reverse=True)
-    working = t
-
-    for key in keys:
-        if not re.search(rf"\b{re.escape(key)}\b", working):
-            continue
-
-        # Quantity immediately before item.
-        before = re.findall(
-            rf"(\d+)\s*(?:plate|plates|cup|cups|bowl|bowls|glass|glasses|piece|pieces)?\s*{re.escape(key)}\b",
-            working
-        )
-
-        # Quantity immediately after item.
-        after = re.findall(
-            rf"\b{re.escape(key)}\s*(?:plate|plates|cup|cups|bowl|bowls|glass|glasses|piece|pieces)?\s*(\d+)\b",
-            working
-        )
-
-        qty = sum(int(x) for x in before) if before else 0
-        if not qty and after:
-            qty = sum(int(x) for x in after)
-        if not before and not after:
-            qty = 1
+    aliases = {
+        "kadhayi paneer": "kadhai paneer", "kadai paneer": "kadhai paneer",
+        "kadhai panir": "kadhai paneer", "butter nan": "butter naan",
+        "naan butter": "butter naan", "steam rice": "steamed rice",
+        "sptemed rice": "steamed rice", "steemed rice": "steamed rice",
+        "dal makhni": "dal makhani", "pbm": "paneer butter masala",
+    }
+    menu = {normalize_text(k): v for k, v in get_hotel_menu().items()}
+    for alias, target in aliases.items():
+        if target in menu:
+            menu[alias] = menu[target]
+    # In an item-only basket 'do' means two; semantic routing still decides intent.
+    t = re.sub(r"\bdo(?=\s+(?:" + "|".join(re.escape(k) for k in menu) + r")\b)", "2", t)
+    keys = sorted(menu, key=len, reverse=True)
+    if not keys:
+        return {"generic": None, "items": [], "total": 0}
+    matches = list(re.finditer(r"\b(?:" + "|".join(re.escape(k) for k in keys) + r")\b", t))
+    working = list(t)
+    found = {}
+    unit = r"(?:plates?|cups?|bowls?|glasses?|pieces?|pcs?|portions?)"
+    consumed_until = 0
+    for i, match in enumerate(matches):
+        start, end = match.span()
+        prefix = t[max(consumed_until, matches[i-1].end() if i else 0):start]
+        suffix_end = matches[i+1].start() if i+1 < len(matches) else len(t)
+        suffix = t[end:suffix_end]
+        before = re.search(r"(\d+)\s*(?:" + unit + r"\s*)?$", prefix)
+        # A number between adjacent dishes belongs to the following dish unless
+        # it has a suffix unit ('naan 2 pcs') or ends the basket.
+        after = re.match(r"\s*(\d+)(?:\s*" + unit + r"\b|(?=\s*(?:$|[,;+]|with\b|and\b|aur\b)))", suffix)
+        qty = int(before.group(1)) if before else int(after.group(1)) if after else 1
         try:
             qty = validated_quantity(qty)
+            name, price = menu[match.group()]
+            qty = validated_quantity(qty + found.get(name, {}).get("qty", 0))
         except ValueError:
             return {"generic": None, "items": [], "total": 0, "invalid": True}
-
-        std_name, price = get_hotel_menu()[key]
-
-        # Avoid duplicate aliases resolving to same item.
-        if any(item["name"] == std_name for item in found):
-            continue
-
-        found.append({
-            "name": std_name,
-            "qty": qty,
-            "unit_price": price,
-            "amount": qty * price,
-        })
-
-        working = re.sub(rf"\b{re.escape(key)}\b", " ", working)
-
-    total = sum(x["amount"] for x in found)
-
-    return {
-        "generic": None,
-        "items": found,
-        "total": total,
-    }
+        found[name] = {"name": name, "qty": qty, "unit_price": price, "amount": qty * price}
+        consume_start = start - len(prefix) + before.start() if before else start
+        consumed_until = end + after.end() if after and not before else end
+        working[consume_start:consumed_until] = " " * (consumed_until - consume_start)
+    remaining = "".join(working)
+    for generic in get_hotel_config().get("generic_menu", {}):
+        if re.search(rf"\b{re.escape(generic)}\b", remaining):
+            return {"generic": generic, "items": [], "total": 0}
+    items = list(found.values())
+    # Only a fully understood item-only basket can override AI clarification.
+    residue = re.sub(r"\b(?:with|and|aur|please|plz|order|bhejo|bhej|dena|chahiye|ji)\b", " ", remaining)
+    complete = bool(items) and not re.sub(r"[\s,;+&.]", "", residue)
+    return {"generic": None, "items": items, "total": sum(x["amount"] for x in items), "complete": complete}
 
 
 def format_order(items):
@@ -7629,6 +7609,12 @@ def _process_and_reply(message, sender_phone, msg_type):
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
+    # A complete configured basket takes precedence over generic AI selection.
+    basket = find_menu_items(user_text)
+    if basket.get("complete") and (not ai_understanding or ai_understanding.get("action") in {"ORDER", "ORDER_SELECTION", "NONE"}):
+        ai_understanding = {"action": "ORDER", "confidence": 1.0,
+                            "items": [{"name": x["name"], "qty": x["qty"]} for x in basket["items"]]}
+
     # Clarification is a complete response, never a reason to fall into keyword actions.
     if ai_understanding and ai_understanding.get("reply"):
         action = ai_understanding.get("action")
@@ -8259,10 +8245,13 @@ def _process_and_reply(message, sender_phone, msg_type):
                     return
                 with state_lock:
                     order_sessions[sender_phone] = {"order": order_text, "total": parsed["total"], "created": time.time()}
-                if explicitly_asks_price(user_text):
-                    reply = f"Ji {guest_info['name']} ji, {order_text} ka total Rs.{parsed['total']} hai. Confirm kar dein?"
-                else:
-                    reply = f"Ji {guest_info['name']} ji, {order_text} Room {guest_info['room']} ke liye note kiya hai. Confirm kar dein?"
+                lines = [f"• {x['name']} × {x['qty']} = Rs. {x['amount']}" for x in parsed["items"]]
+                english = get_guest_response_language(sender_phone) == "english"
+                intro = (f"{guest_info['name']} ji, your order for Room {guest_info['room']}:" if english
+                         else f"Ji {guest_info['name']} ji, Room {guest_info['room']} ke liye aapka order:")
+                confirm = ("Reply CONFIRM if everything is correct, or tell me what to change." if english
+                           else "Sab sahi hai toh CONFIRM reply karein. Koi change chahiye ho toh bata dein.")
+                reply = intro + "\n\n" + "\n".join(lines) + f"\n\nTotal: Rs. {parsed['total']}\n" + confirm
                 send_whatsapp_message(sender_phone, reply)
                 remember_conversation(sender_phone, "user", user_text)
                 remember_conversation(sender_phone, "assistant", reply)

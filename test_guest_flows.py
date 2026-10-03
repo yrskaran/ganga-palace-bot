@@ -86,6 +86,37 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('abhi confirm ya book nahi', self.sent.call_args.args[1])
         self.assertNotIn(GUEST, app.guide_service_sessions)
 
+    def test_typo_multi_item_order_overrides_generic_ai(self):
+        self.mock('understand_guest_request', return_value={"action":"ORDER_SELECTION", "confidence":0.9, "generic":"paneer", "reply":"Which paneer?"})
+        self.mock('_recent_matching_kitchen_order', return_value=None)
+        self.turn('Kadhayi paneer Butter naan 2 pcs with sptemed rice')
+        pending = app.order_sessions[GUEST]
+        self.assertEqual(pending['total'], 480)
+        self.assertEqual(pending['order'], '1 x Kadhai Paneer, 2 x Butter Naan, 1 x Steamed Rice')
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Rs. 480', reply)
+        self.assertIn('CONFIRM', reply)
+        self.assertNotIn('kaunsa', reply)
+
+    def test_food_quantities_aliases_and_ambiguity(self):
+        cases = [
+            ('Kadhayi paneer Butter naan 2 pcs with sptemed rice', [1, 2, 1]),
+            ('kadai paneer with 2 butter nan and steam rice', [1, 2, 1]),
+            ('2 butter naan 3 steamed rice', [2, 3]),
+            ('butter naan 2 pcs + butter nan 3 pcs', [5]),
+            ('do butter naan aur ek steamed rice', [2, 1]),
+        ]
+        for text, quantities in cases:
+            with self.subTest(text=text):
+                parsed = app.find_menu_items(text)
+                self.assertTrue(parsed['complete'])
+                self.assertEqual([x['qty'] for x in parsed['items']], quantities)
+        self.assertEqual(app.find_menu_items('paneer bhejo')['generic'], 'paneer')
+        self.assertEqual(app.find_menu_items('kadhai paneer aur rice')['generic'], 'rice')
+        self.assertTrue(app.find_menu_items('butter naan 51 pcs')['invalid'])
+        self.assertFalse(app.find_menu_items('kadhai paneer nahi chahiye')['complete'])
+        self.assertFalse(app.find_menu_items('kadhai paneer with pizza')['complete'])
+
     def test_guide_preserves_older_pending_food(self):
         pending={'order':'2 x Masala Chai','total':60,'created':__import__('time').time()}
         app.order_sessions[GUEST]=pending

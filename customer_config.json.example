@@ -11,9 +11,9 @@
     "wifi": "Complimentary Wi-Fi"
   },
   "contacts": {
-    "reception_phone": "91XXXXXXXXXX",
-    "kitchen_phone": "91XXXXXXXXXX",
-    "staff_phone": "91XXXXXXXXXX"
+    "reception_phone": "",
+    "kitchen_phone": "",
+    "staff_phone": ""
   },
   "rooms": [
     {

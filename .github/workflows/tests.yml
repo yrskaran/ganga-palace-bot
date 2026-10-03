@@ -1,0 +1,24 @@
+name: Bot regression checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    runs-on: ubuntu-latest
+    env:
+      BOT_AUTOSTART: '0'
+      BOT_STORAGE_MODE: demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pip check
+      - run: python -m compileall -q .
+      - run: python smoke_test.py
+      - run: python -m unittest -v test_guest_flows
+      - run: CUSTOMER_CONFIG_FILE=customer_config.json.example python validate_customer.py

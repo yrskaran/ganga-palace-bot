@@ -326,7 +326,7 @@ Research basis for this static knowledge: District Haridwar administration, Utta
 6. GUEST LIFECYCLE AUTOMATIONS
 ==================================================
 - After check-in: send a warm welcome with guest name and room number.
-- 30 minutes after check-in: ask whether everything is comfortable and offer towel, soap, cleaning or general help.
+- 30-minute onboarding: send no earlier than 30 minutes after check-in and the welcome message. Introduce this WhatsApp for towel, water, cleaning, food, Wi-Fi, cab and local assistance in natural language. Local tour guide availability and charges require reception confirmation; never promise a guide or booking.
 - Breakfast prompt: this is also the daily Good Morning message; send once in the configured morning window.
 - Breakfast Reminder Window: 08:00-10:00
 - Lunch Reminder Window: 13:00-15:00
@@ -445,3 +445,8 @@ GUIDE SOURCES (checked 2026-09-30):
 - Government tourism, Har Ki Pauri: https://www.incredibleindia.gov.in/en/uttarakhand/haridwar/har-ki-pauri
 - Government tourism, Chandi Devi (also identifies Maya Devi): https://www.incredibleindia.gov.in/en/uttarakhand/haridwar/chandi-devi-temple
 These sources establish place identities, not live timings, fares, crowds or availability. Hotel-to-ghat distance is supplied by the hotel, not independently measured here.
+
+HUMAN TOUR GUIDE REQUESTS
+- No current human guide availability or charges are confirmed in this knowledge file.
+- "Local guide hai?" means a person, not a list of temples/places. Offer to ask reception about availability and charges.
+- Send an explicit request to arrange/check a guide to reception; only reception can confirm availability, charges and any booking.

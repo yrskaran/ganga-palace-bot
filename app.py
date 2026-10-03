@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V49-HARIDWAR-GUIDE"
+APP_VERSION = "HOTEL-AI-V50-GUEST-CONCIERGE"
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
@@ -211,6 +211,7 @@ service_sessions = {}
 service_tasks_by_id = {}
 service_tasks_by_alert = {}
 service_guest_pending = {}
+guide_service_sessions = {}
 # Outgoing lifecycle message id -> marker metadata. A marker is written only
 # after Meta reports the message as sent/delivered, never on mere API acceptance.
 lifecycle_pending_by_message_id = {}
@@ -1010,6 +1011,9 @@ def _is_haridwar_fact_request(text, sender_phone=None):
         or "haridwar ke bare me kuch" in t
         or "haridwar ke baare me kuch" in t
         or "haridwar ka kuch" in t
+        or (("haridwar" in t or "हरिद्वार" in t) and any(x in t for x in (
+            "unique", "unusual", "interesting", "anokh", "अनोख", "रोचक"
+        )))
     )
     if explicit:
         return True
@@ -1293,6 +1297,42 @@ def fetch_sheet_data_sync(force=False):
 # AI-GENERATED PROACTIVE GUEST MESSAGES
 # ============================================================
 
+def _lifecycle_fallback_message(event, language, name, room):
+    name = str(name or "").strip()
+    address = f"{name} ji, " if name and normalize_text(name) not in {"guest", "customer"} else ""
+    if language == "english":
+        messages = {
+            "WELCOME": f"Welcome to {get_hotel_name()}, {address.rstrip(', ') or 'and enjoy your stay'}! You're checked in to Room {room}. If you need anything, just message us here. 😊",
+            "30_MINUTE": f"{address}hope you've settled in comfortably 😊\nNeed an extra towel, water, room cleaning, food, Wi-Fi help or a cab? Just message us here in your own words.\nFor sightseeing or a local tour guide, you can ask us here too; reception will need to confirm guide availability and charges.",
+            "BREAKFAST": f"Good morning, {address.rstrip(', ') or 'and welcome to a new day'} 😊 Would you like to see the breakfast menu?",
+            "LUNCH": f"{address}thinking about lunch? Message us if you'd like to see the menu.",
+            "GANGA_AARTI": f"{address}planning to attend the evening Ganga Aarti? Please check today's timing with reception before heading out.",
+            "DINNER": f"{address}would you like to see the dinner menu? Just message us here.",
+            "CHECKOUT": f"Thank you for staying with us, {address.rstrip(', ') or 'and do visit again'}. Have a safe journey!",
+        }
+    elif language == "hindi":
+        messages = {
+            "WELCOME": f"{address}{get_hotel_name()} में आपका स्वागत है 😊 आपका कमरा {room} है। कुछ भी चाहिए हो तो यहीं मैसेज कर दीजिए।",
+            "30_MINUTE": f"{address}उम्मीद है आप आराम से सेटल हो गए होंगे 😊\nतौलिया, पानी, कमरे की सफाई, खाना, वाई-फाई की मदद या कैब चाहिए हो तो बस यहीं अपनी भाषा में मैसेज कर दीजिए।\nघूमने या स्थानीय टूर गाइड के लिए भी यहीं पूछ सकते हैं। गाइड की उपलब्धता और शुल्क रिसेप्शन से कन्फर्म होंगे।",
+            "BREAKFAST": f"{address}सुप्रभात 😊 नाश्ते का मेन्यू देखना चाहेंगे?",
+            "LUNCH": f"{address}लंच का मेन्यू देखना हो तो यहीं मैसेज कर दीजिए।",
+            "GANGA_AARTI": f"{address}शाम की गंगा आरती में जाने का मन है? निकलने से पहले आज का समय रिसेप्शन से कन्फर्म कर लें।",
+            "DINNER": f"{address}डिनर का मेन्यू देखना चाहेंगे? यहीं बता दीजिए।",
+            "CHECKOUT": f"{address}हमारे साथ ठहरने के लिए धन्यवाद। आपकी यात्रा सुखद रहे!",
+        }
+    else:
+        messages = {
+            "WELCOME": f"{address}{get_hotel_name()} mein aapka swagat hai 😊 Aapka Room {room} hai. Kuch bhi chahiye ho toh yahin message kar dijiye.",
+            "30_MINUTE": f"{address}hope aap comfortably settle ho gaye honge 😊\nExtra towel, paani, room cleaning, food, Wi-Fi help ya cab chahiye ho toh bas isi WhatsApp par apne words mein message kar dijiye.\nGhoomne ya local tour guide ke liye bhi yahin pooch sakte hain; guide ki availability aur charges reception se confirm honge.",
+            "BREAKFAST": f"{address}good morning 😊 Nashta ka menu dekhna chahenge?",
+            "LUNCH": f"{address}lunch ka menu dekhna ho toh yahin bata dijiye.",
+            "GANGA_AARTI": f"{address}shaam ki Ganga Aarti mein jaane ka mann hai? Nikalne se pehle aaj ka time reception se confirm kar lein.",
+            "DINNER": f"{address}dinner ka menu dekhna chahenge? Yahin message kar dijiye.",
+            "CHECKOUT": f"{address}hamare saath stay karne ke liye thank you. Aapki journey achhi rahe!",
+        }
+    return messages.get(event, f"{address}kuch bhi chahiye ho toh yahin message kar dijiye.")
+
+
 def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
     """Generate a short proactive guest message from the AI + hotel_data.txt.
 
@@ -1300,6 +1340,10 @@ def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
     the wording and guest language are generated from the current hotel brain.
     """
     lang = str(language or "english").strip()
+    # This message introduces the WhatsApp concierge. Keep its useful examples
+    # and guide-availability qualification even when AI wording is enabled.
+    if event == "30_MINUTE":
+        return _lifecycle_fallback_message(event, lang, name, room)
     prompts = {
         "WELCOME": "Welcome the guest warmly after check-in and offer help.",
         "30_MINUTE": "Check whether the guest is comfortably settled and offer assistance.",
@@ -1324,17 +1368,7 @@ def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
         reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
         if reply:
             return re.sub(r"\s+", " ", str(reply).strip())
-    # Safe generic fallback if AI service is temporarily unavailable.
-    fallback = {
-        "WELCOME": f"🌸 Welcome {name} ji! Hotel mein aapka swagat hai. Kisi bhi help ke liye yahin message karein. 🙏",
-        "30_MINUTE": f"🌸 {name} ji, umeed hai aap comfortably settle ho gaye honge. Kisi bhi assistance ke liye yahin message karein. 🙏",
-        "BREAKFAST": f"☀️ Good Morning {name} ji! Breakfast time hai. Menu dekhne ke liye message karein. 🍽️",
-        "LUNCH": f"🍛 {name} ji, lunch time hai. Menu ke liye message karein.",
-        "GANGA_AARTI": f"🙏 {name} ji, Ganga Aarti ka samay aa raha hai. Jaane se pehle reception se current timing confirm kar lein. 🌸",
-        "DINNER": f"🌙 {name} ji, dinner time hai. Menu ke liye message karein. 🍽️",
-        "CHECKOUT": f"🙏 Thank you {name} ji! Aapki journey safe aur sukhad rahe. 🌸"
-    }
-    return fallback.get(event, f"Ji {name} ji, agar kisi assistance ki zarurat ho to yahin message karein.")
+    return _lifecycle_fallback_message(event, lang, name, room)
 
 
 def _staff_header_map():
@@ -1594,7 +1628,8 @@ SERVICE_REQUEST_HEADERS = [
     "Request ID", "Created At", "Room", "Guest Name", "Guest Phone",
     "Role", "Service", "Details", "Assigned Staff", "Staff Phone",
     "Status", "Staff Done At", "Guest Confirmed At", "Auto Resolved At",
-    "Closed At", "Alert Message ID", "Last Update"
+    "Closed At", "Alert Message ID", "Last Update",
+    "Confirmation Message ID", "Confirmation Sent At"
 ]
 
 
@@ -1621,6 +1656,8 @@ def _service_task_row(task):
         task.get("closed_at", ""),
         task.get("alert_message_id", ""),
         task.get("last_update", ""),
+        task.get("confirmation_message_id", ""),
+        task.get("confirmation_sent_at", ""),
     ]
 
 
@@ -1649,6 +1686,20 @@ def _ensure_service_requests_sheet():
     if not values:
         sheet.append_row(SERVICE_REQUEST_HEADERS, value_input_option="RAW")
         values = list(SERVICE_REQUEST_HEADERS)
+    # Extend only the exact old 17-column contract. Existing request rows and
+    # the original status/payment columns are preserved.
+    if [str(x).strip() for x in values[:17]] == SERVICE_REQUEST_HEADERS[:17]:
+        for i in range(17, len(SERVICE_REQUEST_HEADERS)):
+            existing = str(values[i]).strip() if i < len(values) else ""
+            if existing and existing != SERVICE_REQUEST_HEADERS[i]:
+                raise RuntimeError("Service_Requests confirmation columns conflict with existing headers")
+        if len(values) < len(SERVICE_REQUEST_HEADERS) or any(not str(v).strip() for v in values[17:19]):
+            if sheet.col_count < len(SERVICE_REQUEST_HEADERS):
+                sheet.add_cols(len(SERVICE_REQUEST_HEADERS) - sheet.col_count)
+            sheet.update('R1:S1', [SERVICE_REQUEST_HEADERS[17:]], value_input_option='RAW')
+            values = list(SERVICE_REQUEST_HEADERS)
+            with state_lock:
+                shared_store["service_request_headers"] = list(values)
     if [str(x).strip() for x in values[:len(SERVICE_REQUEST_HEADERS)]] != SERVICE_REQUEST_HEADERS:
         # Do not silently write into an incompatible sheet.
         raise RuntimeError("Service_Requests headers changed; expected standard service task columns")
@@ -1697,7 +1748,7 @@ def _update_service_task_sheet(task):
         row = _service_sheet_row(task)
         if row < 2:
             return False
-        sheet.update(f"A{row}:Q{row}", [_service_task_row(task)], value_input_option="RAW")
+        sheet.update(f"A{row}:S{row}", [_service_task_row(task)], value_input_option="RAW")
         with state_lock:
             cache = shared_store.setdefault("service_request_rows", [])
             idx = row - 2
@@ -1749,6 +1800,9 @@ def _rebuild_service_task_cache():
         if not re.fullmatch(r"S-[A-F0-9]{6}", request_id):
             continue
         task = {key: val(key) for key in required}
+        for key in ("confirmation_message_id", "confirmation_sent_at"):
+            idx = h.get(key, -1)
+            task[key] = str(row[idx]).strip() if 0 <= idx < len(row) else ""
         task["request_id"] = request_id
         task["guest_phone"] = format_whatsapp_number(task.get("guest_phone")) or task.get("guest_phone")
         task["staff_phone"] = format_whatsapp_number(task.get("staff_phone")) or task.get("staff_phone")
@@ -1756,10 +1810,14 @@ def _rebuild_service_task_cache():
         rebuilt[request_id] = task
         if task.get("alert_message_id"):
             by_alert[task["alert_message_id"]] = task
-        if task.get("status") == "STAFF_COMPLETED" and task.get("guest_phone"):
+        if task.get("status") in {"STAFF_COMPLETED", "CONFIRMATION_FAILED"} and task.get("guest_phone"):
             guest_pending[task["guest_phone"]] = request_id
 
     with state_lock:
+        for request_id, task in rebuilt.items():
+            previous = service_tasks_by_id.get(request_id, {})
+            if previous.get("status") == task.get("status") and previous.get("confirmation_message_id"):
+                task["confirmation_message_id"] = previous["confirmation_message_id"]
         service_tasks_by_id.update(rebuilt)
         service_tasks_by_alert.update(by_alert)
         service_guest_pending.update(guest_pending)
@@ -1851,11 +1909,12 @@ def _service_guest_result(text):
     t = normalize_text(text)
     negatives = (
         "nahi hua", "nhi hua", "abhi nahi", "abhi nhi", "nahi mila", "nhi mila",
-        "not resolved", "not fixed", "still not", "issue hai", "problem hai"
+        "not resolved", "not fixed", "not done", "not completed", "still not", "issue hai", "problem hai",
+        "nahi ho", "nhi ho", "hasn't", "isn't", "नहीं", "नही"
     )
     positives = (
         "ho gaya", "ho gya", "mil gaya", "mil gya", "resolve ho gaya",
-        "resolved", "fixed", "issue solve", "problem solve", "thanks done"
+        "resolved", "fixed", "issue solve", "problem solve", "thanks done", "हो गया", "मिल गया"
     )
     if any(x in t for x in negatives) or is_no(text):
         return "no"
@@ -1882,31 +1941,41 @@ def _open_service_tasks_for_staff(phone):
         items = [
             dict(t) for t in service_tasks_by_id.values()
             if format_whatsapp_number(t.get("staff_phone")) == wanted
-            and t.get("status") in {"OPEN", "REOPENED"}
+            and t.get("status") in {"OPEN", "REOPENED", "CONFIRMATION_FAILED"}
         ]
     items.sort(key=lambda t: t.get("created_at", ""), reverse=True)
     return items
 
 
 def _mark_service_staff_done(task):
-    stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
-    task["status"] = "STAFF_COMPLETED"
-    task["staff_done_at"] = stamp
-    task["last_update"] = stamp
+    # Claim the transition before sending; duplicate staff webhooks must not
+    # restart the guest's timer or send another confirmation question.
     with state_lock:
-        service_guest_pending[task.get("guest_phone")] = task.get("request_id")
-        service_sessions[task.get("guest_phone")] = {"request_id": task.get("request_id"), "created": time.time()}
+        if task.get("status") not in {"OPEN", "REOPENED", "CONFIRMATION_FAILED"}:
+            return True
+        task["status"] = "CONFIRMATION_SENDING"
+    phone = task.get("guest_phone")
+    service = task.get("service") or "service request"
+    guest_msg = bilingual_text(phone,
+        f"Has your request for {service} been taken care of? Please reply Yes / No. ({task.get('request_id')})",
+        f"Aapki {service} waali request poori ho gayi? Haan / Nahi bata dijiye. ({task.get('request_id')})",
+        f"क्या आपकी {service} वाली रिक्वेस्ट पूरी हो गई? हाँ / नहीं बता दीजिए। ({task.get('request_id')})")
+    ok, remote_id = send_notification_with_id(phone, guest_msg, "SERVICE_CONFIRMATION")
+    stamp = now_ist().isoformat()
+    with state_lock:
+        task["status"] = "STAFF_COMPLETED" if ok and remote_id else "CONFIRMATION_FAILED"
+        task["staff_done_at"] = stamp
+        task["confirmation_sent_at"] = stamp if ok and remote_id else ""
+        task["confirmation_message_id"] = remote_id or ""
+        task["last_update"] = stamp
+        service_guest_pending[phone] = task.get("request_id")
+        service_sessions[phone] = {"request_id": task.get("request_id"), "created": time.time()}
     _update_service_task_sheet(task)
-
-    guest_name = task.get("guest_name") or "Guest"
-    guest_msg = (
-        f"Ji {guest_name} ji, staff ne aapki request '{task.get('service')}' complete mark ki hai. "
-        "Kya aapka issue resolve ho gaya? Haan / Nahi"
-    )
-    send_whatsapp_message(task.get("guest_phone"), guest_msg)
     send_whatsapp_message(
         task.get("staff_phone"),
         f"{task.get('request_id')} staff-completed mark ho gaya. Guest confirmation ka wait hai."
+        if ok and remote_id else
+        f"{task.get('request_id')}: guest ko confirmation nahi bhej paaya. Auto-resolve nahi hoga. Guest se seedhe confirm karein; phir isi request par 'done' dobara bhej sakte hain."
     )
     print(f"SERVICE STAFF DONE: id={task.get('request_id')}", flush=True)
     return True
@@ -1931,7 +2000,7 @@ def handle_service_staff_message(message, sender_phone, msg_type):
     if task:
         if format_whatsapp_number(task.get("staff_phone")) != sender:
             return False
-        if task.get("status") not in {"OPEN", "REOPENED"}:
+        if task.get("status") not in {"OPEN", "REOPENED", "CONFIRMATION_FAILED"}:
             send_whatsapp_message(sender, f"{task.get('request_id')} already {task.get('status')}.")
             return True
         return _mark_service_staff_done(task)
@@ -1982,35 +2051,52 @@ def _reroute_service_task(task):
     return ok
 
 
-def handle_service_guest_confirmation(phone, text):
+def handle_service_guest_confirmation(phone, text, message=None):
     guest_phone = format_whatsapp_number(phone) or str(phone)
-    with state_lock:
-        request_id = service_guest_pending.get(guest_phone)
-        task = service_tasks_by_id.get(request_id) if request_id else None
-    if not task or task.get("status") != "STAFF_COMPLETED":
-        return False
-
-    result = _service_guest_result(text)
+    result_text = re.sub(r"\bS-[A-F0-9]{6}\b", "", str(text), flags=re.I).strip()
+    result = _service_guest_result(result_text)
     if not result:
         return False
+    explicit = re.search(r"\bS-[A-F0-9]{6}\b", str(text), re.I)
+    context_id = str(((message or {}).get("context") or {}).get("id", ""))
+    with state_lock:
+        candidates = [t for t in service_tasks_by_id.values()
+                      if format_whatsapp_number(t.get("guest_phone")) == guest_phone
+                      and t.get("status") in {"STAFF_COMPLETED", "CONFIRMATION_FAILED"}]
+    if explicit:
+        candidates = [t for t in candidates if t.get("request_id") == explicit.group(0).upper()]
+    elif context_id:
+        candidates = [t for t in candidates if t.get("confirmation_message_id") == context_id]
+    if not candidates:
+        return False
+    if len(candidates) > 1:
+        choices = "\n".join(f"{t.get('request_id')} — {t.get('service')}" for t in candidates)
+        send_whatsapp_message(guest_phone, bilingual_text(guest_phone,
+            "Which request are you confirming? Reply with its ID and Yes / No:\n" + choices,
+            "Kaunsi request ke liye bata rahe hain? ID ke saath Haan / Nahi bhej dijiye:\n" + choices,
+            "किस रिक्वेस्ट की पुष्टि कर रहे हैं? ID के साथ हाँ / नहीं भेज दीजिए:\n" + choices))
+        return True
+    task = candidates[0]
 
     stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
     if result == "yes":
-        task["status"] = "COMPLETED"
-        task["guest_confirmed_at"] = stamp
-        task["closed_at"] = stamp
-        task["last_update"] = stamp
         with state_lock:
-            service_guest_pending.pop(guest_phone, None)
+            task["status"] = "COMPLETED"
+            task["guest_confirmed_at"] = stamp
+            task["closed_at"] = stamp
+            task["last_update"] = stamp
+            if service_guest_pending.get(guest_phone) == task.get("request_id"):
+                service_guest_pending.pop(guest_phone, None)
         _update_service_task_sheet(task)
         print(f"SERVICE GUEST CONFIRMED: id={task.get('request_id')}", flush=True)
         # Keep confirmation quiet; the guest has already said yes.
         return True
 
-    task["status"] = "REOPENED"
-    task["last_update"] = stamp
     with state_lock:
-        service_guest_pending.pop(guest_phone, None)
+        task["status"] = "REOPENED"
+        task["last_update"] = stamp
+        if service_guest_pending.get(guest_phone) == task.get("request_id"):
+            service_guest_pending.pop(guest_phone, None)
     _update_service_task_sheet(task)
     rerouted = _reroute_service_task(task)
     send_whatsapp_message(
@@ -2030,18 +2116,22 @@ def process_service_auto_resolve():
         for task in service_tasks_by_id.values():
             if task.get("status") != "STAFF_COMPLETED":
                 continue
-            done_at = _parse_sheet_datetime(task.get("staff_done_at", ""))
+            done_at = _parse_sheet_datetime(task.get("confirmation_sent_at") or task.get("staff_done_at", ""))
             if done_at and current >= done_at + timedelta(minutes=SERVICE_CONFIRM_TIMEOUT_MINUTES):
                 due.append(task)
 
     for task in due:
         stamp = current.strftime("%d-%b-%Y %I:%M %p")
-        task["status"] = "AUTO_RESOLVED"
-        task["auto_resolved_at"] = stamp
-        task["closed_at"] = stamp
-        task["last_update"] = stamp
         with state_lock:
-            service_guest_pending.pop(task.get("guest_phone"), None)
+            # Guest may have replied while the due list was being processed.
+            if task.get("status") != "STAFF_COMPLETED":
+                continue
+            task["status"] = "AUTO_RESOLVED"
+            task["auto_resolved_at"] = stamp
+            task["closed_at"] = stamp
+            task["last_update"] = stamp
+            if service_guest_pending.get(task.get("guest_phone")) == task.get("request_id"):
+                service_guest_pending.pop(task.get("guest_phone"), None)
         _update_service_task_sheet(task)
         print(f"SERVICE AUTO RESOLVED: id={task.get('request_id')} after={SERVICE_CONFIRM_TIMEOUT_MINUTES}m", flush=True)
 
@@ -2060,6 +2150,16 @@ def _update_service_alert_delivery(remote_id, delivery_status, codes):
         return
     with state_lock:
         task = service_tasks_by_alert.get(remote_id)
+        confirmation_task = next((t for t in service_tasks_by_id.values()
+                                  if t.get("confirmation_message_id") == remote_id), None)
+        if confirmation_task and delivery_status == "failed" and confirmation_task.get("status") == "STAFF_COMPLETED":
+            confirmation_task["status"] = "CONFIRMATION_FAILED"
+            confirmation_task["confirmation_sent_at"] = ""
+            confirmation_task["last_update"] = now_ist().isoformat()
+    if confirmation_task and delivery_status == "failed":
+        _update_service_task_sheet(confirmation_task)
+        send_whatsapp_message(confirmation_task.get("staff_phone"),
+            f"{confirmation_task.get('request_id')}: guest confirmation deliver nahi hui. Auto-resolve rok diya hai; guest se seedhe confirm karein.")
     if not task:
         return
     task["delivery_status"] = delivery_status
@@ -4233,6 +4333,88 @@ def get_conversation_history(sender_phone):
         return list(conversation_memory.get(sender_phone, []))
 
 
+def _human_guide_intent(text):
+    """Separate a person/service from a travel guide or sightseeing question."""
+    t = re.sub(r"[?!.,]+", " ", normalize_text(text)).strip()
+    has_guide = bool(re.search(r"\b(?:guide|gaid|guid)\b|गाइड|मार्गदर्शक", t))
+    if not has_guide:
+        return ""
+    if re.search(r"(?:guide|gaid|guid|गाइड).*?(?:nahi|nhi|nahin|नहीं|mat|मत)|(?:don't|do not|dont).*?(?:need|want|book|arrange).*?guide", t):
+        return "decline"
+    person_phrase = bool(re.search(r"\b(?:local|tour|tourist|darshan|human|personal)\s+(?:guide|gaid|guid)\b|(?:लोकल|टूर|स्थानीय|दर्शन)\s*गाइड", t))
+    cues = bool(re.search(r"\b(?:hai|hain|mile?ga|mil|available|hire|arrange|book|need|want|chahiye|chaiye|charges|charge|cost|price|fees)\b|है|मिलेगा|चाहिए|उपलब्ध|शुल्क", t))
+    if not person_phrase and not cues:
+        return "clarify" if t in {"guide", "gaid", "गाइड"} else ""
+    # 'guide me' and 'travel guide to ...' are informational requests.
+    if re.search(r"\bguide (?:me|to|for beginners)\b|\b(?:travel|city|visitor) guide\b", t) and not person_phrase:
+        return ""
+    request = bool(re.search(r"\b(?:arrange|hire|book|need|want|chahiye|chaiye|karwa|bhejo)\b|चाहिए|करवा|बुक", t))
+    return "request" if request else "enquiry"
+
+
+def handle_human_guide_request(phone, user_text, guest_info):
+    """High-priority local route works with or without an AI provider."""
+    intent = _human_guide_intent(user_text)
+    with state_lock:
+        pending = guide_service_sessions.get(phone)
+        if pending and time.time() - pending.get("created", 0) > 600:
+            guide_service_sessions.pop(phone, None)
+            pending = None
+    if not intent and pending:
+        t = normalize_text(user_text)
+        if is_yes(user_text) or any(x in t for x in ("check kar", "check kr", "confirm kar", "confirm kr", "check please", "please check", "darshan", "sightseeing", "nearby", "घूमना", "दर्शन")):
+            intent = "request"
+        elif is_no(user_text):
+            intent = "decline"
+        else:
+            # A changed topic must not let a later food confirmation become a
+            # guide request. Guide enquiries themselves remain in history.
+            with state_lock:
+                guide_service_sessions.pop(phone, None)
+            return False
+    if not intent:
+        return False
+    if intent == "request":
+        details = "Local tour guide: please confirm availability and charges; no booking or payment confirmed."
+        if pending:
+            details += " Guest enquiry: " + str(pending.get("text", ""))[:500]
+        details += " Guest request: " + str(user_text)[:500]
+        ok = notify_reception_request(phone, guest_info, details, "local_tour_guide")
+        if ok:
+            with state_lock:
+                guide_service_sessions.pop(phone, None)
+            reply = bilingual_text(phone,
+                "I've asked reception to check local guide availability and charges. A guide hasn't been confirmed or booked yet; reception can reply here once they've checked.",
+                "Local guide ki availability aur charges check karne ke liye reception ko request bhej di hai. Guide abhi confirm ya book nahi hua hai; reception check karke isi chat par bata sakta hai.",
+                "स्थानीय गाइड की उपलब्धता और शुल्क जाँचने के लिए रिसेप्शन को अनुरोध भेज दिया है। गाइड अभी कन्फर्म या बुक नहीं हुआ है; रिसेप्शन जाँचकर इसी चैट पर बता सकता है।")
+        else:
+            reply = bilingual_text(phone,
+                "I couldn't reach reception just now. Please ask the front desk to confirm local guide availability and charges; I can't confirm a guide yet.",
+                "Reception ko request abhi nahi bhej paaya. Local guide ki availability aur charges front desk se confirm kar lein; abhi guide confirm nahi hai.",
+                "रिसेप्शन को अनुरोध अभी नहीं भेज पाया। गाइड की उपलब्धता और शुल्क फ्रंट डेस्क से कन्फर्म कर लें; अभी गाइड कन्फर्म नहीं है।")
+    elif intent == "enquiry":
+        with state_lock:
+            guide_service_sessions[phone] = {"text": str(user_text), "created": time.time()}
+        reply = bilingual_text(phone,
+            "For a local tour guide, reception will need to check availability and charges. Would you like me to ask them?",
+            "Ji, local tour guide ki availability aur charges reception se confirm honge. Main unse check karwa doon?",
+            "जी, स्थानीय टूर गाइड की उपलब्धता और शुल्क रिसेप्शन से कन्फर्म होंगे। क्या मैं उनसे जाँच करवा दूँ?")
+    elif intent == "clarify":
+        reply = bilingual_text(phone,
+            "Do you need a local tour guide, or suggestions for places to visit?",
+            "Aapko local tour guide chahiye, ya ghoomne ki jagahon ke suggestions?",
+            "आपको स्थानीय टूर गाइड चाहिए, या घूमने की जगहों के सुझाव?")
+    else:
+        with state_lock:
+            guide_service_sessions.pop(phone, None)
+        reply = bilingual_text(phone, "Of course, I won't send a new guide request.",
+            "Theek hai ji, guide ke liye nayi request nahi bhejunga.", "ठीक है, गाइड के लिए नया अनुरोध नहीं भेजूँगा।")
+    send_whatsapp_message(phone, reply)
+    remember_conversation(phone, "user", user_text)
+    remember_conversation(phone, "assistant", reply)
+    return True
+
+
 def is_guide_followup(text):
     """Detect natural follow-ups that need the previous local-guide context."""
     t = normalize_text(text)
@@ -4312,9 +4494,12 @@ def build_guide_fallback(user_text, sender_phone=None):
             detail = f" — {category}" if category else ""
             lines.append(f"• {name}{detail} [[MAP:{query}]]")
 
+    timing_query = any(x in t for x in ("timing", "time", "hours", "ticket", "ropeway", "kab", "baje", "समय", "टिकट"))
     if lang == "english":
-        return "Haridwar guide:\n" + "\n".join(lines) + "\nPlease confirm current opening hours, Aarti time and ticket availability before travelling."
-    return "Haridwar mein yeh options dekh sakte hain:\n" + "\n".join(lines) + "\nNikalne se pehle aaj ki timings, Aarti ka samay aur ticket availability confirm kar lein."
+        suffix = "\nReception can help confirm today's timings or tickets for your chosen place." if timing_query else ""
+        return "Here are a few places you could explore:\n" + "\n".join(lines) + suffix
+    suffix = "\nAapki chuni hui jagah ki aaj ki timing ya tickets reception se confirm kar lein." if timing_query else ""
+    return "Ghoomne ke liye yeh jagah dekh sakte hain:\n" + "\n".join(lines) + suffix
 
 
 def _groq_circuit_open():
@@ -5779,6 +5964,7 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
 You are the semantic brain of a WhatsApp hotel receptionist.
 {concierge_style()}
 For a factual question such as "Room me coffee ka samaan hai?", say the fact is unconfirmed and offer reception confirmation; set needs_reception=false unless the guest asks you to contact staff. Never imply that an amenity is absent merely because it is unlisted. For "confirm krwao phir", use RECEPTION; the backend will write the actual result, so do not promise an update time. A missing greeting/reminder is a notification enquiry, not a room complaint requiring a room number.
+"Local guide hai?", "tour guide milega?" and "guide chahiye" refer to a HUMAN tour guide, not a list of places. Availability and charges need reception confirmation. An enquiry should offer to check; an explicit request to arrange/check uses RECEPTION. Never invent a dedicated guide, a trusted provider, a price or a booking. Sightseeing recommendations use LOCAL_GUIDE. Ask one question if "guide" is ambiguous. Do not append timing/ticket disclaimers to every local answer; use them only for an actual timing, ticket or travel-planning question.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Understand that message using the recent role-separated conversation and hotel knowledge.
 Handle Hindi, Hinglish, English, slang, spelling mistakes, indirect wording and short follow-ups such as "wahi", "uske baad", "haan", "nahi", "more" and contextual choices.
@@ -7064,7 +7250,14 @@ def _process_and_reply(message, sender_phone, msg_type):
         if old_checkin and (is_inhouse or time.time() - old_checkin.get("created", time.time()) > 1800):
             checkin_sessions.pop(sender_phone, None)
 
-    if handle_service_guest_confirmation(sender_phone, user_text):
+    if handle_service_guest_confirmation(sender_phone, user_text, message):
+        return
+
+    # A human guide is an availability/service enquiry, before fact, rate or
+    # sightseeing routes and before an older pending food order.
+    with state_lock:
+        checkin_active = bool(checkin_sessions.get(sender_phone))
+    if not checkin_active and handle_human_guide_request(sender_phone, user_text, guest_info):
         return
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
@@ -8578,7 +8771,31 @@ def _lifecycle_sent_today(row, idx, today_date):
     if value == str(today_date):
         return True
     parsed = _owner_report_date(value)
-    return bool(parsed and parsed == now_ist().date())
+    return bool(parsed and parsed.isoformat() == str(today_date))
+
+
+def _arrival_notification_plan(check_in_at, welcome_marker, current):
+    """Welcome first; onboarding at least 30 minutes after check-in AND welcome.
+
+    A late sheet sync must not dispatch both messages in the same loop. Unknown
+    legacy YES/SENT welcome markers use check-in as the timing baseline.
+    """
+    if not check_in_at:
+        return None, None
+    age = (current - check_in_at).total_seconds()
+    if age < 0:
+        return None, None
+    welcome_marker = str(welcome_marker or "").strip()
+    if not welcome_marker:
+        return ("send", None) if age <= 2 * 3600 else ("skip", None)
+    welcome_at = _parse_sheet_datetime(welcome_marker)
+    baseline = max(check_in_at, welcome_at) if welcome_at else check_in_at
+    comfort_age = (current - baseline).total_seconds()
+    if comfort_age > 3 * 3600:
+        return None, "skip"
+    if comfort_age >= 30 * 60:
+        return None, "send"
+    return None, None
 
 
 def _lifecycle_time_window(label, default_start, default_end):
@@ -9062,11 +9279,49 @@ def _lifecycle_template_configured(purpose):
     )
 
 
+def _lifecycle_target(headers, row, sheet_name):
+    """Identify a stay independently of its changing position in a Sheet."""
+    def value(*names):
+        wanted = {normalize_text(n).replace(" ", "_") for n in names}
+        for i, header in enumerate(headers):
+            if normalize_text(header).replace(" ", "_") in wanted:
+                return str(row[i]).strip() if i < len(row) else ""
+        return ""
+    return {
+        "phone": clean_phone(value("Phone", "PHONE (E)", "WhatsApp", "Mobile")),
+        "room": clean_room(value("Room", "ROOM (A)")),
+        "stay": value("STAY KEY") if sheet_name == "Lifecycle_Automation" else value("CHECK IN TIME", "Check-In Time"),
+        "checkout": value("CHECK OUT TIME", "Check-Out Time") if sheet_name == "Rooms" else "",
+    }
+
+
+def _lifecycle_delivery_cell(meta, values):
+    """A delayed delivery callback must never update a different guest's row."""
+    if not values:
+        return None
+    headers = values[0]
+    header = normalize_text(meta.get("header", ""))
+    col = next((i for i, h in enumerate(headers) if normalize_text(h) == header), -1)
+    if col < 0:
+        return None
+    matches = [i for i, row in enumerate(values[1:], start=2)
+               if _lifecycle_target(headers, row, meta["sheet"]) == meta["target"]]
+    return (matches[0], col) if len(matches) == 1 else None
+
+
 def send_lifecycle_notification(phone, text, purpose, row_index, col_index, marker_value, event, sheet_name="Lifecycle_Automation"):
-    # Sheet+row+column identifies the lifecycle event slot. Do not include a
-    # timestamp marker in the key, otherwise one-time events could be queued
-    # again every loop while the first Meta delivery callback is still pending.
-    key = f"{sheet_name}:{row_index}:{col_index}"
+    with state_lock:
+        headers = list(shared_store.get("lifecycle_headers" if sheet_name == "Lifecycle_Automation" else "room_headers", []))
+        rows = shared_store.get("lifecycle_rows" if sheet_name == "Lifecycle_Automation" else "rooms", [])
+        row = list(rows[row_index - 2]) if 0 <= row_index - 2 < len(rows) else []
+    if not row or not 0 <= col_index < len(headers):
+        return False
+    target = _lifecycle_target(headers, row, sheet_name)
+    if not target["phone"] or not target["room"]:
+        return False
+    header = str(headers[col_index]).strip()
+    day = str(marker_value) if purpose in {"BREAKFAST", "LUNCH", "AARTI", "DINNER"} else "once"
+    key = json.dumps([sheet_name, target, header, day], sort_keys=True)
     now_ts = time.time()
     with state_lock:
         pending_id = lifecycle_pending_keys.get(key)
@@ -9074,7 +9329,12 @@ def send_lifecycle_notification(phone, text, purpose, row_index, col_index, mark
     if pending_id or now_ts < retry_after:
         return False
 
-    ok, remote_id = send_notification_with_id(phone, text, purpose)
+    previous_event = getattr(durable_runtime.context, "event", None)
+    durable_runtime.context.event = "lifecycle:" + key
+    try:
+        ok, remote_id = send_notification_with_id(phone, text, purpose)
+    finally:
+        durable_runtime.context.event = previous_event
     print(
         f"LIFECYCLE SEND: event={event} row={row_index} accepted={ok} remote_id={bool(remote_id)} "
         f"template={_lifecycle_template_configured(purpose)}",
@@ -9098,10 +9358,19 @@ def send_lifecycle_notification(phone, text, purpose, row_index, col_index, mark
         "purpose": purpose,
         "phone": format_whatsapp_number(phone) or str(phone),
         "sheet": sheet_name,
+        "target": target,
+        "header": header,
     }
     with state_lock:
         lifecycle_pending_by_message_id[remote_id] = meta
         lifecycle_pending_keys[key] = remote_id
+    # A replay from the durable outbox may already have received its delivery
+    # callback before this process rebuilt the pending metadata.
+    if durable_store:
+        with durable_store.db() as db:
+            delivery = db.execute("SELECT status,codes FROM delivery_events WHERE remote_id=?", (remote_id,)).fetchone()
+        if delivery:
+            _update_lifecycle_delivery(remote_id, delivery["status"], json.loads(delivery["codes"]))
     return True
 
 
@@ -9114,7 +9383,17 @@ def _update_lifecycle_delivery(remote_id, delivery_status, codes):
         return
 
     if delivery_status in {"sent", "delivered", "read"}:
-        if _mark_named_sheet_cell(meta.get("sheet", "Lifecycle_Automation"), meta["row"], meta["col"], meta["value"]):
+        try:
+            client = get_gspread_client()
+            if not client:
+                return
+            sh = client.open_by_key(SHEET_ID)
+            sheet = sh.get_worksheet(0) if meta["sheet"] == "Rooms" else sh.worksheet(meta["sheet"])
+            cell = _lifecycle_delivery_cell(meta, sheet.get_all_values())
+        except Exception as exc:
+            print("LIFECYCLE DELIVERY MARKER LOOKUP ERROR:", type(exc).__name__, flush=True)
+            return
+        if cell is None or _mark_named_sheet_cell(meta["sheet"], cell[0], cell[1], meta["value"]):
             with state_lock:
                 lifecycle_pending_by_message_id.pop(remote_id, None)
                 lifecycle_pending_keys.pop(meta["key"], None)
@@ -9298,26 +9577,26 @@ def monitor_guest_status_lifecycle():
                 if is_in:
                     # One-time arrival messages must never be sent days late after a
                     # deploy/repair. Retry only within a sensible post-check-in window.
-                    stay_age_seconds = (
-                        (current - check_in_at).total_seconds()
-                        if check_in_at else None
+                    welcome_action, comfort_action = _arrival_notification_plan(
+                        check_in_at, row[cols["welcome_sent"]], current
                     )
 
                     if not _lifecycle_sent(row, cols["welcome_sent"]):
-                        if stay_age_seconds is not None and 0 <= stay_age_seconds <= 2 * 60 * 60:
+                        if welcome_action == "send":
                             lang = get_guest_response_language(phone)
                             welcome_text = get_ai_lifecycle_message("WELCOME", lang, name, room, {"name": name, "room": room, "status": status})
                             if welcome_text:
                                 send_lifecycle_notification(
                                     phone, welcome_text, "WELCOME", row_index, cols["welcome_sent"],
-                                    current.strftime("%d-%b-%Y %I:%M %p"), "WELCOME"
+                                    current.isoformat(), "WELCOME"
                                 )
-                        elif stay_age_seconds is not None and stay_age_seconds > 2 * 60 * 60:
+                        elif welcome_action == "skip":
                             _mark_room_lifecycle_cell(row_index, cols["welcome_sent"], "SKIPPED - late sync")
+                            _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], "SKIPPED - late sync")
 
                     # 30-minute comfort check: only useful shortly after arrival.
                     if check_in_at and not _lifecycle_sent(row, cols["thirty_sent"]):
-                        if 30 * 60 <= stay_age_seconds <= 3 * 60 * 60:
+                        if comfort_action == "send":
                             lang = get_guest_response_language(phone)
                             thirty_text = get_ai_lifecycle_message("30_MINUTE", lang, name, room, {"name": name, "room": room, "status": status})
                             if thirty_text:
@@ -9325,7 +9604,7 @@ def monitor_guest_status_lifecycle():
                                     phone, thirty_text, "COMFORT", row_index, cols["thirty_sent"],
                                     current.strftime("%d-%b-%Y %I:%M %p"), "30_MINUTE"
                                 )
-                        elif stay_age_seconds > 3 * 60 * 60:
+                        elif comfort_action == "skip":
                             _mark_room_lifecycle_cell(row_index, cols["thirty_sent"], "SKIPPED - late sync")
 
                     # Meal reminders remain time-window based and persist their sent date.
@@ -9522,7 +9801,7 @@ def session_snapshot(phone):
         return {name: globals()[name].get(phone) for name in (
             "order_sessions","duplicate_order_sessions","checkin_sessions","service_sessions",
             "reception_request_sessions","active_orders","photo_sessions",
-            "guest_language_cache","conversation_memory")}
+            "guest_language_cache","conversation_memory","guide_service_sessions")}
 
 
 def database_path():

@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V51-COMPACT-CONCIERGE"
+APP_VERSION = "HOTEL-AI-V52-CONTEXTUAL-GUIDE"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -4417,6 +4417,59 @@ def handle_human_guide_request(phone, user_text, guest_info):
     return True
 
 
+def _recent_assistant_topic(sender_phone):
+    """Infer the latest hotel topic for short contextual follow-ups."""
+    if not sender_phone:
+        return ""
+    history = get_conversation_history(sender_phone)
+    for item in reversed(history[-8:]):
+        if item.get("role") != "assistant":
+            continue
+        text = normalize_text(item.get("content", ""))
+        if any(x in text for x in ("ganga aarti", "aarti", "आरती")):
+            return "ganga_aarti"
+        if "breakfast" in text:
+            return "breakfast"
+        if "lunch" in text:
+            return "lunch"
+        if "dinner" in text:
+            return "dinner"
+        if any(x in text for x in ("check-out", "checkout", "check out")):
+            return "checkout"
+        if any(x in text for x in ("check-in", "checkin", "check in")):
+            return "checkin"
+        if any(x in text for x in ("ropeway", "mansa devi", "chandi devi")):
+            return "local_place"
+        if text:
+            return ""
+    return ""
+
+
+def _contextual_time_followup_reply(sender_phone, user_text):
+    """Resolve vague 'what time?' questions from the immediately prior bot message."""
+    t = normalize_text(user_text)
+    if not any(x in t for x in (
+        "kab ka time", "kya time", "kitne baje", "kis time", "time kya",
+        "what time", "when is it", "kab hota", "kab hai"
+    )):
+        return None
+
+    topic = _recent_assistant_topic(sender_phone)
+    if topic == "ganga_aarti":
+        return (
+            "Aap Ganga Aarti ka time pooch rahe hain na? 🙏 "
+            "Har Ki Pauri Sandhya Aarti ka exact time season/date ke hisaab se badal sakta hai, "
+            "isliye aaj ka exact time reception se confirm kar lena best rahega."
+        )
+    if topic == "breakfast":
+        return "Aap breakfast ka time pooch rahe hain na? Reminder 8–10 AM ke beech jaata hai; actual kitchen timing reception se confirm kar sakte hain."
+    if topic == "lunch":
+        return "Aap lunch ka time pooch rahe hain na? Reminder 1–3 PM ke beech jaata hai; actual kitchen timing reception se confirm kar sakte hain."
+    if topic == "dinner":
+        return "Aap dinner ka time pooch rahe hain na? Reminder 7–9 PM ke beech jaata hai; actual kitchen timing reception se confirm kar sakte hain."
+    return None
+
+
 def is_guide_followup(text):
     """Detect natural follow-ups that need the previous local-guide context."""
     t = normalize_text(text)
@@ -7485,6 +7538,21 @@ def _process_and_reply(message, sender_phone, msg_type):
             print("LOCAL GUIDE FACT: rotated fact card", flush=True)
             return
 
+    contextual_time_reply = _contextual_time_followup_reply(sender_phone, user_text)
+    if contextual_time_reply and not _skip_semantic_ai:
+        send_whatsapp_message(sender_phone, contextual_time_reply)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", contextual_time_reply)
+        return
+
+    if _is_haridwar_fact_request(user_text, sender_phone) and not _skip_semantic_ai:
+        fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
+        if fact_reply:
+            send_whatsapp_message(sender_phone, fact_reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", fact_reply)
+            return
+
     # AI is the semantic brain for actual language/contextual requests.
     if not _skip_semantic_ai:
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
@@ -9517,6 +9585,8 @@ def send_lifecycle_notification(phone, text, purpose, row_index, col_index, mark
         with state_lock:
             lifecycle_retry_after[key] = now_ts + 5 * 60
         return False
+
+    remember_conversation(format_whatsapp_number(phone) or str(phone), "assistant", text)
 
     meta = {
         "key": key,

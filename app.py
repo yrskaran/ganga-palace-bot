@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V48-ACTIVE-LIFECYCLE-QUEUE"
+APP_VERSION = "HOTEL-AI-V49-HARIDWAR-GUIDE"
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
 RECENT_DUPLICATE_ORDER_MINUTES = max(1, int(os.getenv("RECENT_DUPLICATE_ORDER_MINUTES", "10")))
@@ -7110,6 +7110,17 @@ def _process_and_reply(message, sender_phone, msg_type):
         # response. Silence is more natural than a robotic error bubble.
         if _is_symbolic_only_message(user_text):
             print("SILENT SOCIAL TURN: unknown emoji/symbol input", flush=True)
+            return
+
+    # Guest-requested Haridwar facts are deterministic and rotate through the
+    # verified fact bank before AI, so "ek aur fact" does not repeat the same card.
+    if not _skip_semantic_ai and _is_haridwar_fact_request(user_text, sender_phone):
+        fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
+        if fact_reply:
+            send_whatsapp_message(sender_phone, fact_reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", fact_reply)
+            print("LOCAL GUIDE FACT: rotated fact card", flush=True)
             return
 
     # AI is the semantic brain for actual language/contextual requests.

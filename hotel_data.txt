@@ -197,91 +197,109 @@ Fact: district-area
 Title: 2,360 square kilometres
 Type: VERIFIED FIGURE
 Text: Haridwar district covers about 2,360 sq km, according to the District Haridwar administration.
+Hinglish: District Haridwar administration ke mutabik Haridwar district ka area lagbhag 2,360 sq km hai.
 
 Fact: district-population
 Title: 18.9 lakh people in the 2011 Census
 Type: VERIFIED FIGURE
 Text: Haridwar district's population is listed as 1,890,422 in the 2011 Census. Always mention the census year so it is not mistaken for a current population estimate.
+Hinglish: 2011 Census mein Haridwar district ki population 18,90,422 record ki gayi thi; ye current population estimate nahi hai.
 
 Fact: literacy
 Title: 73.43 percent literacy
 Type: VERIFIED FIGURE
 Text: District Haridwar currently displays a literacy rate of 73.43 percent, based on its district-at-a-glance statistics.
+Hinglish: District-at-a-glance ke hisaab se Haridwar district ki literacy rate 73.43% listed hai.
 
 Fact: district-created
 Title: District formed in 1988
 Type: VERIFIED DATE
 Text: Haridwar district came into existence on 28 December 1988.
+Hinglish: Haridwar district 28 December 1988 ko officially bana tha.
 
 Fact: elevation
 Title: About 250 metres above sea level
 Type: VERIFIED FIGURE
 Text: District Haridwar gives an elevation of about 249.7 metres above sea level for the district/city context.
+Hinglish: Haridwar ki listed elevation lagbhag 249.7 metre sea level se upar hai.
 
 Fact: villages
 Title: 643 villages
 Type: VERIFIED FIGURE
 Text: District Haridwar's current district-at-a-glance page lists 643 villages.
+Hinglish: District Haridwar ke current district-at-a-glance page par 643 villages listed hain.
 
 Fact: administration
 Title: Four tehsils and six development blocks
 Type: VERIFIED FIGURE
 Text: District Haridwar lists 4 tehsils and 6 development blocks.
+Hinglish: Haridwar district mein 4 tehsils aur 6 development blocks listed hain.
 
 Fact: ganga-plains
 Title: Where the Ganga reaches the plains
 Type: GEOGRAPHY
 Text: Haridwar is one of the first major towns where the Ganga emerges from the mountains into the Indo-Gangetic plains.
+Hinglish: Haridwar un pehle bade shahron mein se hai jahan Ganga pahadon se nikal kar Indo-Gangetic plains mein aati hai.
 
 Fact: kumbh-four-cities
 Title: One of four Kumbh cities
 Type: CULTURAL FACT
 Text: Haridwar is one of the four rotating Kumbh Mela cities, along with Prayagraj, Ujjain and Nashik.
+Hinglish: Haridwar Kumbh Mela ke 4 rotating shahron mein se ek hai; baaki Prayagraj, Ujjain aur Nashik hain.
 
 Fact: unesco-kumbh
 Title: Kumbh Mela is UNESCO-listed
 Type: VERIFIED HERITAGE FACT
 Text: UNESCO inscribed Kumbh Mela on the Representative List of the Intangible Cultural Heritage of Humanity in 2017. This recognition is for the Kumbh tradition as a whole, not Haridwar alone.
+Hinglish: UNESCO ne 2017 mein Kumbh Mela tradition ko Intangible Cultural Heritage of Humanity ki Representative List mein inscribe kiya tha; ye recognition poori Kumbh tradition ke liye hai, sirf Haridwar ke liye nahi.
 
 Fact: kumbh-cycle
 Title: Haridwar Kumbh cycle
 Type: CULTURAL FACT
 Text: Uttarakhand Tourism and District Haridwar describe the Kumbh at Haridwar as a 12-year cycle and the Ardh Kumbh as a 6-year cycle.
+Hinglish: Uttarakhand Tourism aur District Haridwar ke mutabik Haridwar Kumbh ka cycle 12 saal aur Ardh Kumbh ka 6 saal bataya gaya hai.
 
 Fact: panch-tirth
 Title: Haridwar's five traditional pilgrimages
 Type: CULTURAL FACT
 Text: Uttarakhand Tourism lists the Panch Tirth as Gangadwara (Har Ki Pauri), Kushwart Ghat, Kankhal, Bilwa Tirtha (Mansa Devi) and Neel Parvat (Chandi Devi).
+Hinglish: Uttarakhand Tourism ke Panch Tirth hain Gangadwara (Har Ki Pauri), Kushwart Ghat, Kankhal, Bilwa Tirtha (Mansa Devi) aur Neel Parvat (Chandi Devi).
 
 Fact: char-dham-gateway
 Title: Gateway to Uttarakhand's Char Dham
 Type: CULTURAL / TRAVEL FACT
 Text: Haridwar is widely described by Uttarakhand Tourism as a gateway to the Char Dham circuit: Badrinath, Kedarnath, Gangotri and Yamunotri.
+Hinglish: Uttarakhand Tourism Haridwar ko Char Dham circuit—Badrinath, Kedarnath, Gangotri aur Yamunotri—ka gateway batata hai.
 
 Fact: siddhapeeth-triangle
 Title: Three-shrine Siddhapeeth triangle
 Type: CULTURAL FACT
 Text: Uttarakhand Tourism groups Mansa Devi, Chandi Devi and Maya Devi as Haridwar's Siddhapeeth triangle.
+Hinglish: Mansa Devi, Chandi Devi aur Maya Devi milkar Haridwar ka Siddhapeeth triangle maane jaate hain.
 
 Fact: mansa-trek
 Title: Roughly 3 km trek to Mansa Devi
 Type: TRAVEL FACT
 Text: Uttarakhand Tourism says Mansa Devi can be reached by a trek of around 3 km or by ropeway, subject to current operation.
+Hinglish: Uttarakhand Tourism ke mutabik Mansa Devi tak lagbhag 3 km trek ya ropeway se ja sakte hain; ropeway ki current operation pehle confirm karni chahiye.
 
 Fact: rajaji-scale
 Title: Rajaji National Park is about 820 sq km
 Type: NATURE FIGURE
 Text: District tourism describes Rajaji National Park as about 820 square kilometres. Safari access and zones must still be confirmed live.
+Hinglish: District tourism Rajaji National Park ka area lagbhag 820 sq km batata hai; safari gate, zone aur entry live confirm karni chahiye.
 
 Fact: ancient-terracotta
 Title: Terracotta evidence from roughly 1700–1200 BCE
 Type: DOCUMENTED HISTORY
 Text: District Haridwar reports archaeological findings indicating terracotta culture in the region dating roughly between 1700 BCE and 1200 BCE.
+Hinglish: District Haridwar ke history page ke mutabik is region mein terracotta culture ke archaeological findings lagbhag 1700 BCE se 1200 BCE ke beech ke bataye gaye hain.
 
 Fact: old-names
 Title: Mayapuri, Kapila and Gangadwar
 Type: HISTORY / CULTURE
 Text: District Haridwar records Mayapuri, Kapila and Gangadwar among Haridwar's historical names.
+Hinglish: District Haridwar ke records mein Mayapuri, Kapila aur Gangadwar Haridwar ke purane naamon mein shamil hain.
 
 LOCAL GUIDE BEHAVIOUR:
 - "Nearby" → prefer places in this guide and mention approximate distance only when explicitly available.

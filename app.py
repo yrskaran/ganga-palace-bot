@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V52-CONTEXTUAL-GUIDE"
+APP_VERSION = "HOTEL-AI-V53-PROACTIVE-CONTEXT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -996,6 +996,74 @@ def get_hotel_guide():
         if normalize_text(entry["name"]) not in known:
             places.append({**entry, "maps": entry.get("maps_query", entry["name"])})
     return {"places": places, "stories": stories, "facts": facts}
+
+
+def _recent_lifecycle_topic(phone):
+    """Recover today's latest proactive topic from Sheet markers after restarts."""
+    wanted = format_whatsapp_number(phone)
+    today = now_ist().date()
+    with state_lock:
+        headers = list(shared_store.get("lifecycle_headers", []))
+        rows = [list(r) for r in shared_store.get("lifecycle_rows", [])]
+    if not wanted or not headers:
+        return ""
+
+    h = {normalize_text(x).replace(" ", "_"): i for i, x in enumerate(headers)}
+    pidx = next((h[k] for k in ("phone", "phone_(e)", "whatsapp", "mobile") if k in h), -1)
+    if pidx < 0:
+        return ""
+    for row in rows:
+        if format_whatsapp_number(row[pidx] if pidx < len(row) else "") != wanted:
+            continue
+        for topic, key in (("AARTI","aarti_sent"),("DINNER","dinner_sent"),("LUNCH","lunch_sent"),("BREAKFAST","breakfast_sent")):
+            idx = h.get(key, -1)
+            if idx < 0 or idx >= len(row):
+                continue
+            value = str(row[idx] or "").strip()
+            if not value:
+                continue
+            d = _owner_report_date(value)
+            if d == today or value == today.strftime("%Y-%m-%d"):
+                return topic
+    return ""
+
+
+def handle_contextual_time_followup(sender_phone, user_text):
+    """Resolve vague 'kab ka time?' follow-ups from a recent proactive message."""
+    t = normalize_text(user_text)
+    if not any(x in t for x in (
+        "kab ka time", "kab hota", "kitne baje", "kya time", "time kya",
+        "time hota", "timing kya", "what time", "when is it"
+    )):
+        return False
+
+    recent = normalize_text(" ".join(
+        str(x.get("content", ""))
+        for x in get_conversation_history(sender_phone)[-5:]
+        if x.get("role") == "assistant"
+    ))
+    topic = (
+        "AARTI" if ("ganga aarti" in recent or "aarti" in recent) else
+        "DINNER" if "dinner" in recent else
+        "LUNCH" if "lunch" in recent else
+        "BREAKFAST" if ("breakfast" in recent or "good morning" in recent) else
+        _recent_lifecycle_topic(sender_phone)
+    )
+    if topic != "AARTI":
+        return False
+
+    lang = get_guest_response_language(sender_phone, user_text)
+    if lang == "english":
+        reply = ("You mean the Har Ki Pauri evening Ganga Aarti. It is held at dusk/sunset; "
+                 "the exact clock time changes with the season, so please confirm today's timing before leaving.")
+    else:
+        reply = ("Aap Har Ki Pauri ki Sandhya Ganga Aarti ka time pooch rahe hain. "
+                 "Ye shaam sunset/dusk ke aas-paas hoti hai; exact time season ke saath badalta hai, isliye aaj ka time nikalne se pehle confirm kar lein.")
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, "user", user_text)
+    remember_conversation(sender_phone, "assistant", reply)
+    print("LOCAL GUIDE CONTEXT: Aarti timing follow-up", flush=True)
+    return True
 
 
 def _is_haridwar_fact_request(text, sender_phone=None):
@@ -7477,6 +7545,9 @@ def _process_and_reply(message, sender_phone, msg_type):
         return
 
     if handle_notification_question(sender_phone, user_text, guest_info):
+        return
+
+    if handle_contextual_time_followup(sender_phone, user_text):
         return
 
     if t in {"room number to pta hoga", "room number toh pata hoga", "mera room number", "my room number", "room number pata hai"}:

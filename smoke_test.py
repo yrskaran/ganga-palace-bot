@@ -133,7 +133,7 @@ check(fact2 and fact2 != fact1, "Haridwar fact rotation repeated the previous fa
 
 # Proactive lifecycle context should resolve vague follow-ups.
 app.conversation_memory.clear()
-app.remember_conversation("919555555555", "assistant", "Kitty ji, Ganga Aarti ka samay aa raha hai. Aaj ki timing reception se confirm kar lein.")
+app.conversation_memory["919555555555"] = [{"role": "assistant", "content": "Kitty ji, Ganga Aarti ka samay aa raha hai. Aaj ki timing reception se confirm kar lein."}]
 ctx = app._contextual_time_followup_reply("919555555555", "Kab ka time hota hai")
 check(ctx and "Ganga Aarti" in ctx, "Aarti timing follow-up lost previous proactive context")
 
@@ -141,7 +141,7 @@ check(ctx and "Ganga Aarti" in ctx, "Aarti timing follow-up lost previous proact
 app.conversation_memory.clear()
 fact1 = app.build_unique_haridwar_fact("919555555555", "Haridwar ka koi fact batao")
 check(fact1 and "Haridwar" in fact1, "Haridwar fact reply missing")
-app.remember_conversation("919555555555", "assistant", fact1)
+app.conversation_memory["919555555555"] = [{"role": "assistant", "content": fact1}]
 fact2 = app.build_unique_haridwar_fact("919555555555", "Ek aur fact")
 check(fact2 and fact2 != fact1, "Haridwar fact did not rotate")
 

@@ -6587,7 +6587,8 @@ def _is_capability_question(user_text):
     t = re.sub(r"\s+", " ", t).strip()
     t = re.sub(r"^(?:please|pls|ji|achha|acha)\s+|\s+(?:please|pls|ji)$", "", t)
     if t in {"help", "madad", "madad karo", "meri help karo", "can you help",
-             "kya kar sakte ho", "kya kya kar sakte ho", "aap kya kya kar sakte ho"}:
+             "kya kar sakte ho", "kya kya kar sakte ho", "aap kya kya kar sakte ho",
+             "kaise assist kroge", "kaise assist karoge", "kaise help kroge", "kaise help karoge"}:
         return True
     patterns = (
         r"how(?: (?:can|will|do|would))? (?:you|u) (?:help|assist)(?: me)?",
@@ -7431,6 +7432,16 @@ def _process_and_reply(message, sender_phone, msg_type):
         else:
             send_whatsapp_message(sender_phone, "Aapka room record abhi verify nahi ho pa raha. Main room number guess nahi karunga; reception se record confirm kar lein.")
         return
+
+    # Explicit Haridwar fact requests are deterministic and rotated from the
+    # verified fact bank so repeated "aur fact" requests do not get the same card.
+    if _is_haridwar_fact_request(user_text, sender_phone):
+        fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
+        if fact_reply:
+            send_whatsapp_message(sender_phone, fact_reply)
+            remember_conversation(sender_phone, "user", user_text)
+            remember_conversation(sender_phone, "assistant", fact_reply)
+            return
 
     # One semantic AI pass for the whole guest turn. First consume a safe local
     # hotel-data route for common deterministic questions; this dramatically reduces
@@ -9518,6 +9529,7 @@ def send_lifecycle_notification(phone, text, purpose, row_index, col_index, mark
         "sheet": sheet_name,
         "target": target,
         "header": header,
+        "text": str(text or "").strip(),
     }
     with state_lock:
         lifecycle_pending_by_message_id[remote_id] = meta
@@ -9552,6 +9564,9 @@ def _update_lifecycle_delivery(remote_id, delivery_status, codes):
             print("LIFECYCLE DELIVERY MARKER LOOKUP ERROR:", type(exc).__name__, flush=True)
             return
         if cell is None or _mark_named_sheet_cell(meta["sheet"], cell[0], cell[1], meta["value"]):
+            lifecycle_text = str(meta.get("text") or "").strip()
+            if lifecycle_text and meta.get("phone"):
+                remember_conversation(meta["phone"], "assistant", lifecycle_text)
             with state_lock:
                 lifecycle_pending_by_message_id.pop(remote_id, None)
                 lifecycle_pending_keys.pop(meta["key"], None)

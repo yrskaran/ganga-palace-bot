@@ -98,6 +98,31 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('CONFIRM', reply)
         self.assertNotIn('kaunsa', reply)
 
+    def test_food_order_with_headache_context_overrides_reception_ai(self):
+        self.mock('understand_guest_request', return_value={
+            "action":"RECEPTION", "category":"RECEPTION", "confidence":0.97,
+            "service":"headache", "needs_reception":True,
+            "reply":"Reception se help le lijiye.", "items":[], "generic":""
+        })
+        self.mock('_recent_matching_kitchen_order', return_value=None)
+        self.turn('Masala chai bhijwa yaar...sir me dard hai')
+        pending = app.order_sessions[GUEST]
+        self.assertEqual(pending['order'], '1 x Masala Chai')
+        self.assertEqual(pending['total'], 30)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Masala Chai', reply)
+        self.assertIn('Rs. 30', reply)
+        self.assertIn('CONFIRM', reply)
+        app.notify_reception_request.assert_not_called()
+
+    def test_explicit_food_order_signal_respects_negation(self):
+        positive = app.find_menu_items('Masala chai bhijwa yaar...sir me dard hai')
+        self.assertTrue(app._explicit_food_order_request('Masala chai bhijwa yaar...sir me dard hai', positive))
+        negative = app.find_menu_items('Masala chai nahi chahiye')
+        self.assertFalse(app._explicit_food_order_request('Masala chai nahi chahiye', negative))
+        price_only = app.find_menu_items('Masala chai ka price kya hai?')
+        self.assertFalse(app._explicit_food_order_request('Masala chai ka price kya hai?', price_only))
+
     def test_food_quantities_aliases_and_ambiguity(self):
         cases = [
             ('Kadhayi paneer Butter naan 2 pcs with sptemed rice', [1, 2, 1]),

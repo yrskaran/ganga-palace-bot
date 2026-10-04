@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V54-FOOD-PRIMARY-ROUTING"
+APP_VERSION = "HOTEL-AI-V55-PRICE-ON-REQUEST"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -8326,13 +8326,18 @@ def _process_and_reply(message, sender_phone, msg_type):
                     return
                 with state_lock:
                     order_sessions[sender_phone] = {"order": order_text, "total": parsed["total"], "created": time.time()}
-                lines = [f"• {x['name']} × {x['qty']} = Rs. {x['amount']}" for x in parsed["items"]]
+                show_price = explicitly_asks_price(user_text)
+                if show_price:
+                    lines = [f"• {x['name']} × {x['qty']} = Rs. {x['amount']}" for x in parsed["items"]]
+                else:
+                    lines = [f"• {x['name']} × {x['qty']}" for x in parsed["items"]]
                 english = get_guest_response_language(sender_phone) == "english"
                 intro = (f"{guest_info['name']} ji, your order for Room {guest_info['room']}:" if english
                          else f"Ji {guest_info['name']} ji, Room {guest_info['room']} ke liye aapka order:")
                 confirm = ("Reply CONFIRM if everything is correct, or tell me what to change." if english
                            else "Sab sahi hai toh CONFIRM reply karein. Koi change chahiye ho toh bata dein.")
-                reply = intro + "\n\n" + "\n".join(lines) + f"\n\nTotal: Rs. {parsed['total']}\n" + confirm
+                total_line = f"\n\nTotal: Rs. {parsed['total']}\n" if show_price else "\n\n"
+                reply = intro + "\n\n" + "\n".join(lines) + total_line + confirm
                 send_whatsapp_message(sender_phone, reply)
                 remember_conversation(sender_phone, "user", user_text)
                 remember_conversation(sender_phone, "assistant", reply)

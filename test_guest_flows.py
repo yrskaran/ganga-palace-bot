@@ -94,7 +94,7 @@ class GuestFlows(unittest.TestCase):
         self.assertEqual(pending['total'], 480)
         self.assertEqual(pending['order'], '1 x Kadhai Paneer, 2 x Butter Naan, 1 x Steamed Rice')
         reply = self.sent.call_args.args[1]
-        self.assertIn('Rs. 480', reply)
+        self.assertNotIn('Rs.', reply)
         self.assertIn('CONFIRM', reply)
         self.assertNotIn('kaunsa', reply)
 
@@ -111,9 +111,23 @@ class GuestFlows(unittest.TestCase):
         self.assertEqual(pending['total'], 30)
         reply = self.sent.call_args.args[1]
         self.assertIn('Masala Chai', reply)
-        self.assertIn('Rs. 30', reply)
+        self.assertNotIn('Rs.', reply)
+        self.assertNotIn('₹', reply)
         self.assertIn('CONFIRM', reply)
         app.notify_reception_request.assert_not_called()
+
+    def test_order_price_is_shown_only_when_guest_asks(self):
+        self.mock('understand_guest_request', return_value={
+            "action":"ORDER", "category":"KITCHEN", "confidence":0.95,
+            "items":[{"name":"Masala Chai","qty":1}], "generic":"",
+            "service":"", "needs_reception":False, "reply":""
+        })
+        self.mock('_recent_matching_kitchen_order', return_value=None)
+        self.turn('Masala chai bhijwa do, price bhi batao')
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Masala Chai', reply)
+        self.assertIn('Rs. 30', reply)
+        self.assertIn('Total: Rs. 30', reply)
 
     def test_explicit_food_order_signal_respects_negation(self):
         positive = app.find_menu_items('Masala chai bhijwa yaar...sir me dard hai')

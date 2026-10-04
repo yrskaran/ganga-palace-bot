@@ -139,7 +139,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V53-PROACTIVE-CONTEXT"
+APP_VERSION = "HOTEL-AI-V54-FOOD-PRIMARY-ROUTING"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5057,6 +5057,35 @@ def looks_like_food(text):
     )
 
 
+def _explicit_food_order_request(text, parsed=None):
+    """True when the guest explicitly asks us to send/order configured food.
+
+    Extra conversational context must not steal the primary operational intent.
+    Example: "Masala chai bhijwa yaar... sar me dard hai" is a kitchen order,
+    not a generic reception handoff. Negated/cancelled requests are excluded.
+    """
+    parsed = parsed or find_menu_items(text)
+    if parsed.get("invalid") or not (parsed.get("items") or parsed.get("generic")):
+        return False
+
+    t = normalize_text(text)
+    negative_patterns = (
+        r"\b(?:nahi|nahin|mat)\s+(?:bhej|bhejo|bhejna|bhijwa|bhijwao|bhijwana|dena|do|chahiye)\b",
+        r"\b(?:don't|dont|do not)\s+(?:send|bring|order)\b",
+        r"\bcancel\b",
+    )
+    if any(re.search(pattern, t) for pattern in negative_patterns):
+        return False
+
+    order_patterns = (
+        r"\b(?:bhej|bhejo|bhejna|bhijwa|bhijwao|bhijwana|mangwa|mangwao|mangwana|mangva|mangvao|mangvana)\b",
+        r"\b(?:de\s*do|dena|la\s*do|le\s*aao)\b",
+        r"\b(?:chahiye|order(?:\s+kar(?:o|na|do))?|send|bring)\b",
+        r"\b(?:i\s+want|i\s+would\s+like|i'd\s+like|get\s+me|can\s+i\s+get)\b",
+    )
+    return any(re.search(pattern, t) for pattern in order_patterns)
+
+
 def explicitly_asks_price(text):
     t = normalize_text(text)
     markers = [
@@ -6206,6 +6235,7 @@ Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 For an unknown hotel fact, offer reception confirmation without alerting staff unless requested.
+If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
@@ -7638,9 +7668,31 @@ def _process_and_reply(message, sender_phone, msg_type):
         ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
-    # A complete configured basket takes precedence over generic AI selection.
+    # Explicit food delivery language is authoritative for the primary action.
+    # A guest may include a reason such as "sar me dard hai"; that context must not
+    # turn "Masala chai bhijwa do" into a reception handoff.
     basket = find_menu_items(user_text)
-    if basket.get("complete") and (not ai_understanding or ai_understanding.get("action") in {"ORDER", "ORDER_SELECTION", "NONE"}):
+    if _explicit_food_order_request(user_text, basket):
+        if basket.get("items"):
+            ai_understanding = {
+                "action": "ORDER", "intent": "ORDER", "category": "KITCHEN",
+                "confidence": 1.0, "items": [
+                    {"name": x["name"], "qty": x["qty"]} for x in basket["items"]
+                ], "generic": "", "service": "", "needs_reception": False, "reply": ""
+            }
+        elif basket.get("generic"):
+            qty_match = re.search(r"\b(\d+)\b", normalize_text(user_text))
+            try:
+                qty = validated_quantity(qty_match.group(1)) if qty_match else 1
+            except ValueError:
+                qty = 1
+            ai_understanding = {
+                "action": "ORDER_SELECTION", "intent": "ORDER_SELECTION", "category": "KITCHEN",
+                "confidence": 1.0, "items": [{"name": basket["generic"], "qty": qty}],
+                "generic": basket["generic"], "service": "", "needs_reception": False, "reply": ""
+            }
+    # A complete configured basket also overrides a generic/uncertain AI food route.
+    elif basket.get("complete") and (not ai_understanding or ai_understanding.get("action") in {"ORDER", "ORDER_SELECTION", "NONE"}):
         ai_understanding = {"action": "ORDER", "confidence": 1.0,
                             "items": [{"name": x["name"], "qty": x["qty"]} for x in basket["items"]]}
 

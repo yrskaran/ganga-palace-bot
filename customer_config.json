@@ -1,0 +1,208 @@
+{
+  "hotel": {
+    "name": "Hotel Shreya Galaxy",
+    "location": "Satyam Vihar, Bhupatwala, Haridwar, Uttarakhand",
+    "address": "Plot No-125, Satyam Vihar Colony, Bhupatwala, Haridwar, Uttarakhand 249410",
+    "check_in": "1:00 PM",
+    "check_out": "11:00 AM",
+    "reception_hours": "24/7 front desk",
+    "amenities": "Air-conditioned rooms, free Wi-Fi, Smart LED TV, geyser, mini-fridge/minibar, indoor swimming pool, restaurant, room service, free parking, elevator/lift, daily housekeeping, family rooms",
+    "parking": "Free on-site parking; space is limited and subject to availability",
+    "wifi": "Complimentary Wi-Fi"
+  },
+  "contacts": {
+    "reception_phone": "918899292999",
+    "kitchen_phone": "",
+    "staff_phone": ""
+  },
+  "rooms": [
+    {
+      "name": "Deluxe",
+      "price": 1999,
+      "details": "Official website starting rate; suited to solo travellers or couples"
+    },
+    {
+      "name": "Super Deluxe",
+      "price": 2499,
+      "details": "Official website starting rate; extra space and amenities, suitable for families"
+    },
+    {
+      "name": "Premium Window",
+      "price": 2999,
+      "details": "Official website starting rate; spacious premium category"
+    },
+    {
+      "name": "Family Suite",
+      "price": 3499,
+      "details": "Official website starting rate; spacious family category"
+    }
+  ],
+  "room_rules": [
+    "Room tariffs are public starting rates from the hotel's official website and are dynamic.",
+    "Whenever quoting a tariff, say 'starting from' and explain that the final live rate depends on dates and availability.",
+    "Never invent live availability. Ask check-in date, check-out date, adults, children and number of rooms, then request reception confirmation.",
+    "Do not claim a booking is confirmed until hotel staff confirms it.",
+    "If the guest asks about an extra bed, say public listings mention extra beds may be available for a charge, but current charge and availability must be confirmed by reception."
+  ],
+  "menu_intro": "Hotel Shreya Galaxy has a restaurant and room service. A verified item-by-item hotel menu is not configured in this demo.",
+  "menu": [],
+  "food_rules": [
+    "Do not invent food items or prices.",
+    "If a guest asks for the current menu or food price, say the hotel has restaurant/room service and reception can confirm the latest menu.",
+    "Public listings describe the on-site restaurant as family-friendly and vegetarian options are available; do not promise a specific dish unless confirmed."
+  ],
+  "policies": {
+    "early_check_in": "Chargeable and subject to availability",
+    "late_check_out": "Chargeable and subject to availability",
+    "parking": "Free; limited space and subject to availability",
+    "pets": "Official hotel FAQ says pets may be brought if kept tied and in the room without disturbing other guests; confirm current policy with reception",
+    "smoking": "Smoking/drinking is not allowed in the pool area, gallery/corridor or restaurant according to the hotel's public rules",
+    "identification": "Guest may be asked for payment method and identification proof during check-in",
+    "cancellation_7_plus_days": "Full refund according to the hotel's published cancellation rules",
+    "cancellation_5_to_7_days": "50% of booking amount charged according to the hotel's published cancellation rules",
+    "cancellation_within_5_days": "Full booking amount charged; no refund according to the hotel's published cancellation rules",
+    "no_show": "Full booking amount charged according to the hotel's published cancellation rules",
+    "gst": "GST applies subject to GST rules"
+  },
+  "lifecycle": {
+    "breakfast_prompt": "08:00-10:00",
+    "lunch_prompt": "13:00-15:00",
+    "dinner_prompt": "19:00-21:00"
+  },
+  "faq": [
+    {
+      "question": "Where is Hotel Shreya Galaxy?",
+      "answer": "Hotel Shreya Galaxy is at Plot No-125, Satyam Vihar Colony, Bhupatwala, Haridwar, Uttarakhand 249410."
+    },
+    {
+      "question": "What is the hotel contact number?",
+      "answer": "The hotel's public contact numbers are +91 8077070779 and +91 8899292999."
+    },
+    {
+      "question": "What are check-in and check-out times?",
+      "answer": "Check-in is 1:00 PM and check-out is 11:00 AM."
+    },
+    {
+      "question": "Do you have a swimming pool?",
+      "answer": "Yes. The hotel's published FAQ says the swimming pool normally operates in the summer season from April to September, 6:00 AM to 12:00 PM daily. It may also be bookable in other seasons in advance. Current operation must be confirmed before promising it."
+    },
+    {
+      "question": "Is parking available?",
+      "answer": "Yes, free parking is available. The hotel's public FAQ says parking is camera-covered, but space is limited and subject to availability."
+    },
+    {
+      "question": "Is Wi-Fi available?",
+      "answer": "Yes, complimentary Wi-Fi is listed for the hotel."
+    },
+    {
+      "question": "Do rooms have AC, geyser and TV?",
+      "answer": "The hotel's published FAQ says all rooms are air-conditioned and have geyser and Smart Flat LED TV with Wi-Fi connection."
+    },
+    {
+      "question": "Do rooms have a refrigerator or minibar?",
+      "answer": "Public hotel listings mention mini-fridges/minibars in rooms. Reception should confirm the exact room-category amenity if needed."
+    },
+    {
+      "question": "Is there a lift?",
+      "answer": "Yes, the hotel's published FAQ says a lift is available for all floors."
+    },
+    {
+      "question": "Do you have a restaurant?",
+      "answer": "Yes, the hotel has a restaurant and room service. Current menu items, timings and prices should be confirmed with reception."
+    },
+    {
+      "question": "Are pets allowed?",
+      "answer": "The hotel's official public FAQ says pets may be brought if they are kept tied and kept in the room without disturbing other guests. Please confirm the current policy before arrival."
+    },
+    {
+      "question": "What is the cancellation policy?",
+      "answer": "The hotel's published rules state: 7 or more days before arrival — full refund; 5–7 days — 50% booking amount charged; within 5 days or no-show — full booking amount charged. Confirm the policy attached to the guest's actual booking before finalizing."
+    },
+    {
+      "question": "Do you arrange sightseeing or travel?",
+      "answer": "The hotel's official website lists Haridwar sightseeing, Uttarakhand tours, pick & drop/car rental, Chardham packages and helicopter booking assistance. Current rates and availability require confirmation."
+    },
+    {
+      "question": "Can you arrange Chardham or helicopter booking?",
+      "answer": "The hotel's official tours page advertises Chardham packages and helicopter ticket assistance for Kedarnath/Badrinath routes, including departures from Sirsi, Phata, Uttarkashi or Dehradun. Exact availability, fares and conditions must be confirmed."
+    }
+  ],
+  "local_guide": [
+    {
+      "name": "Gayatri Tirth Shantikunj",
+      "category": "Spiritual / Ashram",
+      "distance": "About 13 minutes walk according to Google hotel listing",
+      "best_time": "Morning or evening",
+      "maps_query": "Gayatri Tirth Shantikunj Haridwar"
+    },
+    {
+      "name": "Har Ki Pauri",
+      "category": "Ganga Ghat / Spiritual",
+      "distance": "Approx. 3.8 km drive according to a public travel listing",
+      "best_time": "Evening before Ganga Aarti",
+      "maps_query": "Har Ki Pauri Haridwar"
+    },
+    {
+      "name": "Bharat Mata Temple",
+      "category": "Temple / Cultural",
+      "distance": "Approx. 1.3 km according to a public hotel listing",
+      "best_time": "Daytime",
+      "maps_query": "Bharat Mata Temple Haridwar"
+    },
+    {
+      "name": "Sapt Rishi Ashram",
+      "category": "Ashram / Spiritual",
+      "distance": "Approx. 2.5 km according to a public hotel listing",
+      "best_time": "Morning or evening",
+      "maps_query": "Sapt Rishi Ashram Haridwar"
+    },
+    {
+      "name": "Mansa Devi Temple",
+      "category": "Temple / Ropeway",
+      "best_time": "Morning; confirm current ropeway timings",
+      "maps_query": "Mansa Devi Temple Haridwar"
+    },
+    {
+      "name": "Chandi Devi Temple",
+      "category": "Temple / Ropeway",
+      "best_time": "Morning; confirm current ropeway timings",
+      "maps_query": "Chandi Devi Temple Haridwar"
+    },
+    {
+      "name": "Rajaji National Park",
+      "category": "Wildlife / Safari",
+      "distance": "Public hotel listings place the park very close to the Bhupatwala area; confirm the correct safari gate before travel",
+      "best_time": "Confirm current safari season, gate, permit and timings",
+      "maps_query": "Rajaji National Park Haridwar"
+    }
+  ],
+  "media": {
+    "photos": {
+      "Exterior": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72tzdD6lmCO7KDmjugVyS6Oq6ReyaKrrlAvdrg95jkLztIO1MYYfBWWj2XRbnxLmvtvOZWqEfVh7x__SObMPeIXrttcXFwPc4VOHXZKq6BfPDQy9NP0PooB5jD0ofavLYwfq_27avYmt11tX2ATypCz6o8mH51bShZveWVt09C6alZo7nEoOjQ3FDGBXftrkFLE24YPfiEzgIqQrx5bGckDToFOesqMApuLVbcQU%3Dw1280",
+      "Official Gallery 2": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72soZPCef61EBu096Qmf9HyPyt9RYCMc06AkvkGnxvK5FSmhNDKJ7xoX2sPAQVb_xD2DM0QgzSA0prAw4D8GZ4c2kNwg5r1ZO4DOcIq0foModoApcOUfq2lB_JkUah9CgVxwQx8pVC0RHcghffBOSaqkloaYEhQKGXyiGKd_CKmikEBwSZUp0YOfiI7SmNwL28n8wLsXAFcMejPFlytoZxSnh_d7GMuk2YTjgiq4%3Dw1280",
+      "Official Gallery 3": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72t_TDTJAzcuznxSH1__fNxlkuPr6Jk9YoX2BhEEn6kDt1Mnu2-0_iUIaeyDnGlVh4NIh2aN8YTzY1vRBF10kpbkWz2H64t4gwx_c1oUTf2FzBptJHhV69wQdwxKyGwb53iuL_bdArLqQlxU4CwjXByDHqKneM8IWAAFXt3Bd13l1HkfJ2lEa_3Z3QYZZuUhU_WpgXYo6F5ratVfVHT3ry0Qr-n4I98myb3FQcCF_Ss%3Dw1280",
+      "Official Gallery 4": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72uujyplX_Asyny8P_rCSwTc82ha6uIRddrC1jAX4YUNnyj_gOYYrzms4eG5BSsJe-5j3cpBwEs8XbBV8MzB24jzuQg-A-9ahndk8ye7d8mRi73VLGOQ-dEsRoeMnKThk130aU6CPibf7PBsRfXofBys2O0ne3d7Wdw1HmnG9wBgJRvOaMO27HqRSBIKP0IMPFCUntMWMM1tJ0jtOFBeo5JG8Tn2ZYo7y1jjYgTYOAo%3Dw1280",
+      "Deluxe": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72tWBW-icSbKj5Lxz9eYNOCrTj4yeEiUXQLCfznRQgIZpS3FngLJn4OHIi_SimTU7OWX8mdYk7JXtpOHlT8n4VlnWzzdH12ItSFl5F_NgTwcR0VAjrg82k_STYlvql-QCM6jxXwBNP8-oYN-3Sme9Rd_w7XuAFmqHo52GhNCkXMYVmwR5mRGMojAE5EsXZXGPxorBom7egGdfuZTu8yKjwqJVjPJvUKKLgc6D0Tc_G0%3Dw1280",
+      "Super Deluxe": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72v_g2ofIE650YyRePWbtRWKPvtVPQQ0JU90GHB8b3n0QYZSh21x28xVDL0OYwuug5kD5InIPyFlS6CAp2gkDhnqG0648kcxLt71vLy-18-VIRsd5CHvy9tCgFCQCPrLao06VCSGDzqo-AoROzeX5pAvpJIJo1avKB48yQe4SwKN0G6yBFqkZ0qHWYszIcILyexhYtVmDsX4y0nrljLHc3X-SVABRVR9MNuww7DfM44%3Dw1280",
+      "Premium Window": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72t9zfTZgoKE038dSe-marFfo6pGIp2211rCw7fRxxXaTBnrDld8X20fm8IBY-HXaBRg2FKhsYyLXY0o7yXwHz10OF_gRpPY67ZT1MpBuElM8ZJCf0AJJe7Sf7Js3nkwLk6jFSttC6tCYQhK_0wN_gEo0Yq6KZR_LY-SoaD1I1MMwT73a4-2cwpwkmUoRTVIRRqg6p-nySvXoFjz3gZjcPR1-jFJA6qAV4iril3h%3Dw1280",
+      "Family Suite": "https://lh7-us.googleusercontent.com/sitesv-images-rt/AMxu72vWuGBvU5aVS_jpgKs_RD8IupLsYFPxYozSxwV1CUzBtY7EM68pRjDWjqh8kTMvMEprsmvXQUqokw1w5u_5u3VbOqt2X1rW7s3GP26wsTepXUW94qaWeqPzJQ_5F-fzwF92odUpYePFTxWUDPZo5e5NSznsEB2envfYXyUSZyDrImV9oyIPGXVQs3qthoh-Xn0q0l-vymInUvFJATFER3I3dd6ffQlEVIpcM8De%3Dw1280",
+      "Reception": "https://cf.bstatic.com/xdata/images/hotel/max1024x768/618864942.jpg?k=039451a0ebafebde893a36f0e6b5eda76636fe4914408d2dd2c3654e306efe82&o="
+    }
+  },
+  "maps": {
+    "Hotel": "https://www.google.com/maps/search/?api=1&query=Hotel+Shreya+Galaxy+Bhupatwala+Haridwar",
+    "Har Ki Pauri": "https://www.google.com/maps/search/?api=1&query=Har+Ki+Pauri+Haridwar",
+    "Shantikunj": "https://www.google.com/maps/search/?api=1&query=Gayatri+Tirth+Shantikunj+Haridwar"
+  },
+  "custom_rules": [
+    "This configuration is for a sales demo tailored to Hotel Shreya Galaxy using publicly available hotel information.",
+    "Never imply that Hotel Shreya Galaxy has officially adopted this bot unless Karan explicitly says the hotel has approved it.",
+    "Speak as the hotel's AI receptionist during the demo, but do not fabricate live PMS inventory, payments, bookings, staff actions or unpublished policies.",
+    "For live availability or final booking price, collect dates, adults, children and room count, then ask for reception confirmation.",
+    "If public sources conflict, prefer the hotel's own official website/terms and ask reception to confirm the latest rule.",
+    "The official website lists Chardham packages, Uttarakhand tours, Haridwar sightseeing, pick & drop/car rental and helicopter booking assistance.",
+    "Pool operation is seasonal according to the official FAQ; do not promise it is open today without confirmation.",
+    "When a guest asks for hotel or room photos, send only the configured public photos for this property.",
+    "Keep WhatsApp replies short, natural and helpful in the guest's language."
+  ]
+}

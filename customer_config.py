@@ -160,9 +160,11 @@ def render_hotel_data(data):
     ]
     if rooms:
         for room in rooms:
-            suffix = _text(room.get("details"))
-            label = _text(room.get("name")) + (f" ({suffix})" if suffix else "")
-            lines.append(f"- {label}: Rs. {int(room.get('price'))} per night")
+            name = _text(room.get("name"))
+            details = _text(room.get("details"))
+            lines.append(f"- {name}: Rs. {int(room.get('price'))} per night")
+            if details:
+                lines.append(f"  Room note: {name} — {details}")
     else:
         lines.append("- No room tariff has been configured. Reception must confirm rates.")
 

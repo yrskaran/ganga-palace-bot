@@ -200,5 +200,6 @@
     "Pool operation is seasonal according to the official FAQ; do not promise it is open today without confirmation.",
     "Keep WhatsApp replies short, natural and helpful in the guest's language.",
     "When a guest asks for hotel or room photos, send the configured real-property public photos only. Do not treat gallery/reception images as room categories."
-  ]
+  ],
+  "demo_mode": true
 }

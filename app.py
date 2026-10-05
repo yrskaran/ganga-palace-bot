@@ -1359,6 +1359,11 @@ def validate_operational_layout(headers):
 def fetch_sheet_data_sync(force=False):
     """Refresh the Sheet cache, but never hammer Google Sheets on every code path."""
     global last_sheet_sync_attempt
+    if CUSTOMER_DEMO_MODE:
+        # A demo profile can reuse the same WhatsApp/Render service, but it must
+        # never read the live hotel's guest/staff sheet or send lifecycle actions
+        # based on another hotel's records.
+        return False
     now = time.time()
     with state_lock:
         if not force and now - last_sheet_sync_attempt < SHEET_SYNC_MIN_INTERVAL:
@@ -6864,7 +6869,7 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     t = normalize_text(user_text)
     compact = re.sub(r"[^a-z0-9 ]", "", t).strip()
     lang = get_guest_response_language(sender_phone, user_text)
-    name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
+    name = _chat_guest_name(guest_info)
     if _reply_capability_question(sender_phone, user_text, guest_info):
         return True
 

@@ -876,9 +876,48 @@ def get_hotel_photo(kind):
 
 
 def get_room_photo_categories():
-    """Return configured non-exterior photo categories; hotel-specific names stay in hotel_data.txt."""
+    """Return only configured photos that correspond to actual room categories.
+
+    Hotel media may also contain gallery, reception, pool or exterior images.
+    Those must never be shown as room-category choices.
+    """
     photos = get_hotel_media().get("photos", {})
-    return [(name, url) for name, url in photos.items() if name not in {"exterior", "front", "hotel", "outside"}]
+    room_names = [
+        str(item.get("name") or "").strip()
+        for item in get_room_categories().values()
+        if str(item.get("name") or "").strip()
+    ]
+    if not room_names:
+        return []
+
+    normalized_photos = {
+        re.sub(r"\s+", " ", str(name).strip().lower()): (name, url)
+        for name, url in photos.items()
+    }
+    out = []
+    for room_name in room_names:
+        key = re.sub(r"\s+", " ", room_name.lower())
+        exact = normalized_photos.get(key)
+        if exact and exact[1]:
+            out.append(exact)
+            continue
+
+        # Tolerate config labels such as "Deluxe Room" vs "Deluxe".
+        room_tokens = {
+            x for x in re.findall(r"[a-z0-9]+", key)
+            if x not in {"room", "rooms"}
+        }
+        matches = []
+        for photo_key, pair in normalized_photos.items():
+            photo_tokens = {
+                x for x in re.findall(r"[a-z0-9]+", photo_key)
+                if x not in {"room", "rooms"}
+            }
+            if room_tokens and room_tokens == photo_tokens and pair[1]:
+                matches.append(pair)
+        if len(matches) == 1:
+            out.append(matches[0])
+    return out
 
 
 def resolve_requested_photo(user_text, allowed_categories=None):
@@ -3082,31 +3121,20 @@ def upload_image_to_whatsapp(image_url):
 
 
 def send_whatsapp_image(to_number, image_url, caption=""):
-    """Send a configured public HTTPS image via Meta, with upload fallback and diagnostics."""
+    """Send a configured hotel photo reliably.
+
+    Upload the actual image bytes to Meta first. A URL-only send can be accepted
+    by Graph API even when Meta later fails to fetch a hot-linked image, which
+    looks like success in logs but never reaches the guest.
+    """
     number = format_whatsapp_number(to_number)
     url_value = str(image_url or "").strip()
     if not number or not url_value:
         print("PHOTO SEND SKIPPED: missing recipient or URL", flush=True)
         return False
 
-    # Path 1: let Meta fetch the public HTTPS image directly.
-    direct_payload = {
-        "messaging_product": "whatsapp",
-        "to": number,
-        "type": "image",
-        "image": {"link": url_value, "caption": str(caption)[:1024]},
-    }
-    try:
-        res = whatsapp_request(direct_payload)
-        if res and res.status_code in (200, 201):
-            print(f"PHOTO SEND DIRECT OK: {url_value}", flush=True)
-            return True
-        if res is not None:
-            print("PHOTO SEND DIRECT FAILED:", res.status_code, res.text[:500], flush=True)
-    except Exception as exc:
-        print("PHOTO SEND DIRECT ERROR:", exc, flush=True)
-
-    # Path 2: download the image on Render and upload it to Meta first.
+    # Path 1: download on Render and upload bytes to Meta. This verifies that
+    # the configured URL is currently a real image before WhatsApp accepts it.
     media_id = upload_image_to_whatsapp(url_value)
     if media_id:
         payload = {
@@ -3125,7 +3153,25 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         except Exception as exc:
             print("PHOTO SEND MEDIA ERROR:", exc, flush=True)
 
-    # Final fallback: never silently drop the photo request.
+    # Path 2: direct public URL fallback for hosts that Render cannot download
+    # but Meta can fetch.
+    direct_payload = {
+        "messaging_product": "whatsapp",
+        "to": number,
+        "type": "image",
+        "image": {"link": url_value, "caption": str(caption)[:1024]},
+    }
+    try:
+        res = whatsapp_request(direct_payload)
+        if res and res.status_code in (200, 201):
+            print(f"PHOTO SEND DIRECT OK: {url_value}", flush=True)
+            return True
+        if res is not None:
+            print("PHOTO SEND DIRECT FAILED:", res.status_code, res.text[:500], flush=True)
+    except Exception as exc:
+        print("PHOTO SEND DIRECT ERROR:", exc, flush=True)
+
+    # Final fallback: never silently drop the request.
     link_ok = send_whatsapp_message(number, f"{caption}\n\nPhoto link: {url_value}")
     print(f"PHOTO SEND FINAL LINK FALLBACK: sent={link_ok} url={url_value}", flush=True)
     return False

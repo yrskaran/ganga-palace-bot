@@ -1,0 +1,146 @@
+{
+  "hotel": {
+    "name": "Hotel Shreya Galaxy",
+    "location": "Bhupatwala, Haridwar, Uttarakhand",
+    "address": "Plot No-125, Satyam Vihar Colony, Bhoopatwala, Haridwar, Uttarakhand 249410",
+    "check_in": "1:00 PM",
+    "check_out": "11:00 AM",
+    "reception_hours": "24/7",
+    "amenities": "Free Wi-Fi, free parking, indoor swimming pool, restaurant, room service, air conditioning, elevator, daily housekeeping, meeting rooms",
+    "parking": "Free on-site parking",
+    "wifi": "Complimentary Wi-Fi"
+  },
+  "contacts": {
+    "reception_phone": "918899292999",
+    "kitchen_phone": "",
+    "staff_phone": ""
+  },
+  "rooms": [
+    {
+      "name": "Deluxe",
+      "price": 1999,
+      "details": "Public starting rate; suitable for solo travellers or couples"
+    },
+    {
+      "name": "Super Deluxe",
+      "price": 2499,
+      "details": "Public starting rate; extra space and amenities, suitable for families"
+    },
+    {
+      "name": "Premium Window",
+      "price": 2999,
+      "details": "Public starting rate; spacious premium category"
+    },
+    {
+      "name": "Family Suite",
+      "price": 3499,
+      "details": "Public starting rate; spacious family category"
+    }
+  ],
+  "room_rules": [
+    "These are public starting rates only, not guaranteed live prices.",
+    "Whenever quoting a room rate, say 'starting from' and mention that rates are dynamic.",
+    "Never invent live availability. Ask check-in date, check-out date, adults, children and number of rooms, then say reception must confirm current availability and final tariff.",
+    "Do not claim a booking is confirmed until hotel staff confirms it."
+  ],
+  "menu_intro": "Hotel has a restaurant and room service, but a verified item-by-item menu is not configured for this demo.",
+  "menu": [],
+  "food_rules": [
+    "Do not invent food items or prices.",
+    "If a guest asks for food/menu details, say the hotel has a restaurant/room service and reception can confirm the current menu."
+  ],
+  "policies": {
+    "early_check_in": "Subject to availability and reception confirmation",
+    "late_check_out": "Subject to availability and reception confirmation",
+    "pets": "Reception confirmation required",
+    "cancellation": "Booking-channel or hotel policy may vary; confirm before promising"
+  },
+  "lifecycle": {
+    "breakfast_prompt": "08:00-10:00",
+    "lunch_prompt": "13:00-15:00",
+    "dinner_prompt": "19:00-21:00"
+  },
+  "faq": [
+    {
+      "question": "Where is Hotel Shreya Galaxy?",
+      "answer": "Hotel Shreya Galaxy is at Plot No-125, Satyam Vihar Colony, Bhupatwala, Haridwar, Uttarakhand 249410."
+    },
+    {
+      "question": "Do you have a swimming pool?",
+      "answer": "Yes, an indoor swimming pool is listed for the hotel."
+    },
+    {
+      "question": "Is parking available?",
+      "answer": "Yes, free on-site parking is listed."
+    },
+    {
+      "question": "Is Wi-Fi available?",
+      "answer": "Yes, complimentary Wi-Fi is listed."
+    },
+    {
+      "question": "Do you have a restaurant?",
+      "answer": "Yes, the hotel has a restaurant and room service. Current menu items and prices should be confirmed with reception."
+    },
+    {
+      "question": "What are check-in and check-out times?",
+      "answer": "Check-in is listed as 1:00 PM and check-out as 11:00 AM."
+    },
+    {
+      "question": "Do you arrange sightseeing or travel?",
+      "answer": "The hotel's public website lists Haridwar sightseeing, Uttarakhand tours, pick & drop/car rental, Chardham packages and helicopter booking assistance. Current availability and charges need confirmation."
+    }
+  ],
+  "local_guide": [
+    {
+      "name": "Gayatri Tirth Shantikunj",
+      "category": "Spiritual / Ashram",
+      "distance": "About 13 minutes walk according to Google hotel listing",
+      "best_time": "Morning or evening",
+      "maps_query": "Gayatri Tirth Shantikunj Haridwar"
+    },
+    {
+      "name": "Har Ki Pauri",
+      "category": "Ganga Ghat / Spiritual",
+      "distance": "Approx. 3.8 km drive according to a public travel listing",
+      "best_time": "Evening before Ganga Aarti",
+      "maps_query": "Har Ki Pauri Haridwar"
+    },
+    {
+      "name": "Bharat Mata Temple",
+      "category": "Temple / Cultural",
+      "best_time": "Daytime",
+      "maps_query": "Bharat Mata Temple Haridwar"
+    },
+    {
+      "name": "Mansa Devi Temple",
+      "category": "Temple / Ropeway",
+      "best_time": "Morning; confirm current ropeway timings",
+      "maps_query": "Mansa Devi Temple Haridwar"
+    },
+    {
+      "name": "Chandi Devi Temple",
+      "category": "Temple / Ropeway",
+      "best_time": "Morning; confirm current ropeway timings",
+      "maps_query": "Chandi Devi Temple Haridwar"
+    },
+    {
+      "name": "Rajaji Tiger Reserve",
+      "category": "Wildlife / Safari",
+      "best_time": "Confirm current safari season, gate and permit availability",
+      "maps_query": "Rajaji Tiger Reserve Haridwar"
+    }
+  ],
+  "media": {
+    "photos": {}
+  },
+  "maps": {
+    "Hotel": "https://www.google.com/maps/search/?api=1&query=Hotel+Shreya+Galaxy+Bhupatwala+Haridwar"
+  },
+  "custom_rules": [
+    "This configuration is for a sales demo tailored to Hotel Shreya Galaxy using publicly available hotel information.",
+    "Never imply that Hotel Shreya Galaxy has officially adopted this bot unless Karan explicitly says the hotel has approved it.",
+    "Speak as the hotel's AI receptionist during the demo, but do not fabricate live PMS inventory, payments, bookings, staff actions or unpublished policies.",
+    "For availability or final booking price, collect dates and guest count, then ask for reception confirmation.",
+    "Keep WhatsApp replies short, natural and helpful in the guest's language."
+  ]
+}

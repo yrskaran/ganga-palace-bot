@@ -118,6 +118,7 @@ try:
 except CustomerConfigError as exc:
     raise RuntimeError(f"Customer configuration error: {exc}") from exc
 CUSTOMER_ENV_DEFAULTS = env_defaults_from_config(CUSTOMER_CONFIG or {})
+CUSTOMER_DEMO_MODE = bool((CUSTOMER_CONFIG or {}).get("demo_mode", False))
 
 KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "919058929796")).strip()
 STAFF_PHONE = os.getenv("STAFF_PHONE", CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", "917668426524")).strip()
@@ -520,6 +521,18 @@ def _is_symbolic_only_message(text):
     return bool(raw) and not any(ch.isalnum() for ch in raw)
 
 
+def _chat_guest_name(guest_info):
+    """Return a guest name only when it is safe to use in this conversation.
+
+    Demo hotel profiles deliberately ignore names from the live hotel's Sheet so
+    a reused test number can never be addressed as an unrelated guest.
+    """
+    if CUSTOMER_DEMO_MODE:
+        return ""
+    name = str((guest_info or {}).get("name", "") or "").strip()
+    return "" if normalize_text(name) in {"", "guest", "customer"} else name
+
+
 def _respectful_guest_reply(text, guest_info):
     """Prevent AI replies from addressing a known guest by bare name.
 
@@ -527,8 +540,8 @@ def _respectful_guest_reply(text, guest_info):
     possessive or factual uses of the name are not rewritten.
     """
     reply = str(text or "")
-    name = str((guest_info or {}).get("name", "") or "").strip()
-    if not reply or not name or normalize_text(name) in {"guest", "customer"}:
+    name = _chat_guest_name(guest_info)
+    if not reply or not name:
         return reply
 
     # Examples: "Hello Kitty!" -> "Hello Kitty ji!" and
@@ -5913,7 +5926,7 @@ def notify_reception_request(sender_phone, guest_info, request_text, source="bot
     try:
         guest_phone = format_whatsapp_number(sender_phone)
         room = (guest_info or {}).get("room", "") if guest_info else ""
-        name = (guest_info or {}).get("name", "Guest") if guest_info else "Guest"
+        name = _chat_guest_name(guest_info)
         status = (guest_info or {}).get("status", "") if guest_info else ""
         request_id = _new_reception_request_id(guest_phone or sender_phone, room)
         clean_request = str(request_text or "").strip()[:1000]
@@ -6893,11 +6906,11 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     }
     if compact in thanks:
         if lang == "english":
-            msg = f"You're most welcome, {name} ji! 😊 Kisi bhi help ki zarurat ho to yahin message karein."
+            msg = (f"You're most welcome, {name} ji! 😊 " if name else "You're most welcome! 😊 ") + "Kisi bhi help ki zarurat ho to yahin message karein."
         elif lang == "hindi" and guest_script(user_text) == "devanagari":
-            msg = f"आपका स्वागत है {name} जी! 😊 किसी भी सहायता की ज़रूरत हो तो यहीं संदेश करें।"
+            msg = (f"आपका स्वागत है {name} जी! 😊 " if name else "आपका स्वागत है! 😊 ") + "किसी भी सहायता की ज़रूरत हो तो यहीं संदेश करें।"
         else:
-            msg = f"Aapka swagat hai {name} ji! 😊 Kisi bhi help ki zarurat ho to yahin message karein."
+            msg = (f"Aapka swagat hai {name} ji! 😊 " if name else "Aapka swagat hai! 😊 ") + "Kisi bhi help ki zarurat ho to yahin message karein."
         send_whatsapp_message(sender_phone, msg)
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
@@ -6907,11 +6920,11 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
     goodbye = {"bye", "goodbye", "see you", "see you soon", "good night", "gn", "tata"}
     if compact in goodbye:
         if compact in {"good night", "gn"}:
-            msg = f"Good night, {name} ji! 🌙 Have a comfortable stay."
+            msg = f"Good night{', ' + name + ' ji' if name else ''}! 🌙 Have a comfortable stay."
         elif lang == "english":
-            msg = f"Goodbye, {name} ji! 🙏 Have a pleasant stay."
+            msg = f"Goodbye{', ' + name + ' ji' if name else ''}! 🙏 Have a pleasant stay."
         else:
-            msg = f"Bye {name} ji! 🙏 Aapka stay comfortable rahe."
+            msg = f"Bye{' ' + name + ' ji' if name else ''}! 🙏 Aapka stay comfortable rahe."
         send_whatsapp_message(sender_phone, msg)
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
@@ -6932,10 +6945,11 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
 
     greetings = {"hi", "hello", "hey", "namaste", "namaskar", "sat sri akal", "good morning", "good afternoon", "good evening"}
     if compact in greetings:
+        address = f", {name} ji" if name else ""
         if lang == "english":
-            msg = f"Welcome to {get_hotel_name()}, {name} ji! 😊 How may I assist you?"
+            msg = f"Welcome to {get_hotel_name()}{address}! 😊 How may I assist you?"
         else:
-            msg = f"Welcome to {get_hotel_name()}, {name} ji! 😊 Main aapki kis tarah help kar sakta hoon?"
+            msg = f"Welcome to {get_hotel_name()}{address}! 😊 Main aapki kis tarah help kar sakta hoon?"
         send_whatsapp_message(sender_phone, msg)
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
@@ -7591,11 +7605,11 @@ def _process_and_reply(message, sender_phone, msg_type):
     remember_guest_language(sender_phone, user_text)
 
     t = normalize_text(user_text)
-    guest_info = get_guest_stay_status(sender_phone)
+    guest_info = None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone)
     # One targeted live refresh when the in-memory Rooms cache has no matching guest.
     # This fixes false "new customer" replies after a stale/empty Sheet cache,
     # without changing any other routing or billing logic.
-    if guest_info is None or time.time() - shared_store.get("last_synced", 0) > SHEET_SYNC_MIN_INTERVAL:
+    if (not CUSTOMER_DEMO_MODE) and (guest_info is None or time.time() - shared_store.get("last_synced", 0) > SHEET_SYNC_MIN_INTERVAL):
         try:
             if fetch_sheet_data_sync():
                 guest_info = get_guest_stay_status(sender_phone)
@@ -8412,25 +8426,26 @@ def _process_and_reply(message, sender_phone, msg_type):
     # ========================================================
     if t in {"hi", "hello", "hlo", "namaste", "hey", "sat sri akal", "good morning", "good evening"}:
         lang = get_guest_response_language(sender_phone, user_text)
-        name = guest_info.get("name", "Guest") if guest_info else "Guest"
+        name = _chat_guest_name(guest_info)
         hotel = get_hotel_name()
+        address = f" {name} ji" if name else ""
         greetings = {
-            "english": f"Welcome to {hotel}, {name} ji! How may I assist you?",
-            "hindi": f"Namaste {name} ji! {hotel} mein aapka hardik swagat hai. Main aapki kya sahayata kar sakta hoon?",
-            "hinglish": f"Namaste {name} ji! {hotel} mein aapka swagat hai. Main aapki kaise help kar sakta hoon?",
-            "punjabi": f"Sat Sri Akal {name} ji! {hotel} vich tuhadda ji aayan nu. Main tuhadi ki madad kar sakda haan?",
-            "rajasthani": f"Khamma Ghani {name} ji! {hotel} mein tharo hardik swagat hai. Main thari kai madad kar sakun?",
-            "bengali": f"Nomoskar {name} ji! {hotel}-e apnake antorik swagat. Ami apnake kibhabe sahajjo korte pari?",
-            "gujarati": f"Namaste {name} ji! {hotel} ma aapnu hardik swagat chhe. Hu tamari shu madad kari shaku?",
-            "marathi": f"Namaskar {name} ji! {hotel} madhye aaple hardik swagat aahe. Mi aapli kashi madat karu shakto?",
-            "tamil": f"Vanakkam {name} ji! {hotel}-kku ungalai anbudan varaverkirom. Ungalukku eppadi udhava mudiyum?",
-            "telugu": f"Namaskaram {name} ji! {hotel} ki swagatham. Meeku ela sahayam cheyagalanu?",
-            "kannada": f"Namaskara {name} ji! {hotel} ge nimge swagata. Naanu nimge hege sahaya maadali?",
-            "malayalam": f"Namaskaram {name} ji! {hotel}-ilekku swagatham. Njan engane sahayikkam?",
-            "odia": f"Namaskar {name} ji! {hotel} ku apananku hardik swagat. Mu apananku kemiti sahajya kariparibi?",
-            "urdu": f"Assalamualaikum {name} ji! {hotel} mein aapka khairmaqdam hai. Main aapki kya madad kar sakta hoon?",
-            "garhwali": f"Namaskar {name} ji! {hotel} ma aapku hardik swagat chha. Main aapki kaisi madad karun?",
-            "kumaoni": f"Namaskar {name} ji! {hotel} ma aapuk hardik swagat chha. Main aapki kaisi madad karun?",
+            "english": f"Welcome to {hotel}{', ' + name + ' ji' if name else ''}! How may I assist you?",
+            "hindi": f"Namaste{address}! {hotel} mein aapka hardik swagat hai. Main aapki kya sahayata kar sakta hoon?",
+            "hinglish": f"Namaste{address}! {hotel} mein aapka swagat hai. Main aapki kaise help kar sakta hoon?",
+            "punjabi": f"Sat Sri Akal{address}! {hotel} vich tuhadda ji aayan nu. Main tuhadi ki madad kar sakda haan?",
+            "rajasthani": f"Khamma Ghani{address}! {hotel} mein tharo hardik swagat hai. Main thari kai madad kar sakun?",
+            "bengali": f"Nomoskar{address}! {hotel}-e apnake antorik swagat. Ami apnake kibhabe sahajjo korte pari?",
+            "gujarati": f"Namaste{address}! {hotel} ma aapnu hardik swagat chhe. Hu tamari shu madad kari shaku?",
+            "marathi": f"Namaskar{address}! {hotel} madhye aaple hardik swagat aahe. Mi aapli kashi madat karu shakto?",
+            "tamil": f"Vanakkam{address}! {hotel}-kku ungalai anbudan varaverkirom. Ungalukku eppadi udhava mudiyum?",
+            "telugu": f"Namaskaram{address}! {hotel} ki swagatham. Meeku ela sahayam cheyagalanu?",
+            "kannada": f"Namaskara{address}! {hotel} ge nimge swagata. Naanu nimge hege sahaya maadali?",
+            "malayalam": f"Namaskaram{address}! {hotel}-ilekku swagatham. Njan engane sahayikkam?",
+            "odia": f"Namaskar{address}! {hotel} ku apananku hardik swagat. Mu apananku kemiti sahajya kariparibi?",
+            "urdu": f"Assalamualaikum{address}! {hotel} mein aapka khairmaqdam hai. Main aapki kya madad kar sakta hoon?",
+            "garhwali": f"Namaskar{address}! {hotel} ma aapku hardik swagat chha. Main aapki kaisi madad karun?",
+            "kumaoni": f"Namaskar{address}! {hotel} ma aapuk hardik swagat chha. Main aapki kaisi madad karun?",
         }
         send_whatsapp_message(sender_phone, greetings.get(lang, greetings["english"]))
         return

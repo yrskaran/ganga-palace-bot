@@ -38,6 +38,7 @@ class GuestFlows(unittest.TestCase):
         for name in ('service_tasks_by_id','service_tasks_by_alert','service_guest_pending',
                      'guide_service_sessions','conversation_memory','order_sessions',
                      'duplicate_order_sessions','checkin_sessions','reception_request_sessions',
+                     'reception_requests_by_id','reception_requests_by_alert',
                      'service_sessions','lifecycle_pending_by_message_id','lifecycle_pending_keys',
                      'lifecycle_retry_after'):
             self.mock(name, {})
@@ -167,6 +168,48 @@ class GuestFlows(unittest.TestCase):
         app.notify_reception_request.return_value=False
         self.turn('Local guide arrange karwa do')
         self.assertIn('nahi bhej paaya', self.sent.call_args.args[1])
+
+    def test_missing_room_photo_does_not_promise_reception_confirmation(self):
+        self.mock('get_room_photo_categories', return_value=[('Deluxe', '')])
+        self.mock('get_hotel_photo', return_value=None)
+        app._handle_ai_photo_route(
+            GUEST,
+            {'name':'Kitty','room':'203'},
+            {'photo_target':'Deluxe'},
+            'Deluxe room ki photo bhejna',
+        )
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('photo abhi whatsapp par nahi hai', reply.lower())
+        self.assertIn('confirmation abhi pending hai', reply.lower())
+        self.assertNotIn('confirm karwa deta hoon', reply.lower())
+        self.assertEqual(app.notify_reception_request.call_count, 1)
+        self.assertEqual(app.notify_reception_request.call_args.args[3], 'ai_photo_missing')
+
+    def test_missing_photo_delivery_failure_uses_short_hinglish_correction(self):
+        ticket = {'guest_phone':GUEST,'delivery_status':'accepted','status':'pending'}
+        app.reception_requests_by_alert['photo-alert'] = ticket
+        app._update_reception_alert_delivery('photo-alert','failed',[131047])
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('request nahi pahunchi', reply.lower())
+        self.assertIn('front desk se pooch lena', reply.lower())
+        self.assertNotIn('confirmed', reply.lower())
+
+    def test_missing_photo_immediate_alert_failure_is_honest_in_one_reply(self):
+        self.mock('get_room_photo_categories', return_value=[('Deluxe', '')])
+        self.mock('get_hotel_photo', return_value=None)
+        app.notify_reception_request.return_value = False
+        app._handle_ai_photo_route(
+            GUEST,
+            {'name':'Kitty','room':'203'},
+            {'photo_target':'Deluxe'},
+            'Deluxe room ki photo bhejna',
+        )
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1].lower()
+        self.assertIn('reception ko automatic message nahi pahunch paaya', reply)
+        self.assertNotIn('request bhej raha hoon', reply)
 
     def test_guide_decline_does_not_route(self):
         for text in ('guide nahi chahiye','guide mat book karna',"don't arrange a local guide"):

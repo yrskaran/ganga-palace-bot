@@ -6016,7 +6016,7 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
     if correction_needed and guest_phone:
         send_whatsapp_message(
             guest_phone,
-            "Reception ko WhatsApp alert deliver nahi ho paaya. Kripya front desk se seedhe contact karein; main is request ko confirmed nahi bataunga."
+            "Sorry, reception ko WhatsApp par request nahi pahunchi. Photo ke liye front desk se pooch lena."
         )
 
 
@@ -7293,8 +7293,13 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
         with state_lock:
             photo_sessions.pop(sender_phone, None)
         if not categories:
-            send_whatsapp_message(sender_phone, "Ji, room photos abhi available nahi hain. Main reception se confirm karwa deta hoon.")
-            notify_reception_request(sender_phone, guest_info, "Guest requested all room photos but no configured photo categories were available.", "ai_photo_all_missing")
+            send_reception_fallback(
+                sender_phone,
+                guest_info,
+                "Ji, room photos abhi WhatsApp par available nahi hain. Main reception ko request bhej raha hoon; confirmation abhi pending hai.",
+                "Guest requested all room photos but no configured photo categories were available.",
+                "ai_photo_all_missing",
+            )
             return True
         sent_count = 0
         for name, url in categories:
@@ -7353,14 +7358,24 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
             lines.extend(f"• {name.title()}" for name, _ in categories)
             send_whatsapp_message(sender_phone, "\n".join(lines))
         else:
-            send_whatsapp_message(sender_phone, "Ji, room photos abhi available nahi hain. Main reception se confirm karwa deta hoon.")
-            notify_reception_request(sender_phone, guest_info, "Guest requested room photos but no configured photo categories were available.", "ai_photo_missing")
+            send_reception_fallback(
+                sender_phone,
+                guest_info,
+                "Ji, room photos abhi WhatsApp par available nahi hain. Main reception ko request bhej raha hoon; confirmation abhi pending hai.",
+                "Guest requested room photos but no configured photo categories were available.",
+                "ai_photo_missing",
+            )
         return True
 
     photo_url = get_hotel_photo(target)
     if not photo_url:
-        send_whatsapp_message(sender_phone, "Ji, is room category ki photo abhi available nahi hai. Main reception se confirm karwa deta hoon.")
-        notify_reception_request(sender_phone, guest_info, f"Photo requested: {target}", "ai_photo_missing")
+        send_reception_fallback(
+            sender_phone,
+            guest_info,
+            f"Ji, {target.title()} room ki photo abhi WhatsApp par nahi hai. Main reception ko request bhej raha hoon; confirmation abhi pending hai.",
+            f"Photo requested: {target}",
+            "ai_photo_missing",
+        )
         with state_lock:
             photo_sessions.pop(sender_phone, None)
         return True

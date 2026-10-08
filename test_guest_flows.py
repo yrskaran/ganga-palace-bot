@@ -197,9 +197,47 @@ class GuestFlows(unittest.TestCase):
         )
         self.assertEqual(self.sent.call_count, 1)
         reply = self.sent.call_args.args[1]
-        self.assertIn('Room Categories', reply)
+        self.assertTrue(reply.startswith('Haan ji'))
         self.assertIn('Deluxe', reply)
+        self.assertIn('Kiski photo bheju?', reply)
         app.notify_reception_request.assert_not_called()
+
+    def test_greeting_introduces_assistant_once_and_remembers_guest(self):
+        app.get_guest_response_language.return_value = 'hinglish'
+        self.assertTrue(app._local_conversation_fallback(GUEST, 'Hi'))
+        first = self.sent.call_args.args[1]
+        self.assertIn('WhatsApp assistant hoon', first)
+        self.assertIn('Hotel Shreya Galaxy', first)
+        self.sent.reset_mock()
+        self.assertTrue(app._local_conversation_fallback(GUEST, 'Hi'))
+        second = self.sent.call_args.args[1]
+        self.assertNotIn('WhatsApp assistant hoon', second)
+        self.assertNotIn('Welcome to Hotel Shreya Galaxy', second)
+        self.assertEqual(self.sent.call_count, 1)
+
+    def test_concierge_prompt_answers_before_actions_and_keeps_location_link_together(self):
+        prompt = app._ai_understanding_prompt('Room ka rate kya hai?', {'name':'Kitty'}, GUEST)
+        self.assertIn('answer the guest first', prompt.lower())
+        self.assertIn('one natural follow-up', prompt.lower())
+        self.assertIn('do not act on an enquiry', prompt.lower())
+        self.assertIn('[[MAP:hotel]]', prompt)
+
+    def test_hotel_location_answer_includes_maps_link_without_extra_turn(self):
+        self.mock('get_hotel_value', side_effect=lambda label, default='': {
+            'Location':'Bhupatwala, Haridwar',
+            'Address':'Plot 125, Satyam Vihar, Bhupatwala, Haridwar',
+        }.get(label, default))
+        self.mock('get_hotel_name', return_value='Hotel Shreya Galaxy')
+        self.mock('get_hotel_map', return_value='https://maps.example/hotel')
+        ai = self.mock('understand_guest_request', side_effect=AssertionError('hotel location is configured'))
+        self.turn('Ye hotel kaha pe hai')
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Bhupatwala, Haridwar', reply)
+        self.assertIn('https://maps.example/hotel', reply)
+        self.turn('Google location bhi')
+        self.assertIn('https://maps.example/hotel', self.sent.call_args.args[1])
+        ai.assert_not_called()
 
     def test_missing_photo_delivery_failure_uses_short_hinglish_correction(self):
         ticket = {'guest_phone':GUEST,'delivery_status':'accepted','status':'pending'}

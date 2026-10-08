@@ -421,7 +421,11 @@ def guest_language(text):
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
-    # One clear Roman Hindi marker should be enough for code-mixed chat.\n    if re.search(r"\\b(?:hai|hain|kya|kaha|kahan|kahaan|nahi|ni|bhi|chahiye|karo|karna|bhejna|dikhao|waale|wala|wali|mein|mujhe|aapka|aapki)\\b", raw, re.I):\n        return "hinglish"\n\n    best = max(scores, key=scores.get)
+    # One clear Roman Hindi marker should be enough for code-mixed chat.
+    if re.search(r"\b(?:hai|hain|kya|kaha|kahan|kahaan|nahi|ni|bhi|chahiye|karo|karna|bhejna|dikhao|waale|wala|wali|mein|mujhe|aapka|aapki)\b", raw, re.I):
+        return "hinglish"
+
+    best = max(scores, key=scores.get)
     # Require stronger evidence for regional Roman-script detection than generic English.
     threshold = 2
     if best in {'marathi','garhwali','kumaoni','urdu'}:
@@ -496,8 +500,9 @@ def remember_guest_language(sender_phone,text):
     )
     with state_lock:
         previous = guest_language_cache.get(sender_phone)
+        neutral_greeting = raw in {"hi", "hello", "hlo", "hey"}
         if (short_neutral or neutral_topic_question) and guest_script(text) == "roman":
-            lang = previous or "hinglish"
+            lang = (previous if previous and previous != "english" else "hinglish") if neutral_greeting else (previous or "hinglish")
         else:
             lang = detected
         guest_language_cache[sender_phone]=lang

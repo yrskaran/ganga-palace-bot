@@ -421,7 +421,7 @@ def guest_language(text):
     for lang, phrases in phrase_sets.items():
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
-    best = max(scores, key=scores.get)
+    # One clear Roman Hindi marker should be enough for code-mixed chat.\n    if re.search(r"\\b(?:hai|hain|kya|kaha|kahan|kahaan|nahi|ni|bhi|chahiye|karo|karna|bhejna|dikhao|waale|wala|wali|mein|mujhe|aapka|aapki)\\b", raw, re.I):\n        return "hinglish"\n\n    best = max(scores, key=scores.get)
     # Require stronger evidence for regional Roman-script detection than generic English.
     threshold = 2
     if best in {'marathi','garhwali','kumaoni','urdu'}:
@@ -489,14 +489,15 @@ def remember_guest_language(sender_phone,text):
         "what else", "what else?", "anything else", "anything else?",
         "aur", "aur?", "aur batao", "aur bataiye", "wahi", "wahi?"
     }
+    words = re.findall(r"[a-z]+", raw)
+    neutral_topic_question = (
+        1 <= len(words) <= 2
+        and not set(words) & {"what", "which", "where", "when", "why", "how", "is", "are", "do", "does", "can", "could", "would", "please", "tell", "show"}
+    )
     with state_lock:
         previous = guest_language_cache.get(sender_phone)
-        # Courtesy/acknowledgement words in Roman script do not reliably identify
-        # a new language. Preserve the established guest language for these very
-        # short neutral turns so a Hinglish guest saying "Thankyou" does not
-        # suddenly receive an English reply.
-        if previous and short_neutral and guest_script(text) == "roman":
-            lang = previous
+        if (short_neutral or neutral_topic_question) and guest_script(text) == "roman":
+            lang = previous or "hinglish"
         else:
             lang = detected
         guest_language_cache[sender_phone]=lang
@@ -6576,6 +6577,16 @@ def _local_menu_section_from_text(text):
     return None
 
 
+def _is_explicit_full_menu_request(user_text):
+    t = normalize_text(user_text)
+    return (
+        t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}
+        or ("menu" in t and any(x in t for x in (
+            "ni pta", "nahi pata", "pata nahi", "pata ni", "dikhao", "bhejo", "send", "show", "share", "batao", "btao"
+        )))
+    )
+
+
 def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     """Serve safe, configured hotel answers BEFORE spending an AI call.
 
@@ -6642,7 +6653,7 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
                 return True
 
     # 3) Explicit full-menu request. Do not spend an AI call for a static menu.
-    if t in {"menu", "food menu", "menu dikhao", "food list", "full menu", "all menu", "complete menu"}:
+    if _is_explicit_full_menu_request(user_text):
         msgs = send_full_menu_presentation(sender_phone, include_prices=price_requested)
         remember_conversation(sender_phone, "user", user_text)
         if msgs:
@@ -7105,6 +7116,12 @@ def _full_menu_presentation_messages(include_prices=False, sender_phone=None):
 def send_full_menu_presentation(sender_phone, include_prices=False):
     """Send the complete menu as multiple polished, scannable WhatsApp bubbles."""
     messages = _full_menu_presentation_messages(include_prices=include_prices, sender_phone=sender_phone)
+    if not messages:
+        if get_guest_response_language(sender_phone) == "english":
+            reply = "I don't have the hotel's current item-by-item menu here yet. Would you like me to ask reception for the latest menu?"
+        else:
+            reply = "Menu ki item-wise list abhi mere paas available nahi hai ji. Reception se latest menu poochwa doon?"
+        messages = [reply]
     for msg in messages:
         send_whatsapp_message(sender_phone, msg)
     return messages
@@ -7422,6 +7439,32 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
         photo_sessions.pop(sender_phone, None)
     sent = send_whatsapp_image(sender_phone, photo_url, f"🛏️ {target.title()}")
     print(f"PHOTO AI SEND RESULT: target={target!r} sent={sent}", flush=True)
+    return True
+
+
+def _hotel_service_enquiry_reply(sender_phone, user_text):
+    """Treat a laundry question as an enquiry; never dispatch staff without consent."""
+    text = normalize_text(user_text)
+    if not re.search(r"\b(?:laundry|washing|dhulai|kapde dhul)\b", text):
+        return False
+    explicit_action = bool(re.search(
+        r"\b(?:bhejo|bhej do|send|collect|pickup|pick up|wash kar|dhulwa|dhulwai|karwa do|arrange|book|request bhej)\b",
+        text,
+    ))
+    if explicit_action:
+        return False
+    is_question = "?" in str(user_text or "") or len(text.split()) <= 3 or bool(re.search(
+        r"\b(?:hai|hain|available|service|charges|charge|price|rate|kitna|kitne|how much)\b", text
+    ))
+    if not is_question:
+        return False
+    if get_guest_response_language(sender_phone, user_text) == "english":
+        reply = "Laundry service availability and charges aren't confirmed in my details yet. Would you like me to check with reception?"
+    else:
+        reply = "Laundry service ki availability aur charges abhi confirm nahi hain ji. Reception se poochwa doon?"
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, "user", user_text)
+    remember_conversation(sender_phone, "assistant", reply)
     return True
 
 
@@ -7817,9 +7860,19 @@ def _process_and_reply(message, sender_phone, msg_type):
             remember_conversation(sender_phone, "assistant", fact_reply)
             return
 
+    if not _skip_semantic_ai and _hotel_service_enquiry_reply(sender_phone, user_text):
+        return
+
     # Keep common hotel-location questions conversational and complete: answer
     # the location and share the configured map link in the same turn.
     if not _skip_semantic_ai and _hotel_location_reply(sender_phone, user_text):
+        return
+
+    if not _skip_semantic_ai and _is_explicit_full_menu_request(user_text):
+        msgs = send_full_menu_presentation(sender_phone, include_prices=explicitly_asks_price(user_text))
+        remember_conversation(sender_phone, "user", user_text)
+        if msgs:
+            remember_conversation(sender_phone, "assistant", "\n\n".join(msgs))
         return
 
     # AI is the semantic brain for actual language/contextual requests.

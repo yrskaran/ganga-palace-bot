@@ -239,6 +239,47 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('https://maps.example/hotel', self.sent.call_args.args[1])
         ai.assert_not_called()
 
+    def test_roman_hinglish_and_short_neutral_queries_keep_guest_language(self):
+        app.guest_language_cache.pop(GUEST, None)
+        self.assertEqual(app.remember_guest_language(GUEST, 'Hi'), 'hinglish')
+        self.assertEqual(app.remember_guest_language(GUEST, 'Room photo hai?'), 'hinglish')
+        self.assertEqual(app.remember_guest_language(GUEST, 'Hotel kaha hai'), 'hinglish')
+        self.assertEqual(app.remember_guest_language(GUEST, 'Laundry?'), 'hinglish')
+
+    def test_empty_menu_sends_honest_reply_instead_of_silence(self):
+        app.guest_language_cache[GUEST] = 'hinglish'
+        self.mock('_full_menu_presentation_messages', return_value=[])
+        messages = app.send_full_menu_presentation(GUEST)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('menu', reply.lower())
+        self.assertIn('available nahi', reply.lower())
+        self.assertIn('poochwa doon', reply.lower())
+
+    def test_menu_question_with_roman_hindi_shortcut_avoids_ai_and_answers(self):
+        app.guest_language_cache[GUEST] = 'hinglish'
+        self.mock('_full_menu_presentation_messages', return_value=[])
+        ai = self.mock('understand_guest_request', side_effect=AssertionError('configured menu status is deterministic'))
+        self.turn('Menu ni pta?')
+        self.assertEqual(self.sent.call_count, 1)
+        self.assertIn('item-wise list', self.sent.call_args.args[1])
+        self.assertIn('poochwa doon', self.sent.call_args.args[1])
+        ai.assert_not_called()
+
+    def test_laundry_question_asks_before_reception_action(self):
+        ai = self.mock('understand_guest_request', return_value={
+            'action':'RECEPTION', 'confidence':0.95, 'needs_reception':True,
+            'reply':'I have submitted the request to reception.'
+        })
+        self.turn('Laundry?')
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Laundry service', reply)
+        self.assertIn('poochwa doon', reply)
+        app.notify_reception_request.assert_not_called()
+        app._update_service_task_sheet.assert_not_called()
+        ai.assert_not_called()
+
     def test_missing_photo_delivery_failure_uses_short_hinglish_correction(self):
         ticket = {'guest_phone':GUEST,'delivery_status':'accepted','status':'pending'}
         app.reception_requests_by_alert['photo-alert'] = ticket

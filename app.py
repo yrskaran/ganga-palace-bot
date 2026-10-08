@@ -7325,6 +7325,25 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
             )
         target = current_text_target
 
+    # The model can label a generic request with a generic noun such as
+    # "Room". Only honor its target when it resolves to a real, configured
+    # room-photo category (or the configured exterior photo). Otherwise treat
+    # the request as generic and show the available categories below.
+    if target and not current_text_target:
+        target_text = str(target).strip()
+        ai_target = resolve_requested_photo(target_text, category_names)
+        is_exterior = (
+            target_text.lower() == "exterior"
+            and bool(get_hotel_photo("exterior"))
+        )
+        if ai_target:
+            target = ai_target
+        elif is_exterior:
+            target = "exterior"
+        else:
+            print(f"PHOTO AI TARGET IGNORED: unconfigured target={target_text!r} text={user_text!r}", flush=True)
+            target = ""
+
     # Generic photo requests such as "Room photo hai" should show the
     # available categories, not guess a room category from the guest record.
     generic_photo_request = False

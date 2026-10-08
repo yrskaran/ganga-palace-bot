@@ -186,6 +186,21 @@ class GuestFlows(unittest.TestCase):
         self.assertEqual(app.notify_reception_request.call_count, 1)
         self.assertEqual(app.notify_reception_request.call_args.args[3], 'ai_photo_missing')
 
+    def test_generic_room_photo_question_does_not_treat_ai_guess_as_category(self):
+        self.mock('get_room_photo_categories', return_value=[('Deluxe', 'https://example.test/deluxe.jpg')])
+        self.mock('get_hotel_photo', return_value=None)
+        app._handle_ai_photo_route(
+            GUEST,
+            {'name':'Kitty','room':'203'},
+            {'photo_target':'Room'},
+            'Room ki photo hogi',
+        )
+        self.assertEqual(self.sent.call_count, 1)
+        reply = self.sent.call_args.args[1]
+        self.assertIn('Room Categories', reply)
+        self.assertIn('Deluxe', reply)
+        app.notify_reception_request.assert_not_called()
+
     def test_missing_photo_delivery_failure_uses_short_hinglish_correction(self):
         ticket = {'guest_phone':GUEST,'delivery_status':'accepted','status':'pending'}
         app.reception_requests_by_alert['photo-alert'] = ticket

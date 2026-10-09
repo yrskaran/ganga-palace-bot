@@ -3511,6 +3511,7 @@ def _openai_semantic_schema():
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "understood_as": {"type": "string"},
             "action": {
                 "type": "string",
                 "enum": [
@@ -3546,7 +3547,7 @@ def _openai_semantic_schema():
             "confidence": {"type": "number"},
         },
         "required": [
-            "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
+            "understood_as", "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
             "service", "needs_reception", "reply", "confidence"
         ],
     }
@@ -3594,13 +3595,30 @@ Local guide:
 {_compact_ai_text(local_guide_context(), 1800)}
 """
 
-    messages = [{"role": "developer", "content": system_prompt}]
-    for item in history[-15:]:
+    # Bound the full prompt while keeping the newest context first; old turns
+    # are dropped before the current guest message or hotel facts are shortened.
+    current_text = str(user_text or "")
+    history_budget = max(
+        0,
+        12000 - len(system_prompt.encode("utf-8")) - len(current_text.encode("utf-8")),
+    )
+    recent_messages = []
+    for item in reversed(history[-15:]):
         role = item.get("role", "user")
         content = str(item.get("content", "")).strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": str(user_text)})
+        if role not in {"user", "assistant"} or not content or history_budget <= 0:
+            continue
+        raw = content.encode("utf-8")
+        if len(raw) > history_budget:
+            content = raw[-history_budget:].decode("utf-8", errors="ignore").lstrip()
+            history_budget = 0
+        else:
+            history_budget -= len(raw)
+        if content:
+            recent_messages.append({"role": role, "content": content})
+    messages = [{"role": "developer", "content": system_prompt}]
+    messages.extend(reversed(recent_messages))
+    messages.append({"role": "user", "content": current_text})
     return messages
 
 
@@ -5068,7 +5086,7 @@ def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=Fals
     # backend functions continue to use the complete hotel_data.txt.
     history = _ai_recent_history(sender_phone)
     knowledge_query = " ".join(item["content"] for item in history[-4:]) + " " + guest_message
-    hotel_db = _ai_knowledge_snapshot(3800, knowledge_query)
+    hotel_db = _ai_knowledge_snapshot(3000, knowledge_query)
     time_context = ai_time_context()
 
     system_prompt = f"""
@@ -5087,13 +5105,29 @@ Hotel knowledge:
     # Give the model real role-separated conversation turns, not only a
     # transcript pasted into the system prompt. This is what lets it resolve
     # short follow-ups such as "Masala", "haan", "aur batao", "wahi", etc.
-    messages = [{"role": "system", "content": system_prompt}]
-    for item in history:
+    # Cap message bytes while preserving the newest complete context turns.
+    current_text = str(user_text or "")
+    history_budget = max(
+        0,
+        12400 - len(system_prompt.encode("utf-8")) - len(current_text.encode("utf-8")),
+    )
+    recent_messages = []
+    for item in reversed(history[-15:]):
         role = item.get("role", "user")
         content = str(item.get("content", "")).strip()
-        if role in {"user", "assistant"} and content:
-            messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": str(user_text)})
+        if role not in {"user", "assistant"} or not content or history_budget <= 0:
+            continue
+        raw = content.encode("utf-8")
+        if len(raw) > history_budget:
+            content = raw[-history_budget:].decode("utf-8", errors="ignore").lstrip()
+            history_budget = 0
+        else:
+            history_budget -= len(raw)
+        if content:
+            recent_messages.append({"role": role, "content": content})
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(reversed(recent_messages))
+    messages.append({"role": "user", "content": current_text})
 
     payload = {
         "model": model,
@@ -6641,10 +6675,11 @@ Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
 {demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
+Read the whole latest message with recent chat context before choosing an action; never route on a keyword alone. Use context for typos, speech-to-text errors, abbreviations and Hinglish. Summarize the guest's intent in understood_as. If still unclear, ask one natural clarification. Backend actions happen only after this interpretation and validation; never claim success before confirmation.
 For a hotel fact that is absent from HOTEL KNOWLEDGE, use RECEPTION with needs_reception=true and a brief, warm acknowledgement that you are checking with reception. This reception-confirmation flow is authorized; do not ask the guest again for permission. Use ROOM_OPTIONS only when the current message actually asks for room categories/types, not when it asks which ID/document works. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. A known, verified informational answer must not create a staff request.
 If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
-{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
+{{"understood_as":"short plain-language meaning of the whole message in context","action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6708,6 +6743,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 if item_name:
                     cleaned_items.append({"name": item_name, "qty": qty})
             result = {
+                "understood_as": str(obj.get("understood_as", "")).strip()[:240],
                 "action": action,
                 "intent": action if action in {"COMPLAINT","ORDER_CANCEL","ORDER_SELECTION","ORDER","SERVICE","RECEPTION"} else str(obj.get("intent", action)).strip().upper(),
                 "category": category,
@@ -6721,7 +6757,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
-            print(f"AI UNDERSTANDING: provider={provider_name} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
+            print(f"AI UNDERSTANDING: provider={provider_name} meaning={result['understood_as']!r} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
             _record_ai_readiness("available", provider_name)
             return result
         except Exception as exc:
@@ -8509,23 +8545,6 @@ def _process_and_reply(message, sender_phone, msg_type):
     remember_guest_language(sender_phone, user_text)
 
     import demo_food
-    # Pilot: AI interprets the demo guest request; backend alone handles
-    # menu prices, confirmed orders, Sheet writes and bills.
-    demo_ai_attempted = False
-    demo_ai_result = None
-    if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
-        demo_pending = demo_food_sessions.get(sender_phone)
-        if not (demo_pending and (is_yes(user_text) or is_no(user_text))):
-            demo_ai_attempted = True
-            demo_ai_result = understand_guest_request(user_text, None, sender_phone)
-    if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=demo_ai_result):
-        return
-
-    # Operational hotels must have a verified menu before accepting an order.
-    # The configured Shreya flow is explicitly demo-only and stays in demo_food.
-    if not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
-        return
-
     t = normalize_text(user_text)
     guest_info = None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone)
     # One targeted live refresh when the in-memory Rooms cache has no matching guest.
@@ -8547,6 +8566,20 @@ def _process_and_reply(message, sender_phone, msg_type):
         if old_checkin and (is_inhouse or time.time() - old_checkin.get("created", time.time()) > 1800):
             checkin_sessions.pop(sender_phone, None)
 
+    # The model reads every guest turn with the hotel/stay context before any
+    # conversational shortcut or backend action can answer it.
+    ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
+    semantic_ai_unavailable = ai_understanding is None
+
+    # Demo food is a guarded executor: it uses the AI's intent, while prices,
+    # check-in state, confirmations, and Sheet writes remain backend-verified.
+    if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=ai_understanding):
+        return
+
+    # Operational hotels must have a verified menu before accepting an order.
+    if not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
+        return
+
     if handle_service_guest_confirmation(sender_phone, user_text, message):
         return
 
@@ -8554,12 +8587,12 @@ def _process_and_reply(message, sender_phone, msg_type):
     # sightseeing routes and before an older pending food order.
     with state_lock:
         checkin_active = bool(checkin_sessions.get(sender_phone))
-    if not checkin_active and handle_human_guide_request(sender_phone, user_text, guest_info):
+    if semantic_ai_unavailable and not checkin_active and handle_human_guide_request(sender_phone, user_text, guest_info):
         return
 
     # Short "what options?" replies should continue the sightseeing topic the
     # bot just introduced, instead of being reclassified as room options.
-    if _contextual_local_guide_options_reply(sender_phone, user_text):
+    if semantic_ai_unavailable and _contextual_local_guide_options_reply(sender_phone, user_text):
         return
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
@@ -8571,20 +8604,20 @@ def _process_and_reply(message, sender_phone, msg_type):
         return
 
     # Group-size room questions need verified capacity, not a guessed category.
-    if _handle_room_occupancy_question(sender_phone, user_text, guest_info):
+    if semantic_ai_unavailable and _handle_room_occupancy_question(sender_phone, user_text, guest_info):
         return
 
     # Reception follow-ups take priority over any older food confirmation state.
     if handle_reception_request_followup(sender_phone, user_text):
         return
 
-    if handle_notification_question(sender_phone, user_text, guest_info):
+    if semantic_ai_unavailable and handle_notification_question(sender_phone, user_text, guest_info):
         return
 
-    if handle_contextual_time_followup(sender_phone, user_text):
+    if semantic_ai_unavailable and handle_contextual_time_followup(sender_phone, user_text):
         return
 
-    if t in {"room number to pta hoga", "room number toh pata hoga", "mera room number", "my room number", "room number pata hai"}:
+    if semantic_ai_unavailable and t in {"room number to pta hoga", "room number toh pata hoga", "mera room number", "my room number", "room number pata hai"}:
         if is_inhouse:
             send_whatsapp_message(sender_phone, f"Aapke hotel record mein Room {guest_info['room']} hai. Kis cheez mein madad chahiye?")
         else:
@@ -8593,7 +8626,7 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # Explicit Haridwar fact requests are deterministic and rotated from the
     # verified fact bank so repeated "aur fact" requests do not get the same card.
-    if _is_haridwar_fact_request(user_text, sender_phone):
+    if semantic_ai_unavailable and _is_haridwar_fact_request(user_text, sender_phone):
         fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
         if fact_reply:
             send_whatsapp_message(sender_phone, fact_reply)
@@ -8604,16 +8637,14 @@ def _process_and_reply(message, sender_phone, msg_type):
     # One semantic AI pass for the whole guest turn. First consume a safe local
     # hotel-data route for common deterministic questions; this dramatically reduces
     # free-tier AI usage without weakening semantic AI for ambiguous requests.
-    ai_understanding = demo_ai_result
     with state_lock:
         _dup_pending_now = duplicate_order_sessions.get(sender_phone)
         _order_pending_now = order_sessions.get(sender_phone)
         _checkin_now = checkin_sessions.get(sender_phone)
     _skip_semantic_ai = bool(_checkin_now) or bool((_dup_pending_now or _order_pending_now) and (is_yes(user_text) or is_no(user_text)))
-    semantic_ai_unavailable = False
-
-    # Explain the assistant before spending AI quota; preserve pending food state.
-    if not _skip_semantic_ai and _reply_capability_question(sender_phone, user_text, guest_info):
+    # Explain the assistant only if all AI providers are unavailable; otherwise
+    # the semantic answer below owns the guest-facing reply.
+    if semantic_ai_unavailable and not _skip_semantic_ai and _reply_capability_question(sender_phone, user_text, guest_info):
         return
 
     learned = _lookup_reception_knowledge(user_text)
@@ -8636,7 +8667,7 @@ def _process_and_reply(message, sender_phone, msg_type):
         r"(?:ok|okay|alright|sure|great|nice|perfect)\s+(?:thanks?(?:\s+you)?|thank you|thankyou|thx|ty)(?:\s+ji)?",
         normalize_text(user_text),
     ))
-    if social_first and not _skip_semantic_ai:
+    if semantic_ai_unavailable and social_first and not _skip_semantic_ai:
         if _local_conversation_fallback(sender_phone, user_text, guest_info):
             return
         # Unknown emoji/punctuation-only input gets no canned "I don't understand"
@@ -8647,7 +8678,7 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # Guest-requested Haridwar facts are deterministic and rotate through the
     # verified fact bank before AI, so "ek aur fact" does not repeat the same card.
-    if not _skip_semantic_ai and _is_haridwar_fact_request(user_text, sender_phone):
+    if semantic_ai_unavailable and not _skip_semantic_ai and _is_haridwar_fact_request(user_text, sender_phone):
         fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
         if fact_reply:
             send_whatsapp_message(sender_phone, fact_reply)
@@ -8656,14 +8687,14 @@ def _process_and_reply(message, sender_phone, msg_type):
             print("LOCAL GUIDE FACT: rotated fact card", flush=True)
             return
 
-    contextual_time_reply = _contextual_time_followup_reply(sender_phone, user_text)
+    contextual_time_reply = _contextual_time_followup_reply(sender_phone, user_text) if semantic_ai_unavailable else None
     if contextual_time_reply and not _skip_semantic_ai:
         send_whatsapp_message(sender_phone, contextual_time_reply)
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", contextual_time_reply)
         return
 
-    if _is_haridwar_fact_request(user_text, sender_phone) and not _skip_semantic_ai:
+    if semantic_ai_unavailable and _is_haridwar_fact_request(user_text, sender_phone) and not _skip_semantic_ai:
         fact_reply = build_unique_haridwar_fact(sender_phone, user_text)
         if fact_reply:
             send_whatsapp_message(sender_phone, fact_reply)
@@ -8671,29 +8702,27 @@ def _process_and_reply(message, sender_phone, msg_type):
             remember_conversation(sender_phone, "assistant", fact_reply)
             return
 
-    if not _skip_semantic_ai and _hotel_service_enquiry_reply(sender_phone, user_text):
+    if semantic_ai_unavailable and not _skip_semantic_ai and _hotel_service_enquiry_reply(sender_phone, user_text):
         return
 
     # Keep common hotel-location questions conversational and complete: answer
     # the location and share the configured map link in the same turn.
-    if not _skip_semantic_ai and _hotel_location_reply(sender_phone, user_text):
+    if semantic_ai_unavailable and not _skip_semantic_ai and _hotel_location_reply(sender_phone, user_text):
         return
 
-    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text, facility_only=True):
+    if semantic_ai_unavailable and not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text, facility_only=True):
         return
 
-    if not _skip_semantic_ai and _is_explicit_full_menu_request(user_text):
+    if semantic_ai_unavailable and not _skip_semantic_ai and _is_explicit_full_menu_request(user_text):
         msgs = send_full_menu_presentation(sender_phone, include_prices=explicitly_asks_price(user_text))
         remember_conversation(sender_phone, "user", user_text)
         if msgs:
             remember_conversation(sender_phone, "assistant", "\n\n".join(msgs))
         return
 
-    # AI is the semantic brain for actual language/contextual requests.
-    if not _skip_semantic_ai:
-        if not demo_ai_attempted:
-            ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
-        semantic_ai_unavailable = ai_understanding is None
+    # The semantic interpretation was produced before all routes above.
+    # _skip_semantic_ai now only protects transactional confirmations from
+    # conversational fallbacks; it does not skip the model pass.
 
     # Explicit food delivery language is authoritative for the primary action.
     # A guest may include a reason such as "sar me dard hai"; that context must not
@@ -9381,14 +9410,14 @@ def _process_and_reply(message, sender_phone, msg_type):
         if ai_action in {"WIFI", "HOTEL_TIMINGS", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE", "ANSWER", "RECEPTION"}:
             # Catch misleading room-category classifications even if model reply
             # is empty. Never let a model's RECEPTION label become consent.
-            if (ai_action == "RECEPTION" or ai_understanding.get("needs_reception")) and _room_category_question(user_text):
+            if ai_understanding.get("needs_reception") and _room_category_question(user_text):
                 _send_verified_room_categories(
                     sender_phone, user_text,
                     show_prices=(explicitly_asks_price(user_text)
                                  or ai_understanding.get('show_prices') is True),
                 )
                 return
-            if ai_action == "RECEPTION" and not ai_understanding.get("reply", "").strip():
+            if ai_understanding.get("needs_reception") and not ai_understanding.get("reply", "").strip():
                 reply_to_reception_request(sender_phone, guest_info, user_text)
                 return
             reply = ai_understanding.get("reply", "").strip()
@@ -9397,7 +9426,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                 reply = attach_google_maps_links(reply).strip()
                 reply = _respectful_guest_reply(reply, guest_info)
                 if reply:
-                    if ai_action == "RECEPTION" or ai_understanding.get("needs_reception"):
+                    if ai_understanding.get("needs_reception"):
                         # Confidence alone is NOT guest consent. In the reported
                         # case Groq said RECEPTION (0.95) for a simple room list.
                         if _room_category_question(user_text):

@@ -3,6 +3,7 @@
 No Rooms/Kitchen_Orders writes, staff notifications, payment or real fulfilment.
 """
 import re
+from difflib import SequenceMatcher
 import threading
 import time
 from uuid import uuid4
@@ -316,6 +317,70 @@ def bill(bot, phone):
     return formatted_demo_bill(hotel, details, total, len(ids))
 
 
+def verified_semantic_basket(bot, semantic):
+    """Resolve AI-understood dishes against configured menu, never AI prices.
+
+    A near spelling-match still requires the guest to CONFIRM the preview.
+    Uncertain matches ask for clarification; partial/unsupported AI baskets
+    cannot reach a Sheet write.
+    """
+    config = bot.CUSTOMER_CONFIG or {}
+    catalog = {}
+    for row in config.get('menu') or []:
+        if isinstance(row, dict) and row.get('name'):
+            try:
+                price = int(row['price'])
+            except (ValueError, TypeError, KeyError):
+                continue
+            if price >= 0:
+                catalog[bot.normalize_text(row['name'])] = (str(row['name']), price)
+    requested = semantic.get('items') or []
+    if not isinstance(requested, list) or not requested or len(requested) > 20 or not catalog:
+        return {'invalid': True}
+    found, corrected = {}, []
+    for item in requested:
+        if not isinstance(item, dict):
+            return {'invalid': True}
+        name = str(item.get('name') or '').strip()
+        normalized = bot.normalize_text(name)
+        if not normalized:
+            return {'invalid': True}
+        try:
+            qty = bot.validated_quantity(item.get('qty', 1))
+        except (ValueError, TypeError):
+            return {'invalid': True}
+        if normalized in catalog:
+            actual = catalog[normalized]
+        else:
+            candidates = sorted(
+                ((SequenceMatcher(None, normalized, key).ratio(), key)
+                 for key in catalog),
+                reverse=True
+            )
+            top_score, top_key = candidates[0]
+            runner_score = candidates[1][0] if len(candidates) > 1 else 0.0
+            # Conservative typo threshold and separation from the runner-up:
+            # never silently turn two similar dishes into one choice.
+            threshold = 0.88 if len(normalized) <= 5 else 0.83
+            if top_score < threshold or top_score - runner_score < 0.10:
+                suggestions = [catalog[key][0] for score, key in candidates[:2]
+                               if score >= 0.68]
+                return {'invalid': True, 'suggestions': suggestions}
+            actual = catalog[top_key]
+            corrected.append((name, actual[0]))
+        canonical, price = actual
+        old = found.get(canonical, {}).get('qty', 0)
+        try:
+            quantity = bot.validated_quantity(old + qty)
+        except (ValueError, TypeError):
+            return {'invalid': True}
+        found[canonical] = {'name': canonical, 'qty': quantity,
+                            'unit_price': price, 'amount': quantity * price}
+    items = list(found.values())
+    return {'generic': None, 'items': items, 'total': sum(x['amount'] for x in items),
+            'complete': True, 'corrections': corrected}
+
+
 def handle(bot, phone, text, semantic=None):
     if not bot.CUSTOMER_DEMO_MODE or not (bot.CUSTOMER_CONFIG or {}).get('demo_food_enabled'):
         return False
@@ -426,7 +491,11 @@ def handle(bot, phone, text, semantic=None):
             say('Abhi koi demo order confirmation pending nahi hai. Menu se items aur quantity bhej dein.')
             return True
         parsed = bot.find_menu_items(text)
-        foodish = bool(parsed.get('items') or parsed.get('generic') or parsed.get('invalid')) or bool(re.search(r'\b(?:order|food|khana|cancel)\b', normalized))
+        foodish = (
+            semantic_action in {'ORDER', 'ORDER_SELECTION', 'ORDER_CANCEL'}
+            or bool(parsed.get('items') or parsed.get('generic') or parsed.get('invalid'))
+            or bool(re.search(r'\b(?:order|food|khana|cancel)\b', normalized))
+        )
         if not foodish:
             return False
         # No silent partial basket, fractional/negative quantities or negated order.
@@ -439,11 +508,22 @@ def handle(bot, phone, text, semantic=None):
             else:
                 say('Sample prices ke liye MENU bhejein.')
             return True
-        # Reuse the exact configured-menu parser, stripping only order-request phrasing.
-        basket = re.sub(r"\b(?:i would like|i want|can i get|bhej do|bhijwa do|bhejna|bhijwao?|send|bring|mangwao?|de do|la do|kar do)\b", ' ', normalized)
-        parsed = bot.find_menu_items(basket)
+        # Trust AI for language understanding (including implicit quantity=1 and
+        # typos), NOT for prices or permission to save. Verify every extracted
+        # item against the configured demo menu and ask for guest confirmation.
+        if semantic_action in {'ORDER', 'ORDER_SELECTION'} and isinstance(semantic, dict) and semantic.get('items'):
+            parsed = verified_semantic_basket(bot, semantic)
+        else:
+            # AI offline: conservative local parser remains a fallback.
+            basket = re.sub(r"\b(?:i would like|i want|can i get|bhej do|bhijwa do|bhejna|bhijwao?|send|bring|mangwao?|de do|la do|kar do|leke aa|le aao)\b", ' ', normalized)
+            parsed = bot.find_menu_items(basket)
         if not parsed.get('complete') or parsed.get('invalid') or parsed.get('generic'):
-            say('Demo order clear nahi hua. MENU mein listed exact items aur quantity bhejein, jaise 2 Masala Chai aur 1 Poha. Abhi koi entry nahi bani.')
+            suggestions = parsed.get('suggestions') or []
+            if suggestions:
+                options = ' ya '.join(suggestions)
+                say(f"Ji, aap *{options}* keh rahe hain? 😊 Ek baar dish ka naam confirm kar dijiye, phir order bana dungi.")
+            else:
+                say('Sorry ji, dish clear nahi ho paayi. Menu se naam dobara bata dijiye, main order confirm karwa dungi. Abhi koi entry nahi bani.')
             return True
         if pending and pending_state(bot, pending) in {'sending', 'unknown', 'saved'}:
             say('Pichhle demo order ki Sheet entry pehle verify karni hai. CONFIRM bhejein; abhi naya cart nahi banaungi.')
@@ -451,8 +531,14 @@ def handle(bot, phone, text, semantic=None):
         pending = {'id':'DEMO-' + uuid4().hex, 'created':time.time(),
                    'items':parsed['items'], 'total':parsed['total'], 'phone':phone}
         bot.demo_food_sessions[phone] = pending
+        correction_note = ''
+        if parsed.get('corrections'):
+            correction_note = ("Ji, maine "
+                               + ', '.join(f"*{correct}*" for _, correct in parsed['corrections'])
+                               + " samjha hai 😊 Sahi hai na?\n\n")
         say(
-            "🍽️ *Aapka demo food order*\n━━━━━━━━━━━━━━━━━━━━\n"
+            correction_note
+            + "🍽️ *Aapka demo food order*\n━━━━━━━━━━━━━━━━━━━━\n"
             + pretty_order_lines(pending['items'])
             + f"\n━━━━━━━━━━━━━━━━━━━━\n💰 *Total: {pretty_total(pending['total'])}*\n\n"
             + "Ji, order sahi hai? *CONFIRM* ya *CANCEL* bhej dein.\n"

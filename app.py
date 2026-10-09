@@ -6681,6 +6681,9 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     """
     t = normalize_text(user_text)
     price_requested = explicitly_asks_price(user_text)
+    # Low-risk, data-backed fallback when every AI provider is unavailable.
+    if _room_category_question(user_text):
+        return _send_verified_room_categories(sender_phone, user_text, price_requested)
 
     # 1) Breakfast timing: answer from hotel_data.txt before spending an AI call.
     # Prefer an explicitly configured service timing; otherwise expose the configured
@@ -8829,6 +8832,21 @@ def _process_and_reply(message, sender_phone, msg_type):
                 return
 
         if ai_action in {"WIFI", "HOTEL_TIMINGS", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE", "ANSWER", "RECEPTION"}:
+            # Catch misleading room-category classifications even if model reply
+            # is empty. Never let a model's RECEPTION label become consent.
+            if (ai_action == "RECEPTION" or ai_understanding.get("needs_reception")) and _room_category_question(user_text):
+                _send_verified_room_categories(
+                    sender_phone, user_text,
+                    show_prices=(explicitly_asks_price(user_text)
+                                 or ai_understanding.get('show_prices') is True),
+                )
+                return
+            if ai_action == "RECEPTION" and not ai_understanding.get("reply", "").strip():
+                if _guest_authorized_reception_contact(user_text):
+                    reply_to_reception_request(sender_phone, guest_info, user_text)
+                else:
+                    _offer_reception_contact(sender_phone, user_text)
+                return
             reply = ai_understanding.get("reply", "").strip()
             if reply:
                 reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", reply).strip()

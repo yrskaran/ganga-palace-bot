@@ -336,6 +336,50 @@ class DemoFoodTests(unittest.TestCase):
             self.assertIn('₹260', content)
             self.assertNotIn('• Butter Naan — ₹60', content)
 
+    def test_hinglish_paise_ke_sath_always_shows_breakfast_prices(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            cases = [
+                ('Breakfast ke options paise ke sath batao', 'Poha', '₹70'),
+                ('Breakfast ke rates batao', 'Masala Chai', '₹30'),
+                ('Nashta rupaye ke saath dikhao', 'Paneer Paratha', '₹130'),
+                ('Breakfast के दाम बताओ', 'Poha', '₹70'),
+                ('Lunch ki kimat batao', 'Butter Naan', '₹60'),
+                ('Dinner menu with prices', 'Shahi Paneer', '₹240'),
+            ]
+            for prompt, dish, cost in cases:
+                with self.subTest(prompt=prompt):
+                    self.sent.reset_mock()
+                    self.assertTrue(self.turn(prompt))
+                    reply = '\n'.join(call.args[1] for call in self.sent.call_args_list)
+                    self.assertIn(dish, reply)
+                    self.assertIn(cost, reply)
+                    self.assertIn('\x60\x60\x60', reply)
+            self.sent.reset_mock()
+            self.assertTrue(self.turn('Breakfast ke options batao'))
+            without = '\n'.join(call.args[1] for call in self.sent.call_args_list)
+            self.assertIn('Poha', without)
+            self.assertNotIn('₹70', without)
+            self.assertNotIn('\x60\x60\x60', without)
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_shared_price_intent_uses_whole_words_not_timing_questions(self):
+        for phrase in [
+            'paise ke sath', 'paisa kitna', 'paiso ke sath', 'rupaye me batao',
+            'dinner ka daam', 'kitni ki', 'rate', 'cost', '₹', 'पैसे', 'दाम', 'कीमत',
+        ]:
+            with self.subTest(phrase=phrase):
+                self.assertTrue(app.explicitly_asks_price(phrase))
+        for phrase in [
+            'Breakfast ke options batao', 'Dinner me kya hai',
+            'breakfast kitne baje hota hai', 'lunch timing',
+        ]:
+            with self.subTest(phrase=phrase):
+                self.assertFalse(app.explicitly_asks_price(phrase))
+
     def test_meal_price_menu_keeps_original_configured_rates(self):
         import json
         from pathlib import Path

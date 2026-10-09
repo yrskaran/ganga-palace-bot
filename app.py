@@ -6085,7 +6085,7 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
             bilingual_text(
                 guest_phone,
                 f"Sorry, your request{detail} didn't reach reception on WhatsApp. Please check directly with the front desk.",
-                f"Sorry, aapki request{detail} reception ke WhatsApp tak nahi pahunchi. Front desk se seedhe confirm kar lijiye.",
+                "Sorry, reception ko request nahi pahunchi on WhatsApp" + (f" ({request})" if request else "") + ". Front desk se seedhe confirm kar lijiye.",
                 f"क्षमा कीजिए, आपकी रिक्वेस्ट{detail} रिसेप्शन के WhatsApp तक नहीं पहुँची। कृपया फ्रंट डेस्क से सीधे पूछें।",
             )
         )
@@ -6680,7 +6680,7 @@ def _is_explicit_full_menu_request(user_text):
     )
 
 
-def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
+def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False, facility_only=False):
     """Serve safe, configured hotel answers BEFORE spending an AI call.
 
     This is the main AI-quota protection layer: common, deterministic hotel
@@ -6717,6 +6717,19 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         remember_conversation(sender_phone, "user", user_text)
         remember_conversation(sender_phone, "assistant", msg)
         return True
+
+    # Keep these verified facility facts deterministic without intercepting
+    # room-category or other nuanced questions that benefit from the AI router.
+    if facility_only:
+        if "parking" in t:
+            parking = get_hotel_value("Parking", "")
+            if parking:
+                msg = f"🚗 {parking}"
+                send_whatsapp_message(sender_phone, msg)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", msg)
+                return True
+        return False
 
     # Low-risk, data-backed fallback when every AI provider is unavailable.
     if _room_category_question(user_text):
@@ -7739,7 +7752,13 @@ def _unconfigured_food_order_reply(sender_phone, user_text):
         return False
 
     parsed = find_menu_items(user_text)
-    if parsed.get("complete") and parsed.get("items"):
+    parsed_items = parsed.get("items") or []
+    if parsed_items and all(item.get("unit_price") is not None for item in parsed_items):
+        # A recognized menu item with a configured price is safe even when the
+        # guest adds unrelated context (for example, a headache) that makes the
+        # parser's overall basket confidence incomplete.
+        return False
+    if parsed.get("complete") and parsed_items:
         return False
     if parsed.get("generic"):
         choices = get_hotel_config().get("generic_menu", {}).get(parsed["generic"], [])
@@ -8069,9 +8088,6 @@ def _process_and_reply(message, sender_phone, msg_type):
     # Remember language for both typed messages and voice transcriptions.
     remember_guest_language(sender_phone, user_text)
 
-    if _unconfigured_food_order_reply(sender_phone, user_text):
-        return
-
     import demo_food
     # Pilot: AI interprets the demo guest request; backend alone handles
     # menu prices, confirmed orders, Sheet writes and bills.
@@ -8083,6 +8099,11 @@ def _process_and_reply(message, sender_phone, msg_type):
             demo_ai_attempted = True
             demo_ai_result = understand_guest_request(user_text, None, sender_phone)
     if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=demo_ai_result):
+        return
+
+    # Operational hotels must have a verified menu before accepting an order.
+    # The configured Shreya flow is explicitly demo-only and stays in demo_food.
+    if not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
         return
 
     t = normalize_text(user_text)
@@ -8220,7 +8241,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     if not _skip_semantic_ai and _hotel_location_reply(sender_phone, user_text):
         return
 
-    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text):
+    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text, facility_only=True):
         return
 
     if not _skip_semantic_ai and _is_explicit_full_menu_request(user_text):

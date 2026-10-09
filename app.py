@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V61-ALIGNED-MENU-PRICES"
+APP_VERSION = "HOTEL-AI-V62-HINGLISH-PRICE-INTENT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5158,12 +5158,26 @@ def _explicit_food_order_request(text, parsed=None):
 
 
 def explicitly_asks_price(text):
+    """Recognize natural Hindi, Hinglish and English price requests.
+
+    Keep this intent check shared by demo menus and the ordinary hotel menu.
+    In particular, "paise ke saath batao" must show the listed rates.
+    """
     t = normalize_text(text)
     markers = [
         "price", "rate", "tariff", "kitne ka", "kitna ka",
-        "kitne ke", "bill kitna", "total kitna", "cost", "how much"
+        "kitne ke", "kitne ki", "kitni ki", "kitne me", "kitne mein",
+        "kitni me", "kitni mein", "bill kitna", "total kitna",
+        "cost", "how much"
     ]
-    return any(m in t for m in markers)
+    if any(m in t for m in markers):
+        return True
+    return bool(re.search(
+        r"\b(?:paisa|paise|paiso|pese|rupaye|rupay|rupiye|rupaiye|rupiya|"
+        r"rupee|rupees|rs|daam|dam|kimat|keemat|qeemat)\b"
+        r"|₹|पैसा|पैसे|पैसों|रुपया|रुपये|रुपए|रुपयों|दाम|कीमत|रेट",
+        t,
+    ))
 
 
 def _menu_display_title(section_name):

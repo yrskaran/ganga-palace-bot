@@ -339,7 +339,7 @@ def handle(bot, phone, text):
             return True
         meal = meal_request(normalized)
         if re.search(r'\bmenu\b|मेन्यू|मेनू', normalized) or meal:
-            prices = bool(re.search(r'\b(?:price|prices|rate|rates|cost|daam|dam)\b|दाम|कीमत|रेट', normalized))
+            prices = bot.explicitly_asks_price(text)
             for message in menu_messages(bot, meal=meal, include_prices=prices):
                 say(message)
             return True

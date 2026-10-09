@@ -85,8 +85,9 @@ class DemoFoodTests(unittest.TestCase):
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.turn('DEMO REMINDERS ON')
             self.sent.reset_mock()
-            self.addCleanup(patch.stopall)
-            patch.object(app, 'get_guest_response_language', return_value='english').start()
+            language_patch = patch.object(app, 'get_guest_response_language', return_value='english')
+            language_patch.start()
+            self.addCleanup(language_patch.stop)
             for hour, expected in [(8, 'breakfast'), (13, 'lunch'),
                                    (17, 'Ganga Aarti'), (19, 'dinner')]:
                 with self.subTest(hour=hour):

@@ -741,6 +741,40 @@ class IntegrationFlows(unittest.TestCase):
             [],
         )
 
+    def test_demo_worker_uses_only_opted_in_reminders_not_real_guest_sheet(self):
+        import demo_food
+        with patch.object(app, 'CUSTOMER_DEMO_MODE', True), \
+             patch.object(app, 'CUSTOMER_CONFIG', {'demo_mode': True, 'demo_reminders_enabled': True}), \
+             patch.object(app, 'fetch_sheet_data_sync', return_value=False) as fetch, \
+             patch.object(app, 'reconcile_lifecycle_from_room_sheet',
+                          side_effect=AssertionError('Real hotel lifecycle must be isolated')) as reconcile, \
+             patch.object(app, 'process_complaint_followups'), \
+             patch.object(app, 'maybe_send_owner_report'), \
+             patch.object(demo_food, 'run_demo_reminders', return_value=0) as demo_run, \
+             patch.object(app.time, 'sleep', side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                app.monitor_guest_status_lifecycle()
+        fetch.assert_called_once()
+        reconcile.assert_not_called()
+        demo_run.assert_called_once()
+        app.notify_reception_request.assert_not_called()
+
+    def test_demo_worker_never_sends_real_proactive_messages_when_disabled(self):
+        import demo_food
+        with patch.object(app, 'CUSTOMER_DEMO_MODE', True), \
+             patch.object(app, 'CUSTOMER_CONFIG', {'demo_mode': True, 'demo_reminders_enabled': False}), \
+             patch.object(app, 'fetch_sheet_data_sync', return_value=False), \
+             patch.object(app, 'reconcile_lifecycle_from_room_sheet',
+                          side_effect=AssertionError('Unsafe real lifecycle access')) as reconcile, \
+             patch.object(app, 'process_complaint_followups'), \
+             patch.object(app, 'maybe_send_owner_report'), \
+             patch.object(demo_food, 'run_demo_reminders') as demo_run, \
+             patch.object(app.time, 'sleep', side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                app.monitor_guest_status_lifecycle()
+        demo_run.assert_not_called()
+        reconcile.assert_not_called()
+
     def test_demo_mode_does_not_fetch_real_guest_list(self):
         client = Mock()
         with patch.object(app, 'CUSTOMER_DEMO_MODE', True), \

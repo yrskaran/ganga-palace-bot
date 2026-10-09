@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V65-DEMO-CHECKIN-ORDER-GATE"
+APP_VERSION = "HOTEL-AI-V66-OPTIN-DEMO-REMINDERS"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -10337,6 +10337,20 @@ def monitor_guest_status_lifecycle():
     while True:
         try:
             fetch_sheet_data_sync()
+            if CUSTOMER_DEMO_MODE:
+                # The Shreya demo must not reconcile or message the real
+                # Ganga hotel's Rooms/Lifecycle_Automation data. Previously
+                # this loop retried the missing live guest cache every minute.
+                if (CUSTOMER_CONFIG or {}).get("demo_reminders_enabled"):
+                    import demo_food
+                    demo_food.run_demo_reminders(sys.modules[__name__], now_ist())
+                # Preserve other existing periodic jobs after the independent
+                # demo scheduler, so a slow Sheets/owner task cannot skip the
+                # test guest's scheduled reminder on this cycle.
+                process_complaint_followups()
+                maybe_send_owner_report(now_ist())
+                time.sleep(LIFECYCLE_LOOP_SECONDS)
+                continue
             if shared_store.get("schema_valid") is False:
                 time.sleep(30)
                 continue

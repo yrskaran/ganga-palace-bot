@@ -111,23 +111,67 @@ def menu_messages(bot, meal=None, include_prices=False):
     }
     if meal in headings:
         icon, title, keys = headings[meal]
-        parts = [f'{icon} *{hotel} — {title}*', '━━━━━━━━━━━━━━━━━━━━']
+        intro = f'{icon} *{hotel}*\n*{title} Menu*'
+        intro += '\n_DEMO • sample menu_'
+        compact_divider = '──────────────'
+        groups_for_meal = []
         if meal == 'DINNER':
-            # Retain the familiar dinner paratha option from the original bot.
-            extras = [x for x in grouped['Breakfast'] if 'mix veg paratha' in x['name'].lower()]
+            # Keep the familiar vegetarian paratha option in dinner.
+            extras = [x for x in grouped['Breakfast']
+                      if 'mix veg paratha' in x['name'].lower()]
             if extras:
-                parts += ['*Paratha*'] + [
-                    _menu_item(x, include_prices) for x in extras
-                ] + ['']
+                groups_for_meal.append(('🫓', 'Special Paratha', extras))
         for key, symbol, group_title in MENU_GROUPS:
             if key in keys and grouped[key]:
-                parts.append(f'{symbol} *{group_title}*')
-                parts += [_menu_item(x, include_prices) for x in grouped[key]]
-                parts.append('')
-        example = '2 Poha + 1 Masala Chai' if meal == 'BREAKFAST' else '2 Dal Tadka + 2 Butter Naan'
-        parts += ['📝 *Order karna ho?*', 'Item name aur quantity bhej dijiye.', f'Jaise: {example}',
-                  '_DEMO menu: sample items/rates; real hotel kitchen order nahi jayega._']
-        return ['\n'.join(parts).strip()]
+                clean_title = {
+                    'Main Course': 'Sabzi & Dal',
+                    'Breads': 'Roti & Naan',
+                    'Rice': 'Rice',
+                    'Sides & Thali': 'Raita, Salad & Thali',
+                    'Breakfast': 'Breakfast',
+                    'Drinks': 'Tea & Drinks',
+                }.get(key, group_title)
+                groups_for_meal.append((symbol, clean_title, grouped[key]))
+
+        def card_body(groups):
+            return '\n\n'.join(
+                f'{symbol} *{name}*\n' +
+                '\n'.join(_menu_item(x, include_prices) for x in entries)
+                for symbol, name, entries in groups
+            )
+
+        example = '2 Poha + 1 Masala Chai' if meal == 'BREAKFAST' else '2 Butter Naan + 1 Dal Tadka'
+        invitation = (
+            '📝 *Kuch order karna hai?* 😊\n'
+            'Item aur quantity likh dijiye.\n'
+            f'Jaise: {example}\n'
+            '_Demo order only • kitchen mein nahi jayega._'
+        )
+
+        if meal == 'BREAKFAST':
+            # Breakfast fits naturally in one tidy card.
+            return [intro + '\n' + compact_divider + '\n\n'
+                    + card_body(groups_for_meal) + '\n\n'
+                    + compact_divider + '\n' + invitation]
+
+        # Keep lunch and dinner scannable on a phone: two small cards
+        # rather than a wall of 20+ dishes. Same items, no duplicates.
+        mains = [g for g in groups_for_meal
+                 if g[1] in {'Special Paratha', 'Sabzi & Dal'}]
+        sides = [g for g in groups_for_meal
+                 if g[1] not in {'Special Paratha', 'Sabzi & Dal'}]
+        cards = []
+        if mains:
+            cards.append(intro + '\n' + compact_divider + '\n\n'
+                         + card_body(mains))
+        if sides:
+            subtitle = f'{icon} *{title} • Roti & Sides*'
+            cards.append(subtitle + '\n' + compact_divider + '\n\n'
+                         + card_body(sides) + '\n\n'
+                         + compact_divider + '\n' + invitation)
+        elif cards:
+            cards[-1] += '\n\n' + compact_divider + '\n' + invitation
+        return cards
 
     # Entire menu: short, scannable cards rather than one giant 45-item bubble.
     batches = [

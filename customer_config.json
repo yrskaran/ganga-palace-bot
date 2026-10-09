@@ -385,5 +385,6 @@
   ],
   "demo_mode": true,
   "demo_food_enabled": true,
-  "demo_semantic_first": true
+  "demo_semantic_first": true,
+  "demo_require_checkin": true
 }

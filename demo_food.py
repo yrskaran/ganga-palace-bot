@@ -381,6 +381,24 @@ def verified_semantic_basket(bot, semantic):
             'complete': True, 'corrections': corrected}
 
 
+# This is a simulated guest for the sales demo, NEVER a verified hotel stay.
+DEMO_STAY_TTL_SECONDS = 12 * 60 * 60
+
+
+def demo_stay_active(bot, phone):
+    with bot.state_lock:
+        data = bot.demo_guest_sessions.get(phone)
+        if not isinstance(data, dict):
+            return False
+        created = float(data.get('created') or 0)
+        if data.get('status') != 'DEMO_ACTIVE' or not created:
+            return False
+        if time.time() - created > DEMO_STAY_TTL_SECONDS:
+            bot.demo_guest_sessions.pop(phone, None)
+            return False
+    return True
+
+
 def handle(bot, phone, text, semantic=None):
     if not bot.CUSTOMER_DEMO_MODE or not (bot.CUSTOMER_CONFIG or {}).get('demo_food_enabled'):
         return False
@@ -403,6 +421,39 @@ def handle(bot, phone, text, semantic=None):
 
     with lock:
         pending = bot.demo_food_sessions.get(phone)
+        require_demo_checkin = bool((bot.CUSTOMER_CONFIG or {}).get('demo_require_checkin'))
+        if require_demo_checkin:
+            if normalized in {'demo checkin', 'demo check in', 'demo guest checkin',
+                              'demo guest check in', 'test checkin', 'test check in'}:
+                if pending and pending_state(bot, pending) in {'sending', 'unknown'}:
+                    say('Pehle purane demo order ka Sheet status verify karna hoga. Abhi naya demo check-in start nahi karungi.')
+                    return True
+                if pending:
+                    bot.demo_food_sessions.pop(phone, None)
+                    pending = None
+                with bot.state_lock:
+                    bot.demo_guest_sessions[phone] = {
+                        'status': 'DEMO_ACTIVE', 'created': time.time()
+                    }
+                say('✅ *Demo check-in active hai* 😊\n'
+                    'Ye sirf test hai—real hotel check-in, room allotment ya ID verification nahi hua.\n'
+                    'Ab aap menu se demo food order try kar sakte hain. Order save karne se pehle confirmation loongi.')
+                return True
+            if normalized in {'demo checkout', 'demo check out', 'test checkout', 'test check out'}:
+                if pending and pending_state(bot, pending) in {'sending', 'unknown'}:
+                    say('Ek demo order ka Sheet status uncertain hai. Check-out se pehle use verify karna hoga.')
+                    return True
+                bot.demo_food_sessions.pop(phone, None)
+                with bot.state_lock:
+                    bot.demo_guest_sessions.pop(phone, None)
+                say('✅ Demo check-out ho gaya ji. Ab naya food order tabhi banega jab demo check-in dobara hoga.')
+                return True
+            if normalized in {'self checkin', 'self check in', 'checkin', 'check in',
+                              'guest checkin', 'guest check in'}:
+                say('Ji, real self check-in ke liye hotel reception ko booking aur ID verify karni hoti hai. '
+                    'Is demo profile mein real guest record/room allotment verify nahi hai.\n'
+                    'Sirf test ke liye *DEMO CHECKIN* likh sakte hain—isse asli check-in nahi hoga.')
+                return True
         if pending and time.time() - pending['created'] > 600:
             if pending_state(bot, pending) == 'prepared':
                 bot.demo_food_sessions.pop(phone, None)
@@ -464,6 +515,12 @@ def handle(bot, phone, text, semantic=None):
         } and not pending:
             return False
         if pending and bot.is_yes(text):
+            if require_demo_checkin and not demo_stay_active(bot, phone):
+                if pending_state(bot, pending) == 'prepared':
+                    bot.demo_food_sessions.pop(phone, None)
+                say('Ji, demo check-in active nahi hai. Isliye order save nahi karungi. '
+                    'Test karne ke liye pehle *DEMO CHECKIN* likh dijiye.')
+                return True
             try:
                 save(bot, phone, pending)
             except Exception as exc:
@@ -507,6 +564,11 @@ def handle(bot, phone, text, semantic=None):
                 say('DEMO prices\n' + lines(parsed['items']) + f"\nSample total: Rs. {parsed['total']}\nOrder banana ho toh items aur quantity bhejein.")
             else:
                 say('Sample prices ke liye MENU bhejein.')
+            return True
+        if require_demo_checkin and not demo_stay_active(bot, phone):
+            say('Ji, Veg Pulao ho ya koi aur dish, menu aap dekh sakte hain 😊 '
+                'Lekin room-service demo order se pehle check-in active hona zaroori hai.\n'
+                'Test ke liye *DEMO CHECKIN* bhej dijiye. Ye sirf simulation hai, real hotel check-in nahi.')
             return True
         # Trust AI for language understanding (including implicit quantity=1 and
         # typos), NOT for prices or permission to save. Verify every extracted

@@ -2,6 +2,7 @@
 import importlib
 import os
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -41,13 +42,15 @@ class DemoFoodTests(unittest.TestCase):
         self.book.worksheet.return_value = self.sheet
         client = Mock()
         client.open_by_key.return_value = self.book
-        config = {'demo_mode':True, 'demo_food_enabled':True,
+        config = {'demo_mode':True, 'demo_food_enabled':True, 'demo_require_checkin': True,
                   'menu':[{'name':'Masala Chai','price':30},{'name':'Poha','price':70}, {'name':'Butter Naan','price':40}]}
         self.sent = Mock(return_value=True)
         self.kitchen = Mock(side_effect=AssertionError('Real kitchen must not be alerted'))
         values = {'CUSTOMER_DEMO_MODE':True, 'CUSTOMER_CONFIG':config,
                   'HOTEL_CONFIG_CACHE':{'signature':None,'data':None},
-                  'demo_food_sessions':{}, 'durable_store':self.store,
+                  'demo_food_sessions':{},
+                  'demo_guest_sessions':{'919111111111':{'status':'DEMO_ACTIVE','created':time.time()}},
+                  'durable_store':self.store,
                   'get_gspread_client':Mock(return_value=client),
                   'send_whatsapp_message':self.sent, 'send_staff_alert':self.kitchen}
         for name, value in values.items():
@@ -60,6 +63,90 @@ class DemoFoodTests(unittest.TestCase):
 
     def reply(self):
         return self.sent.call_args.args[1]
+
+    def test_demo_order_requires_explicit_prior_checkin(self):
+        app.demo_guest_sessions.clear()
+        self.assertTrue(self.turn('menu'))
+        self.assertIn('DEMO', self.reply())
+        self.assertTrue(self.demo.handle(app, self.phone, 'Veg Pulao leke aa', semantic={
+            'action': 'ORDER', 'confidence': .95,
+            'items': [{'name': 'Veg Pulao', 'qty': 1}]
+        }))
+        self.assertIn('check-in active', self.reply())
+        self.assertNotIn(self.phone, app.demo_food_sessions)
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_self_checkin_is_not_fake_hotel_checkin(self):
+        app.demo_guest_sessions.clear()
+        self.assertTrue(self.turn('Self checkin'))
+        self.assertIn('real guest record', self.reply())
+        self.assertIn('DEMO CHECKIN', self.reply())
+        self.assertNotIn(self.phone, app.demo_guest_sessions)
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_explicit_demo_checkin_allows_preview_then_confirm(self):
+        app.demo_guest_sessions.clear()
+        self.turn('DEMO CHECKIN')
+        self.assertTrue(self.demo.demo_stay_active(app, self.phone))
+        self.assertIn('real hotel check-in', self.reply())
+        self.assertEqual(self.sheet.append_count, 0)
+        self.turn('1 Poha')
+        self.assertIn('Total:', self.reply())
+        self.assertEqual(self.sheet.append_count, 0)
+        self.turn('CONFIRM')
+        self.assertEqual(self.sheet.append_count, 1)
+        self.turn('bill')
+        self.assertIn('Food total: Rs. 70', self.reply())
+        self.kitchen.assert_not_called()
+
+    def test_demo_checkout_blocks_new_order_but_menu_still_works(self):
+        self.turn('DEMO CHECKOUT')
+        self.assertNotIn(self.phone, app.demo_guest_sessions)
+        self.assertTrue(self.turn('menu'))
+        self.assertIn('DEMO', self.reply())
+        self.turn('2 Masala Chai')
+        self.assertIn('check-in active', self.reply())
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_prepared_cart_cannot_be_confirmed_after_demo_checkin_expires(self):
+        self.turn('1 Poha')
+        self.assertIn(self.phone, app.demo_food_sessions)
+        app.demo_guest_sessions[self.phone]['created'] -= self.demo.DEMO_STAY_TTL_SECONDS + 10
+        self.turn('CONFIRM')
+        self.assertIn('check-in active nahi', self.reply())
+        self.assertNotIn(self.phone, app.demo_food_sessions)
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_simulated_stay_survives_session_snapshot_for_restart(self):
+        self.turn('DEMO CHECKIN')
+        snapshot = app.session_snapshot(self.phone)
+        self.assertEqual(snapshot['demo_guest_sessions']['status'], 'DEMO_ACTIVE')
+        self.assertIsNotNone(snapshot['demo_guest_sessions']['created'])
+        self.kitchen.assert_not_called()
+
+    def test_real_hotel_guest_order_route_remains_separate(self):
+        with patch.object(app, 'CUSTOMER_DEMO_MODE', False):
+            self.assertFalse(self.turn('1 Poha'))
+            self.assertFalse(self.turn('DEMO CHECKIN'))
+        self.kitchen.assert_not_called()
+
+    def test_confirm_without_eligible_stay_cannot_replay_uncertain_sheet_write(self):
+        self.turn('1 Poha')
+        pending = app.demo_food_sessions[self.phone].copy()
+        self.sheet.timeout = True
+        self.turn('CONFIRM')
+        self.assertEqual(self.sheet.append_count, 1)
+        app.demo_guest_sessions.clear()
+        self.sheet.timeout = False
+        self.turn('CONFIRM')
+        self.assertEqual(self.sheet.append_count, 1)
+        self.assertIn('check-in active nahi', self.reply())
+        self.assertEqual(app.demo_food_sessions[self.phone]['id'], pending['id'])
+        self.kitchen.assert_not_called()
 
     def test_menu_is_sample_and_no_entry_before_confirmation(self):
         self.assertTrue(self.turn('menu'))

@@ -7573,6 +7573,87 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
     return True
 
 
+
+def _room_category_question(text):
+    """Fallback if AI mistakes room types for a request to staff."""
+    t = normalize_text(text)
+    has_room = bool(re.search(r'\b(?:rooms?|kamra|kamre|kamron)\b|कमरे|कमरा', t))
+    kinds = bool(re.search(
+        r'\b(?:kaun|kaunse|kon|konse|konsa|konsi|kis kis|types?|kinds?|'
+        r'categories|category|options?|varieties|room list)\b|कौन|किस तरह|प्रकार|कैटेगरी',
+        t
+    ))
+    return has_room and kinds
+
+
+def _send_verified_room_categories(sender_phone, user_text, show_prices=False):
+    """Verified category information, without a live availability claim."""
+    config = get_room_categories()
+    rooms = list(config.values()) if isinstance(config, dict) else []
+    rooms = [r for r in rooms if isinstance(r, dict) and r.get('name')]
+    if rooms:
+        lines = []
+        for room in rooms:
+            line = f"• {room['name']}"
+            rate = room.get('rate')
+            if show_prices and isinstance(rate, (int, float)) and rate > 0:
+                line += f" — ₹{int(rate):,} starting"
+            lines.append(line)
+        reply = (f"Ji 😊 *{get_hotel_name()}* mein ye room categories hain:\n\n"
+                 + '\n'.join(lines))
+        reply += ("\n\nKis room ki photo ya rate dekhna chahenge?"
+                  if not show_prices else
+                  "\n\nKis room ki photo dekhna chahenge? Rates starting hain; availability/booking reception confirm karegi.")
+    else:
+        reply = ("Room categories ki verified list abhi mere paas nahi hai ji. "
+                 "Aap chahein toh main reception se check karwa sakti hoon.")
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, 'user', user_text)
+    remember_conversation(sender_phone, 'assistant', reply)
+    return True
+
+
+def _guest_authorized_reception_contact(text):
+    """Explicitly asked for staff action, not an enquiry about availability."""
+    t = normalize_text(text)
+    requested = bool(re.search(
+        r'\b(?:reception|front desk|manager|staff|operator|doctor|kisi ko)'
+        r'.{0,60}\b(?:bulao|bulwao|bhejo|bhej do|inform|notify|call|connect|send|alert|karwao|karwa do)\b'
+        r'|\b(?:bulao|bulwao|bhejo|send|notify|inform|connect|alert)\b.{0,60}'
+        r'\b(?:reception|front desk|manager|staff|doctor|kisi ko)\b'
+        r'|रिसेप्शन.{0,30}(?:भेजो|बुलाओ|बताओ)', t,
+    ))
+    return requested and not bool(re.search(
+        r'\b(?:can you|could you|kya aap|kya tum|possible|sakte ho|sakti ho|how to)\b', t,
+    ))
+
+
+def _offer_reception_contact(sender_phone, user_text):
+    with state_lock:
+        reception_consent_sessions[sender_phone] = {
+            'request': user_text, 'created': time.time()
+        }
+    reply = ("Is baare mein reception se confirm karwa sakti hoon ji. "
+             "Kya main unhe message bhejun? Haan ya nahi bata dijiye.")
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, 'user', user_text)
+    remember_conversation(sender_phone, 'assistant', reply)
+
+
+def _handle_reception_consent(sender_phone, user_text, guest_info):
+    with state_lock:
+        pending = reception_consent_sessions.pop(sender_phone, None)
+    if not pending or time.time() - pending.get('created', 0) > 300:
+        return False
+    if is_yes(user_text):
+        reply_to_reception_request(sender_phone, guest_info, pending['request'])
+        return True
+    if is_no(user_text):
+        send_whatsapp_message(sender_phone, 'Theek hai ji, abhi reception ko request nahi bhejungi. 🙂')
+        return True
+    return False
+
+
 def _hotel_service_enquiry_reply(sender_phone, user_text):
     """Treat a laundry question as an enquiry; never dispatch staff without consent."""
     text = normalize_text(user_text)
@@ -7953,6 +8034,10 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
         reply_to_reception_request(sender_phone, guest_info, user_text)
+        return
+
+    # Proposed AI handoffs need explicit guest confirmation.
+    if _handle_reception_consent(sender_phone, user_text, guest_info):
         return
 
     # Reception follow-ups take priority over any older food confirmation state.
@@ -8593,6 +8678,14 @@ def _process_and_reply(message, sender_phone, msg_type):
     if ai_understanding and ai_understanding.get("confidence", 0) >= 0.55:
         ai_action = ai_understanding.get("action")
 
+        if ai_action == "ROOM_OPTIONS":
+            _send_verified_room_categories(
+                sender_phone, user_text,
+                show_prices=(ai_understanding.get('show_prices') is True
+                             or explicitly_asks_price(user_text)),
+            )
+            return
+
         if ai_action == "SHOW_PHOTO":
             _handle_ai_photo_route(sender_phone, guest_info, ai_understanding, user_text)
             return
@@ -8743,7 +8836,17 @@ def _process_and_reply(message, sender_phone, msg_type):
                 reply = _respectful_guest_reply(reply, guest_info)
                 if reply:
                     if ai_action == "RECEPTION" or ai_understanding.get("needs_reception"):
-                        reply_to_reception_request(sender_phone, guest_info, user_text)
+                        # Confidence alone is NOT guest consent. In the reported
+                        # case Groq said RECEPTION (0.95) for a simple room list.
+                        if _room_category_question(user_text):
+                            _send_verified_room_categories(
+                                sender_phone, user_text,
+                                show_prices=explicitly_asks_price(user_text),
+                            )
+                        elif _guest_authorized_reception_contact(user_text):
+                            reply_to_reception_request(sender_phone, guest_info, user_text)
+                        else:
+                            _offer_reception_contact(sender_phone, user_text)
                         return
                     send_whatsapp_message(sender_phone, reply)
                     remember_conversation(sender_phone, "user", user_text)

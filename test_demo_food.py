@@ -210,7 +210,7 @@ class DemoFoodTests(unittest.TestCase):
             self.turn('menu')
             self.assertIn('Special Deluxe Ganga Thali', self.reply())
             self.turn('2 Butter Naan aur 1 Paneer Butter Masala')
-            self.assertIn('Rs. 380', self.reply())
+            self.assertIn('₹380', self.reply())
             self.turn('confirm')
             self.turn('bill')
             self.assertIn('Food total: Rs. 380', self.reply())
@@ -221,6 +221,81 @@ class DemoFoodTests(unittest.TestCase):
         self.turn('1 Poha'); self.turn('confirm')
         self.assertEqual(self.sheet.append_count,0)
         self.assertIn('confirm nahi',self.reply())
+
+
+    def test_breakfast_lunch_dinner_only_show_relevant_items(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('breakfast')
+            breakfast = self.reply()
+            self.assertIn('Poha', breakfast)
+            self.assertIn('Masala Chai', breakfast)
+            self.assertNotIn('Shahi Paneer', breakfast)
+
+            self.turn('Lunch mein kya kya hai?')
+            lunch = self.reply()
+            self.assertIn('Dal Tadka', lunch)
+            self.assertIn('Butter Naan', lunch)
+            self.assertNotIn('Poha', lunch)
+            self.assertNotIn('Masala Chai', lunch)
+
+            self.turn('Dinner me kya kya hai')
+            dinner = self.reply()
+            self.assertIn('Shahi Paneer', dinner)
+            self.assertIn('Butter Naan', dinner)
+            self.assertIn('Mix Veg Paratha', dinner)
+            self.assertNotIn('Masala Chai', dinner)
+        self.book.worksheet.assert_not_called()
+
+    def test_full_menu_is_pretty_grouped_and_complete_once(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('menu')
+            bubbles = [call.args[1] for call in self.sent.call_args_list]
+            self.assertGreaterEqual(len(bubbles), 4)
+            combined = '\n'.join(bubbles)
+            for item in config['menu']:
+                self.assertEqual(combined.count('• ' + item['name'] + '\n'), 1, item['name'])
+            self.assertIn('━━━━━━━━', combined)
+            self.assertIn('DEMO menu', combined)
+            self.assertNotIn('₹60', combined)  # only show prices when requested
+            self.assertEqual(self.sheet.append_count, 0)
+            self.sent.reset_mock()
+            self.turn('menu with prices')
+            self.assertIn('₹60', '\n'.join(c.args[1] for c in self.sent.call_args_list))
+
+    def test_pretty_food_only_bill_from_verified_sheet_rows(self):
+        self.turn('2 Masala Chai aur 1 Poha')
+        self.turn('confirm')
+        self.turn('bill')
+        bill = self.reply()
+        self.assertIn('🧾', bill)
+        self.assertIn('🍽️', bill)
+        self.assertIn('GRAND TOTAL (FOOD ONLY)', bill)
+        self.assertIn('₹130', bill)
+        self.assertIn('2 x Masala Chai', bill)
+        self.assertIn('1 x Poha', bill)
+        self.assertNotIn('Room: ', bill)
+        self.assertNotIn('BALANCE DUE', bill)
+        self.kitchen.assert_not_called()
+
+    def test_dinner_time_query_is_left_to_normal_hotel_reception(self):
+        self.assertFalse(self.turn('dinner ka time kya hai'))
+        self.assertFalse(self.turn('breakfast kab milega'))
+        self.book.worksheet.assert_not_called()
+
+    def test_tampered_saved_food_amount_never_generates_false_bill(self):
+        self.turn('1 Poha')
+        self.turn('confirm')
+        self.sheet.rows[1][5] = '999'
+        self.turn('bill')
+        self.assertIn('verify nahi', self.reply())
+        self.assertNotIn('₹999', self.reply())
+
 
 
 if __name__ == '__main__':

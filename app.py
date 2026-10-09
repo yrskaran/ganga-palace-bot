@@ -6085,7 +6085,7 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
             bilingual_text(
                 guest_phone,
                 f"Sorry, your request{detail} didn't reach reception on WhatsApp. Please check directly with the front desk.",
-                "Sorry, reception ko request nahi pahunchi on WhatsApp" + (f" ({request})" if request else "") + ". Front desk se seedhe confirm kar lijiye.",
+                "Sorry, reception ko request nahi pahunchi on WhatsApp" + (f" ({request})" if request else "") + ". Front desk se pooch lena.",
                 f"क्षमा कीजिए, आपकी रिक्वेस्ट{detail} रिसेप्शन के WhatsApp तक नहीं पहुँची। कृपया फ्रंट डेस्क से सीधे पूछें।",
             )
         )

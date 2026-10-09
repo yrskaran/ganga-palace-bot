@@ -316,14 +316,15 @@ class DemoFoodTests(unittest.TestCase):
         with patch.object(app,'CUSTOMER_CONFIG',{'demo_mode':True}):
             self.assertFalse(self.turn('menu'))
 
-    def test_actual_text_router_uses_demo_before_guest_lookup_and_ai(self):
-        with patch.object(app,'get_guest_stay_status',side_effect=AssertionError('No real guest lookup')), patch.object(app,'understand_guest_request',side_effect=AssertionError('No model needed')):
+    def test_actual_text_router_understands_before_demo_actions(self):
+        with patch.object(app,'get_guest_stay_status',return_value=None), patch.object(app,'understand_guest_request',return_value=None) as brain:
             app._process_and_reply({'text':{'body':'menu'}},self.phone,'text')
             self.assertIn('DEMO menu',self.reply())
             app._process_and_reply({'text':{'body':'2 Masala Chai aur 1 Poha'}},self.phone,'text')
             app._process_and_reply({'text':{'body':'confirm'}},self.phone,'text')
             app._process_and_reply({'text':{'body':'bill'}},self.phone,'text')
             self.assertIn('Food total: Rs. 130',self.reply())
+            self.assertEqual(brain.call_count,4)
 
     def test_menu_question_preserves_pending_cart_and_price_is_not_an_order(self):
         self.turn('2 Masala Chai')
@@ -693,7 +694,7 @@ class DemoFoodTests(unittest.TestCase):
             self.turn('2 Masala Chai')
             with patch.object(app, 'understand_guest_request') as brain:
                 app._process_and_reply({'text': {'body': 'confirm'}}, self.phone, 'text')
-                brain.assert_not_called()
+                brain.assert_called_once()
                 self.assertEqual(self.sheet.append_count, 1)
                 self.assertIn('save ho gaya', self.reply())
                 app._process_and_reply({'text': {'body': 'confirm'}}, self.phone, 'text')

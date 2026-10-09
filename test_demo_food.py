@@ -64,6 +64,89 @@ class DemoFoodTests(unittest.TestCase):
     def reply(self):
         return self.sent.call_args.args[1]
 
+    def test_demo_reminders_require_clear_opt_in_and_demo_checkin(self):
+        config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            app.demo_guest_sessions.clear()
+            self.turn('DEMO REMINDERS ON')
+            self.assertIn('DEMO CHECKIN', self.reply())
+            self.assertEqual(app.demo_guest_sessions, {})
+            self.turn('DEMO CHECKIN')
+            self.assertFalse(app.demo_guest_sessions[self.phone].get('reminders_enabled', False))
+            self.turn('DEMO REMINDERS ON')
+            self.assertIn('Demo reminders ON', self.reply())
+            self.assertTrue(app.demo_guest_sessions[self.phone]['reminders_enabled'])
+            self.assertEqual(app.demo_guest_sessions[self.phone]['reminder_instance'],
+                             self.demo.DEMO_REMINDER_INSTANCE)
+        self.kitchen.assert_not_called()
+
+    def test_automatic_demo_breakfast_lunch_aarti_dinner_each_once(self):
+        config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('DEMO REMINDERS ON')
+            self.sent.reset_mock()
+            for hour, expected in [(8, 'Nashta'), (13, 'lunch'),
+                                   (17, 'Ganga Aarti'), (19, 'dinner')]:
+                with self.subTest(hour=hour):
+                    when = app.now_ist().replace(hour=hour, minute=15)
+                    self.assertEqual(self.demo.run_demo_reminders(app, when), 1)
+                    msg = self.reply()
+                    self.assertIn('DEMO ONLY', msg)
+                    self.assertIn(expected.lower(), msg.lower())
+                    self.assertEqual(self.demo.run_demo_reminders(app, when), 0)
+            self.assertEqual(self.sent.call_count, 4)
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_demo_reminder_opt_out_checkout_and_expiry(self):
+        config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
+        at = app.now_ist().replace(hour=8, minute=30)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('DEMO REMINDERS ON')
+            self.turn('DEMO REMINDERS OFF')
+            self.sent.reset_mock()
+            self.assertEqual(self.demo.run_demo_reminders(app, at), 0)
+            self.sent.assert_not_called()
+            self.turn('DEMO REMINDERS ON')
+            app.demo_guest_sessions[self.phone]['last_inbound_at'] -= 24 * 3600
+            self.sent.reset_mock()
+            self.assertEqual(self.demo.run_demo_reminders(app, at), 0)
+            self.sent.assert_not_called()
+            self.turn('DEMO REMINDERS ON')
+            app.demo_guest_sessions[self.phone]['created'] -= self.demo.DEMO_STAY_TTL_SECONDS + 10
+            self.sent.reset_mock()
+            self.assertEqual(self.demo.run_demo_reminders(app, at), 0)
+            self.sent.assert_not_called()
+            self.turn('DEMO CHECKOUT')
+            self.assertNotIn(self.phone, app.demo_guest_sessions)
+        self.kitchen.assert_not_called()
+
+    def test_demo_opt_in_never_reused_after_server_restart(self):
+        config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('DEMO REMINDERS ON')
+            self.sent.reset_mock()
+            with patch.object(self.demo, 'DEMO_REMINDER_INSTANCE', 'new-server'):
+                at = app.now_ist().replace(hour=8, minute=30)
+                self.assertEqual(self.demo.run_demo_reminders(app, at), 0)
+                self.sent.assert_not_called()
+        self.kitchen.assert_not_called()
+
+    def test_demo_reminder_failure_not_retried_and_isolated_from_real_hotel(self):
+        config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
+        when = app.now_ist().replace(hour=8, minute=30)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('DEMO REMINDERS ON')
+            self.sent.reset_mock()
+            self.sent.return_value = False
+            self.assertEqual(self.demo.run_demo_reminders(app, when), 1)
+            self.assertEqual(self.demo.run_demo_reminders(app, when), 0)
+            self.assertEqual(self.sent.call_count, 1)
+            with patch.object(app, 'CUSTOMER_DEMO_MODE', False):
+                self.assertEqual(self.demo.run_demo_reminders(app, when), 0)
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
     def test_demo_order_requires_explicit_prior_checkin(self):
         app.demo_guest_sessions.clear()
         self.assertTrue(self.turn('menu'))

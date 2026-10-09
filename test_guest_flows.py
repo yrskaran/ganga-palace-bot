@@ -44,7 +44,7 @@ class GuestFlows(unittest.TestCase):
                      'guide_service_sessions','conversation_memory','order_sessions',
                      'duplicate_order_sessions','checkin_sessions','photo_sessions','reception_request_sessions',
                      'reception_requests_by_id','reception_requests_by_alert',
-                     'service_sessions','lifecycle_pending_by_message_id','lifecycle_pending_keys',
+                     'service_sessions','reception_consent_sessions','lifecycle_pending_by_message_id','lifecycle_pending_keys',
                      'lifecycle_retry_after'):
             self.mock(name, {})
         self.mock('durable_store', None)
@@ -72,6 +72,89 @@ class GuestFlows(unittest.TestCase):
         task['request_id'] = rid
         app.service_tasks_by_id[rid] = task
         return task
+
+    def test_room_types_from_screenshot_never_notify_reception(self):
+        self.mock('get_room_categories', return_value={
+            'deluxe': {'name': 'Deluxe', 'rate': 1999},
+            'super deluxe': {'name': 'Super Deluxe', 'rate': 2499},
+            'premium': {'name': 'Premium Window', 'rate': 2999},
+            'family': {'name': 'Family Suite', 'rate': 3499},
+        })
+        self.mock('get_hotel_name', return_value='Hotel Shreya Galaxy')
+        brain = self.mock('understand_guest_request', return_value={
+            'action': 'RECEPTION', 'confidence': 0.95,
+            'needs_reception': True, 'reply': 'Reception se details confirm karna padega.',
+        })
+        self.turn('Room kaun kaun se hai')
+        self.turn('Room kaun kaun se hai?')
+        message = self.sent.call_args.args[1]
+        for category in ('Deluxe', 'Super Deluxe', 'Premium Window', 'Family Suite'):
+            self.assertIn(category, message)
+        self.assertIn('photo ya rate', message)
+        self.assertNotIn('request bhej di', message)
+        self.assertEqual(brain.call_count, 2)
+        app.notify_reception_request.assert_not_called()
+        self.assertFalse(app.reception_consent_sessions)
+
+    def test_explicit_room_options_intent_and_rates(self):
+        self.mock('get_room_categories', return_value={
+            'deluxe': {'name':'Deluxe', 'rate':1999},
+            'suite': {'name':'Family Suite', 'rate':3499},
+        })
+        self.mock('understand_guest_request', return_value={
+            'action':'ROOM_OPTIONS', 'confidence':0.92, 'show_prices': True,
+            'reply':'I can check availability with reception.'
+        })
+        self.turn('Tell me what rooms there are and how much they cost')
+        self.assertIn('Deluxe', self.sent.call_args.args[1])
+        self.assertIn('₹1,999', self.sent.call_args.args[1])
+        self.assertIn('₹3,499', self.sent.call_args.args[1])
+        app.notify_reception_request.assert_not_called()
+
+    def test_ambiguous_reception_ai_needs_clear_confirmation(self):
+        self.mock('understand_guest_request', return_value={
+            'action':'RECEPTION', 'confidence':0.99, 'needs_reception':True,
+            'reply':'I will contact reception right now.'
+        })
+        self.turn('Is a doctor available at this hotel?')
+        self.assertIn('Kya main unhe message bhejun', self.sent.call_args.args[1])
+        app.notify_reception_request.assert_not_called()
+        self.assertIn(GUEST, app.reception_consent_sessions)
+        self.turn('nahi')
+        app.notify_reception_request.assert_not_called()
+        self.assertNotIn(GUEST, app.reception_consent_sessions)
+        self.turn('Is a doctor available at this hotel?')
+        self.turn('haan')
+        self.assertEqual(app.notify_reception_request.call_count, 1)
+        self.assertIn('doctor available', app.notify_reception_request.call_args.args[2])
+
+    def test_direct_reception_instruction_still_works(self):
+        self.mock('understand_guest_request', return_value={
+            'action':'RECEPTION', 'confidence':0.95,
+            'needs_reception':True, 'reply':'Sending now.'
+        })
+        self.turn('Reception ko message bhejo, help chahiye')
+        self.assertEqual(app.notify_reception_request.call_count, 1)
+        self.assertNotIn(GUEST, app.reception_consent_sessions)
+
+    def test_room_list_without_ai_uses_verified_fallback(self):
+        self.mock('get_room_categories', return_value={
+            'deluxe': {'name':'Deluxe', 'rate':1999},
+            'suite': {'name':'Family Suite', 'rate':3499},
+        })
+        self.mock('understand_guest_request', return_value=None)
+        self.turn('Room kaun kaun se hai')
+        self.assertIn('Family Suite', self.sent.call_args.args[1])
+        app.notify_reception_request.assert_not_called()
+
+    def test_room_options_part_of_structured_ai_contract(self):
+        schema = app._openai_semantic_schema()
+        self.assertIn('ROOM_OPTIONS', schema['properties']['action']['enum'])
+        with patch.object(app, '_ai_provider_functions', return_value=[
+            ('mock', lambda *args, **kwargs: '{"action":"ROOM_OPTIONS","confidence":0.91}')
+        ]):
+            route = app.understand_guest_request('Rooms kaun se hain?', None, GUEST)
+        self.assertEqual(route['action'], 'ROOM_OPTIONS')
 
     def test_guide_enquiry_precedes_ai_and_places(self):
         ai = self.mock('understand_guest_request', side_effect=AssertionError('guide must be handled before AI'))

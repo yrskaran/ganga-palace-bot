@@ -44,8 +44,21 @@
     "Do not claim a booking is confirmed until hotel staff confirms it.",
     "If the guest asks about an extra bed, say public listings mention extra beds may be available for a charge, but current charge and availability must be confirmed by reception."
   ],
-  "menu_intro": "Hotel Shreya Galaxy has a restaurant and room service. A verified item-by-item hotel menu is not configured in this demo.",
-  "menu": [],
+  "menu_intro": "DEMO SAMPLE MENU ONLY. Illustrative food items/prices for the virtual receptionist demonstration, not actual Hotel Shreya Galaxy rates. No real food delivery, staff/kitchen order or payment.",
+  "menu": [
+    {
+      "name": "Masala Chai",
+      "price": 30
+    },
+    {
+      "name": "Poha",
+      "price": 70
+    },
+    {
+      "name": "Butter Naan",
+      "price": 40
+    }
+  ],
   "food_rules": [
     "Do not invent food items or prices.",
     "If a guest asks for the current menu or food price, say the hotel has restaurant/room service and reception can confirm the latest menu.",
@@ -201,5 +214,6 @@
     "Keep WhatsApp replies short, natural and helpful in the guest's language.",
     "When a guest asks for hotel or room photos, send the configured real-property public photos only. Do not treat gallery/reception images as room categories."
   ],
-  "demo_mode": true
+  "demo_mode": true,
+  "demo_food_enabled": true
 }

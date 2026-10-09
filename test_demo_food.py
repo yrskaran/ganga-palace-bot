@@ -377,6 +377,120 @@ class DemoFoodTests(unittest.TestCase):
         self.sent.assert_not_called()
         self.book.worksheet.assert_not_called()
 
+    def test_ai_one_veg_pulao_leke_aa_gets_safe_cart_and_itemized_bill(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            interpretation = {
+                'action': 'ORDER', 'confidence': 0.95,
+                'items': [{'name': 'Veg Pulao', 'qty': 1}],
+            }
+            self.assertTrue(self.demo.handle(app, self.phone, 'Veg pulao leke aa', semantic=interpretation))
+            reply = self.reply()
+            self.assertIn('1 x Veg Pulao', reply)
+            self.assertIn('₹170', reply)
+            self.assertIn('CONFIRM', reply)
+            self.assertEqual(self.sheet.append_count, 0)
+            self.kitchen.assert_not_called()
+            self.assertTrue(self.turn('confirm'))
+            self.assertEqual(self.sheet.append_count, 1)
+            self.turn('bill')
+            self.assertIn('Food total: Rs. 170', self.reply())
+
+    def test_ai_recovers_followup_likha_to_hua_veg_pulao(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            interpretation = {
+                'action': 'ORDER_SELECTION', 'confidence': 0.95,
+                'items': [{'name': 'Veg Pulao', 'qty': 1}],
+            }
+            self.assertTrue(self.demo.handle(app, self.phone, 'Likha to hua veg pulao', semantic=interpretation))
+            self.assertIn('1 x Veg Pulao', self.reply())
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_verified_ai_typo_matches_menu_but_guest_must_confirm(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            semantic = {
+                'action': 'ORDER', 'confidence': 0.92,
+                'items': [{'name': 'Veg Pulaav', 'qty': 1}],
+            }
+            self.assertTrue(self.demo.handle(app, self.phone, 'Veg pulaav le aao', semantic=semantic))
+            self.assertIn('Veg Pulao', self.reply())
+            self.assertIn('samjha', self.reply())
+            self.assertIn('CONFIRM', self.reply())
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_uncertain_similar_dishes_request_clarification_no_cart(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            semantic = {
+                'action': 'ORDER', 'confidence': 0.93,
+                'items': [{'name': 'Paneer', 'qty': 1}],
+            }
+            self.assertTrue(self.demo.handle(app, self.phone, 'Paneer bhejo', semantic=semantic))
+            self.assertIn('clear nahi', self.reply())
+            self.assertNotIn(self.phone, app.demo_food_sessions)
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_ai_never_partially_accepts_unsupported_dishes_or_bad_quantity(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            for interpretation in [
+                {'action': 'ORDER', 'confidence': .96, 'items': [
+                    {'name': 'Veg Pulao', 'qty': 1}, {'name': 'Pizza', 'qty': 1}]},
+                {'action': 'ORDER', 'confidence': .96, 'items': [
+                    {'name': 'Veg Pulao', 'qty': 0}]},
+                {'action': 'ORDER', 'confidence': .96, 'items': [
+                    {'name': 'Veg Pulao', 'qty': 1.5}]},
+                {'action': 'ORDER', 'confidence': .96, 'items': [
+                    {'name': 'Veg Pulao', 'qty': 60}]},
+            ]:
+                with self.subTest(interpretation=interpretation):
+                    self.assertTrue(self.demo.handle(
+                        app, self.phone, 'food items bhejo', semantic=interpretation))
+                    self.assertNotIn(self.phone, app.demo_food_sessions)
+                    self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_fallback_known_dish_leke_aa_without_explicit_quantity(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.assertTrue(self.turn('Veg Pulao leke aa'))
+            self.assertIn('1 x Veg Pulao', self.reply())
+            self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_real_text_router_uses_ai_order_once_not_second_old_parser(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            with patch.object(app, 'understand_guest_request', return_value={
+                'action': 'ORDER', 'confidence': .95,
+                'items': [{'name': 'Veg Pulao', 'qty': 1}]
+            }) as brain:
+                app._process_and_reply({'text': {'body': 'Veg pulao leke aa'}},
+                                       self.phone, 'text')
+                brain.assert_called_once()
+                self.assertIn('1 x Veg Pulao', self.reply())
+                self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
     def test_semantic_hallucinated_item_cannot_create_demo_order(self):
         semantic = {
             'action': 'ORDER', 'confidence': 0.96,

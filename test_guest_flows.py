@@ -724,6 +724,30 @@ class IntegrationFlows(unittest.TestCase):
         self.assertEqual(self.monitor_once(NOW,welcome='YES',thirty='YES'),['GOOD_MORNING_BREAKFAST'])
         self.assertEqual(self.monitor_once(NOW.replace(hour=17),welcome='YES',thirty='YES'),['GANGA_AARTI'])
 
+    def test_worker_lunch_and_dinner_reminders_preserved(self):
+        # Test the actual scheduling worker, not just the helper's time values.
+        for hour, expected in ((13, 'LUNCH'), (19, 'DINNER')):
+            with self.subTest(hour=hour, event=expected):
+                current = NOW.replace(hour=hour, minute=15)
+                self.assertEqual(
+                    self.monitor_once(current, welcome='YES', thirty='YES'),
+                    [expected],
+                )
+
+    def test_worker_does_not_send_a_meal_outside_reminder_windows(self):
+        self.assertEqual(
+            self.monitor_once(NOW.replace(hour=11, minute=25),
+                              welcome='YES', thirty='YES'),
+            [],
+        )
+
+    def test_demo_mode_does_not_fetch_real_guest_list(self):
+        client = Mock()
+        with patch.object(app, 'CUSTOMER_DEMO_MODE', True), \
+             patch.object(app, 'get_gspread_client', return_value=client) as gateway:
+            self.assertFalse(app.fetch_sheet_data_sync(force=True))
+            gateway.assert_not_called()
+
     def test_worker_checked_out_guest_no_reminders(self):
         self.assertEqual(self.monitor_once(NOW,status='OUT'),[])
 

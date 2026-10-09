@@ -7261,6 +7261,49 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
         if not derived:
             return None
         icon, title = _menu_display_title(target_upper)
+        if target_upper in {"BREAKFAST", "LUNCH", "DINNER"}:
+            # Keep the original menu and pricing data; presentation only.
+            # This also covers older/general menu routes outside the demo handler.
+            divider = "──────────────"
+            out = [f"{icon} *{get_hotel_name()}*", f"*{title} Menu*", divider]
+            if CUSTOMER_DEMO_MODE:
+                out.append("_Demo menu • sample rates_")
+            group_ids = {
+                "Beverages": {normalize_text(n) for n, _ in _derived_menu_items_for_section("BEVERAGES & DRINKS")},
+                "Roti & Naan": {normalize_text(n) for n, _ in _derived_menu_items_for_section("BREADS")},
+                "Rice": {normalize_text(n) for n, _ in _derived_menu_items_for_section("RICE")},
+                "Raita & Sides": {normalize_text(n) for n, _ in _derived_menu_items_for_section("SIDES / ACCOMPANIMENTS")},
+                "Thali": {normalize_text(n) for n, _ in _derived_menu_items_for_section("THALI")},
+            }
+            ordered_groups = (
+                [("☀️", "Breakfast"), ("☕", "Beverages")]
+                if target_upper == "BREAKFAST" else
+                [("🍲", "Sabzi & Dal"), ("🫓", "Roti & Naan"), ("🍚", "Rice"),
+                 ("🥗", "Raita & Sides"), ("🍽️", "Thali")]
+            )
+            buckets = {group: [] for _, group in ordered_groups}
+            for name, price in derived:
+                key = normalize_text(name)
+                group = "Breakfast" if target_upper == "BREAKFAST" else "Sabzi & Dal"
+                for group_name, names in group_ids.items():
+                    if key in names and group_name in buckets:
+                        group = group_name
+                        break
+                value = f"• {name} — ₹{int(price):,}" if include_prices else f"• {name}"
+                buckets[group].append(value)
+            for symbol, group in ordered_groups:
+                if not buckets[group]:
+                    continue
+                out.extend(["", f"{symbol} *{group}*", *buckets[group]])
+            if include_cta:
+                example = ("2 Poha + 1 Masala Chai" if target_upper == "BREAKFAST"
+                           else "2 Butter Naan + 1 Dal Tadka")
+                out.extend(["", divider, "📝 *Order karna ho?* 😊",
+                            "Item + quantity bhej dijiye.", f"Jaise: {example}"])
+                if CUSTOMER_DEMO_MODE:
+                    out.append("_Demo only • kitchen ko order nahi jayega._")
+            return "\n".join(out)
+
         out = [f"{icon} *{get_hotel_name()} — {title}*", "━━━━━━━━━━━━━━━━"]
         for name, price in derived:
             if include_prices:

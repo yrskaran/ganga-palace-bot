@@ -144,14 +144,16 @@ class GuestFlows(unittest.TestCase):
     def test_room_options_part_of_structured_ai_contract(self):
         schema = app._openai_semantic_schema()
         self.assertIn('ROOM_OPTIONS', schema['properties']['action']['enum'])
+        self.assertIn('understood_as', schema['properties'])
+        self.assertIn('understood_as', schema['required'])
         with patch.object(app, '_ai_provider_functions', return_value=[
             ('mock', lambda *args, **kwargs: '{"action":"ROOM_OPTIONS","confidence":0.91}')
         ]):
             route = app.understand_guest_request('Rooms kaun se hain?', None, GUEST)
         self.assertEqual(route['action'], 'ROOM_OPTIONS')
 
-    def test_guide_enquiry_precedes_ai_and_places(self):
-        ai = self.mock('understand_guest_request', side_effect=AssertionError('guide must be handled before AI'))
+    def test_ai_understands_guide_enquiry_before_safe_fallback(self):
+        ai = self.mock('understand_guest_request', return_value=None)
         places = self.mock('build_guide_fallback', side_effect=AssertionError('must not dump places'))
         self.turn('Local guide bhi hai?')
         text = self.sent.call_args.args[1]
@@ -159,7 +161,7 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('charges', text)
         self.assertIn('check karwa doon', text)
         app.notify_reception_request.assert_not_called()
-        ai.assert_not_called(); places.assert_not_called()
+        ai.assert_called_once(); places.assert_not_called()
 
     def test_guide_yes_sends_actual_reception_request(self):
         self.turn('Local guide bhi hai?')
@@ -304,6 +306,32 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('one natural follow-up', prompt.lower())
         self.assertIn('do not act on an enquiry', prompt.lower())
         self.assertIn('[[MAP:hotel]]', prompt)
+        self.assertIn('whole latest message', prompt.lower())
+        self.assertIn('understood_as', prompt.lower())
+        self.assertIn('keyword alone', prompt.lower())
+
+    def test_ai_understands_complete_turn_before_backend_handler(self):
+        events = []
+        self.mock('understand_guest_request', side_effect=lambda *args: (
+            events.append('ai'),
+            {'understood_as':'Guest is asking which ID documents are accepted.',
+             'action':'ANSWER','confidence':0.9,'reply':'ID policy check.'}
+        )[1])
+        self.mock('handle_service_guest_confirmation', side_effect=lambda *args: (
+            events.append('backend'), True
+        )[1])
+        self.turn("I'd kaun kaun se chalengi?")
+        self.assertEqual(events, ['ai', 'backend'])
+
+    def test_ai_reply_precedes_phrase_based_faq_fallback(self):
+        self.mock('understand_guest_request', return_value={
+            'understood_as':'Guest asks for the pool schedule.',
+            'action':'ANSWER','confidence':0.94,
+            'reply':'AI ne poori baat samajhkar diya hua jawab.'
+        })
+        self.mock('_local_hotel_fallback', side_effect=AssertionError('AI reply should be used first'))
+        self.turn('Swimming pool ka timing?')
+        self.assertEqual(self.sent.call_args.args[1], 'AI ne poori baat samajhkar diya hua jawab.')
 
     def test_hotel_location_answer_includes_maps_link_without_extra_turn(self):
         self.mock('get_hotel_value', side_effect=lambda label, default='': {
@@ -312,7 +340,7 @@ class GuestFlows(unittest.TestCase):
         }.get(label, default))
         self.mock('get_hotel_name', return_value='Hotel Shreya Galaxy')
         self.mock('get_hotel_map', return_value='https://maps.example/hotel')
-        ai = self.mock('understand_guest_request', side_effect=AssertionError('hotel location is configured'))
+        ai = self.mock('understand_guest_request', return_value=None)
         self.turn('Ye hotel kaha pe hai')
         self.assertEqual(self.sent.call_count, 1)
         reply = self.sent.call_args.args[1]
@@ -320,7 +348,7 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('https://maps.example/hotel', reply)
         self.turn('Google location bhi')
         self.assertIn('https://maps.example/hotel', self.sent.call_args.args[1])
-        ai.assert_not_called()
+        self.assertEqual(ai.call_count, 2)
 
     def test_roman_hinglish_and_short_neutral_queries_keep_guest_language(self):
         app.guest_language_cache.pop(GUEST, None)
@@ -343,25 +371,25 @@ class GuestFlows(unittest.TestCase):
     def test_menu_question_with_roman_hindi_shortcut_avoids_ai_and_answers(self):
         app.guest_language_cache[GUEST] = 'hinglish'
         self.mock('_full_menu_presentation_messages', return_value=[])
-        ai = self.mock('understand_guest_request', side_effect=AssertionError('configured menu status is deterministic'))
+        ai = self.mock('understand_guest_request', return_value=None)
         self.turn('Menu ni pta?')
         self.assertEqual(self.sent.call_count, 1)
         self.assertIn('item-wise list', self.sent.call_args.args[1])
         self.assertIn('poochwa doon', self.sent.call_args.args[1])
-        ai.assert_not_called()
+        ai.assert_called_once()
 
     def test_laundry_question_asks_before_reception_action(self):
         ai = self.mock('understand_guest_request', return_value={
-            'action':'RECEPTION', 'confidence':0.95, 'needs_reception':True,
-            'reply':'I have submitted the request to reception.'
+            'action':'RECEPTION', 'confidence':0.95, 'needs_reception':False,
+            'reply':'Laundry service ki availability aur charges reception se confirm karwa sakti hoon. Poochwa doon?'
         })
         self.turn('Laundry?')
         reply = self.sent.call_args.args[1]
         self.assertIn('Laundry service', reply)
-        self.assertIn('poochwa doon', reply)
+        self.assertIn('poochwa doon', reply.lower())
         app.notify_reception_request.assert_not_called()
         app._update_service_task_sheet.assert_not_called()
-        ai.assert_not_called()
+        ai.assert_called_once()
 
     def test_missing_photo_delivery_failure_uses_short_hinglish_correction(self):
         ticket = {'guest_phone':GUEST,'delivery_status':'accepted','status':'pending'}
@@ -416,7 +444,7 @@ class GuestFlows(unittest.TestCase):
         self.assertNotIn('Ji Kitty ji',app.get_ai_lifecycle_message('WELCOME','hinglish','Kitty','203'))
 
     def test_screenshot_help_questions_answer_before_ai(self):
-        ai=self.mock('understand_guest_request', side_effect=AssertionError('capability must not depend on AI'))
+        ai=self.mock('understand_guest_request', return_value=None)
         app.get_guest_response_language.side_effect=lambda phone,text=None: (
             app.remember_guest_language(phone,text) if text is not None else app.guest_language_cache.get(phone,'english'))
         self.turn('Hi')
@@ -429,13 +457,13 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('Main Monika',hinglish)
         self.assertIn('towel',hinglish)
         self.assertNotIn('trouble understanding',hinglish)
-        ai.assert_not_called()
+        self.assertEqual(ai.call_count, 3)
         app.notify_reception_request.assert_not_called()
 
     def test_help_variants_preserve_pending_orders(self):
         pending={'order':'2 x Masala Chai','total':60,'created':__import__('time').time()}
         app.order_sessions[GUEST]=pending
-        ai=self.mock('understand_guest_request',side_effect=AssertionError('no AI quota for basic help'))
+        ai=self.mock('understand_guest_request',return_value=None)
         for text in ('How can you assist me?', 'What can you do for me?', 'Help',
                      'Aap meri help kaise kar sakte ho?', 'Kaise madad karoge?',
                      'आप मेरी मदद कैसे कर सकते हैं?', 'क्या कर सकते हो?'):
@@ -443,7 +471,7 @@ class GuestFlows(unittest.TestCase):
                 self.turn(text)
                 self.assertEqual(app.order_sessions[GUEST],pending)
                 self.assertTrue(any(name in self.sent.call_args.args[1] for name in ('Monika', 'मोनिका')))
-        ai.assert_not_called()
+        self.assertEqual(ai.call_count, 7)
         app.notify_reception_request.assert_not_called()
 
     def test_specific_requests_are_not_capability_questions(self):

@@ -124,7 +124,8 @@ def menu_messages(bot, meal=None, include_prices=False):
                 parts.append(f'{symbol} *{group_title}*')
                 parts += [_menu_item(x, include_prices) for x in grouped[key]]
                 parts.append('')
-        parts += ['📝 *Order karna ho?*', 'Item name aur quantity bhej dijiye.', 'Jaise: 2 Poha + 1 Masala Chai',
+        example = '2 Poha + 1 Masala Chai' if meal == 'BREAKFAST' else '2 Dal Tadka + 2 Butter Naan'
+        parts += ['📝 *Order karna ho?*', 'Item name aur quantity bhej dijiye.', f'Jaise: {example}',
                   '_DEMO menu: sample items/rates; real hotel kitchen order nahi jayega._']
         return ['\n'.join(parts).strip()]
 

@@ -268,6 +268,74 @@ class DemoFoodTests(unittest.TestCase):
 
         self.book.worksheet.assert_not_called()
 
+    def _assert_aligned_price_columns(self, text, names, group_separately=False):
+        import re
+        rows = [
+            line for block in re.findall(r'\x60\x60\x60\n(.*?)\n\x60\x60\x60', text, re.S)
+            for line in block.splitlines()
+        ]
+        self.assertTrue(rows, 'Expected WhatsApp triple-backtick monospaced menu')
+        self.assertFalse(any(line.startswith('•') for line in rows))
+        if group_separately:
+            for name in names:
+                self.assertTrue(any(x.startswith(name + ' ') and '₹' in x for x in rows), name)
+            return
+        selected = [next(x for x in rows if x.startswith(name + ' ')) for name in names]
+        self.assertEqual(len({x.index('₹') for x in selected}), 1)
+
+    def test_aligned_price_formatter_preserves_real_menu_prices(self):
+        import re
+        sample = [
+            ('Dal Fry', 130),
+            ('Paneer Butter Masala', 260),
+            ('Shahi Paneer', 240),
+        ]
+        block = app._whatsapp_price_block(sample)
+        self.assertEqual(block.count('\x60\x60\x60'), 2)
+        lines = block.splitlines()[1:-1]
+        self.assertEqual([line.strip().split()[-1] for line in lines],
+                         ['₹130', '₹260', '₹240'])
+        self.assertEqual(len({line.index('₹') for line in lines}), 1)
+        self.assertEqual(len(lines), 3)
+        self.assertNotIn('\x60\x60\x60text', block)  # WhatsApp does not use Markdown language tags
+
+    def test_full_menu_with_prices_uses_aligned_blocks(self):
+        import json
+        import re
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('menu with prices')
+            text = '\n'.join(c.args[1] for c in self.sent.call_args_list)
+            self.assertIn('Paneer Butter Masala', text)
+            self.assertIn('Special Deluxe Ganga Thali', text)
+            self.assertIn('₹290', text)
+            self.assertIn('₹260', text)
+            self._assert_aligned_price_columns(text,
+                                               ['Paneer Butter Masala', 'Shahi Paneer'])
+            self.assertLessEqual(
+                max(len(row) for block in re.findall(r'\x60\x60\x60\n(.*?)\n\x60\x60\x60', text, re.S)
+                    for row in block.splitlines()), 34)
+        self.kitchen.assert_not_called()
+        self.assertEqual(self.sheet.append_count, 0)
+
+    def test_legacy_full_menu_price_alignment_preserves_duplicates_filter(self):
+        source = {
+            'coffee': ('Hot Coffee', 40),
+            'naan': ('Butter Naan', 60),
+            'paneer': ('Paneer Butter Masala', 260),
+            'rice': ('Jeera Rice', 140),
+        }
+        with patch.object(app, 'get_hotel_data', return_value=''), \
+                patch.object(app, 'get_hotel_menu', return_value=source), \
+                patch.object(app, 'get_hotel_name', return_value='Demo Hotel'):
+            cards = app._full_menu_presentation_messages(include_prices=True)
+            content = '\n'.join(cards)
+            self.assertIn('\x60\x60\x60', content)
+            self.assertIn('₹60', content)
+            self.assertIn('₹260', content)
+            self.assertNotIn('• Butter Naan — ₹60', content)
+
     def test_meal_price_menu_keeps_original_configured_rates(self):
         import json
         from pathlib import Path
@@ -275,8 +343,12 @@ class DemoFoodTests(unittest.TestCase):
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.turn('dinner menu with prices')
             text = '\n'.join(c.args[1] for c in self.sent.call_args_list)
-            self.assertIn('• Butter Naan — ₹60', text)
-            self.assertIn('• Shahi Paneer — ₹240', text)
+            self.assertIn('Butter Naan', text)
+            self.assertIn('Shahi Paneer', text)
+            self.assertIn('₹60', text)
+            self.assertIn('₹240', text)
+            self.assertIn('```', text)
+            self._assert_aligned_price_columns(text, ['Butter Naan', 'Plain Naan', 'Garlic Naan'])
             self.assertNotIn('• Poha', text)
         self.assertEqual(self.sheet.append_count, 0)
         self.kitchen.assert_not_called()
@@ -298,7 +370,10 @@ class DemoFoodTests(unittest.TestCase):
             self.assertIn('🫓 *Roti & Naan*', result)
             self.assertIn('🍚 *Rice*', result)
             self.assertIn('🥗 *Raita & Sides*', result)
-            self.assertIn('Butter Naan — ₹60', result)
+            self.assertIn('Butter Naan', result)
+            self.assertIn('₹60', result)
+            self.assertIn('```', result)
+            self._assert_aligned_price_columns(result, ['Butter Naan', 'Jeera Rice', 'Dal Tadka'], group_separately=True)
             self.assertNotIn('• Poha', result)
             self.assertIn('Jaise: 2 Butter Naan + 1 Dal Tadka', result)
         self.kitchen.assert_not_called()

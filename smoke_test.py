@@ -5,6 +5,12 @@ os.environ.setdefault("BOT_STORAGE_MODE", "demo")
 
 import app
 
+# Smoke scenarios below explicitly use the legacy hotel_data.txt fixture.
+# Do not let a deployed white-label demo profile replace its menu or guests.
+app.CUSTOMER_CONFIG = None
+app.CUSTOMER_DEMO_MODE = False
+app.HOTEL_CONFIG_CACHE = {'signature': None, 'data': None}
+
 
 def check(condition, message):
     if not condition:

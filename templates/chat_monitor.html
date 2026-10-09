@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Monika · Chat monitor</title>
+<style>
+body{font:16px system-ui,sans-serif;margin:0;background:#f4f6f8;color:#182a37}main{max-width:1100px;margin:auto;padding:28px}header{display:flex;justify-content:space-between;gap:16px;align-items:center}h1{margin:4px 0;font-size:27px}.muted{color:#536574}input,button,a.action{font:inherit;padding:10px 14px;border:1px solid #bdcbd3;border-radius:8px;background:white;color:#173544}button,a.action{cursor:pointer}a{text-decoration:none}form{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0}input{min-width:240px}#notice{color:#88481a}#state{min-height:24px}.message{margin:12px 0;padding:16px;border-radius:10px;background:white;border-left:4px solid #a7bac8}.outgoing{border-left-color:#17827a}.meta{display:flex;gap:12px;flex-wrap:wrap;color:#526271;font-size:13px;margin-bottom:8px}.text{white-space:pre-wrap;overflow-wrap:anywhere}footer{display:flex;gap:12px;margin-top:20px}button:focus-visible,a:focus-visible,input:focus-visible{outline:3px solid #267fbd;outline-offset:3px}@media(max-width:600px){header{display:block}main{padding:16px}}
+</style><main>
+<header><div><div class="muted">{{ hotel }}</div><h1>Monika · Chat monitor</h1></div><a class="action" id="download" href="/admin/chats.csv">Download for Excel (CSV)</a></header>
+<p class="muted">Guest and staff conversations · refreshes every 5 seconds · delivery status shown separately</p>
+<form id="filter"><label>WhatsApp number <input id="phone" autocomplete="off" placeholder="All chats, or full number"></label><button>Filter</button><button type="button" id="pause">Pause</button></form>
+<p id="notice"></p><div id="state" role="status" aria-live="polite">Loading chats…</div><section id="messages" aria-label="Messages"></section>
+<footer><button id="newer">Newer</button><button id="older">Older</button></footer>
+</main><script>
+let offset=0, paused=false, busy=false, generation=0;
+const byId=id=>document.getElementById(id);
+async function refresh(){if(busy||paused)return;busy=true;const version=generation;const phone=byId('phone').value.trim();try{
+const response=await fetch('/admin/chats?'+new URLSearchParams({phone,offset}),{cache:'no-store'});
+if(!response.ok)throw Error(response.status===401?'Session needs login. Reload this page.':'Chat monitor unavailable. Check server/storage.');
+const data=await response.json();if(version!==generation)return;
+byId('download').href='/admin/chats.csv?'+new URLSearchParams({phone});byId('notice').textContent=data.warning||'';
+byId('messages').replaceChildren();for(const m of data.messages){const card=document.createElement('article');card.className='message '+m.direction;
+const meta=document.createElement('div');meta.className='meta';meta.textContent=m.phone+' · '+(m.direction==='incoming'?'Incoming':'Monika / hotel')+' · '+m.status+' · '+new Date(m.time).toLocaleString()+(m.estimated_time?' (legacy activity time)':'');
+const text=document.createElement('div');text.className='text';text.textContent=m.text;card.append(meta,text);byId('messages').append(card);}
+byId('state').textContent=(data.messages.length?'Showing '+(offset+1)+'–'+(offset+data.messages.length):'No messages found')+' · Updated '+new Date().toLocaleTimeString();
+byId('newer').disabled=offset===0;byId('older').disabled=data.messages.length<200;
+}catch(error){byId('state').textContent=error.message;}finally{busy=false;}}
+byId('filter').onsubmit=e=>{e.preventDefault();offset=0;generation++;refresh();};
+byId('pause').onclick=()=>{paused=!paused;byId('pause').textContent=paused?'Resume':'Pause';if(!paused)refresh();};
+byId('older').onclick=()=>{offset+=200;generation++;refresh();};byId('newer').onclick=()=>{offset=Math.max(0,offset-200);generation++;refresh();};
+setInterval(refresh,5000);refresh();
+</script></html>

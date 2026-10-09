@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V62-HINGLISH-PRICE-INTENT"
+APP_VERSION = "HOTEL-AI-V63-SEMANTIC-DEMO-PILOT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -3320,6 +3320,7 @@ def _openai_semantic_schema():
             },
             "photo_target": {"type": "string"},
             "menu_section": {"type": "string"},
+            "show_prices": {"type": "boolean"},
             "generic": {"type": "string"},
             "items": {
                 "type": "array",
@@ -3339,7 +3340,7 @@ def _openai_semantic_schema():
             "confidence": {"type": "number"},
         },
         "required": [
-            "action", "category", "photo_target", "menu_section", "generic", "items",
+            "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
             "service", "needs_reception", "reply", "confidence"
         ],
     }
@@ -6354,6 +6355,21 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     if selection:
         pending.append("pending_food=" + json.dumps(selection, ensure_ascii=False))
     state_hint = "; ".join(pending) or "no pending transaction"
+    demo_instructions = ""
+    if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
+        demo_instructions = (
+            "DEMO FOOD ASSISTANT: Interpret food/menu/bill intent with recent dialogue. "
+            "If guest asks for breakfast/lunch/dinner dishes, respond SHOW_MENU with "
+            "menu_section BREAKFAST/LUNCH/DINNER (FULL if no meal specified). "
+            "A request for costs, money, paise, rupaye, kitne ke, rates, or a conversational "
+            "follow-up like 'unke daam?' sets show_prices=true. "
+            "A request to place an order uses ORDER; just asking what is available "
+            "is NOT an order. Asking for an already confirmed bill uses BILL. "
+            "Do not calculate prices yourself or promise delivery; Python will retrieve "
+            "the configured demo menu and saved Sheet records. Keep casual nonfood chat "
+            "as ANSWER in the guest's language. The configured demo hotel and menu are "
+            "authoritative, not any older example hotel names in static training text."
+        )
 
     return f"""
 Understand the current hotel guest message and return JSON only.
@@ -6361,11 +6377,12 @@ Understand the current hotel guest message and return JSON only.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
+{demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 For an unknown hotel fact, offer reception confirmation without alerting staff unless requested.
 If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
-{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
+{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6434,6 +6451,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "category": category,
                 "photo_target": str(obj.get("photo_target", "")).strip(),
                 "menu_section": str(obj.get("menu_section", "")).strip(),
+                "show_prices": obj.get("show_prices") is True,
                 "generic": str(obj.get("generic", "")).strip(),
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
@@ -7886,7 +7904,16 @@ def _process_and_reply(message, sender_phone, msg_type):
     remember_guest_language(sender_phone, user_text)
 
     import demo_food
-    if demo_food.handle(sys.modules[__name__], sender_phone, user_text):
+    # Pilot: AI interprets the demo guest request; backend alone handles
+    # menu prices, confirmed orders, Sheet writes and bills.
+    demo_ai_attempted = False
+    demo_ai_result = None
+    if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
+        demo_pending = demo_food_sessions.get(sender_phone)
+        if not (demo_pending and (is_yes(user_text) or is_no(user_text))):
+            demo_ai_attempted = True
+            demo_ai_result = understand_guest_request(user_text, None, sender_phone)
+    if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=demo_ai_result):
         return
 
     t = normalize_text(user_text)
@@ -7954,7 +7981,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     # One semantic AI pass for the whole guest turn. First consume a safe local
     # hotel-data route for common deterministic questions; this dramatically reduces
     # free-tier AI usage without weakening semantic AI for ambiguous requests.
-    ai_understanding = None
+    ai_understanding = demo_ai_result
     with state_lock:
         _dup_pending_now = duplicate_order_sessions.get(sender_phone)
         _order_pending_now = order_sessions.get(sender_phone)
@@ -8025,7 +8052,8 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # AI is the semantic brain for actual language/contextual requests.
     if not _skip_semantic_ai:
-        ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
+        if not demo_ai_attempted:
+            ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
     # Explicit food delivery language is authoritative for the primary action.

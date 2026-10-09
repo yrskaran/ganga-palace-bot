@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V60-CLEAN-MEAL-CARDS"
+APP_VERSION = "HOTEL-AI-V61-ALIGNED-MENU-PRICES"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5185,6 +5185,46 @@ def _menu_display_title(section_name):
     return titles.get(str(section_name or "").strip().upper(), ("🍽️", str(section_name or "Menu").title()))
 
 
+def _whatsapp_price_block(items):
+    """Right-align menu prices in WhatsApp's actual monospaced text format.
+
+    'text' language fences are Markdown, not WhatsApp; use plain triple backticks.
+    Item names and numeric prices are never truncated or modified.
+    """
+    entries = [(str(name).strip(), int(price)) for name, price in items]
+    if not entries:
+        return ""
+    width = max(len(name) for name, _ in entries)
+    rows = [f"{name.ljust(width)}  ₹{price:,}" for name, price in entries]
+    return "```\n" + "\n".join(rows) + "\n```"
+
+
+def _align_whatsapp_menu_price_lines(text):
+    """Convert consecutive priced bullets to aligned WhatsApp blocks.
+
+    Keep headings, category boundaries and unpriced menu items unchanged.
+    """
+    result, pending = [], []
+
+    def flush():
+        if pending:
+            result.append(_whatsapp_price_block(pending))
+            pending.clear()
+
+    for line in str(text or "").splitlines():
+        match = re.fullmatch(
+            r"\s*•\s+(?:\*(?P<bold>[^*]+)\*|(?P<plain>.+?))\s+—\s+₹(?P<price>[\d,]+)\s*",
+            line,
+        )
+        if match:
+            pending.append((match.group("bold") or match.group("plain"), int(match.group("price").replace(",", ""))))
+        else:
+            flush()
+            result.append(line)
+    flush()
+    return "\n".join(result)
+
+
 def _format_menu_item_line(line, include_prices=False):
     stripped = str(line or "").strip()
     stripped = re.sub(r"^[-•]\s*", "", stripped)
@@ -5222,7 +5262,7 @@ def menu_message(include_prices=True, sender_phone=None):
         else:
             cta = ["", "📲 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"]
         lines.extend(cta)
-    return "\n".join(lines)
+    return _align_whatsapp_menu_price_lines("\n".join(lines)) if include_prices else "\n".join(lines)
 
 
 
@@ -7069,7 +7109,7 @@ def _full_menu_presentation_messages(include_prices=False, sender_phone=None):
     for icon, title, sections in groups:
         blocks = []
         for section in sections:
-            block = _menu_section_message(section, include_prices=include_prices, sender_phone=sender_phone, include_cta=False)
+            block = _menu_section_message(section, include_prices=include_prices, sender_phone=sender_phone, include_cta=False, align_prices=False)
             if block:
                 # Remove the section's own title so the grouped card has one clean heading.
                 lines = block.splitlines()
@@ -7108,7 +7148,10 @@ def _full_menu_presentation_messages(include_prices=False, sender_phone=None):
         if not blocks:
             continue
         heading = f"{icon} *{get_hotel_name()} — {title}*" if first else f"{icon} *{title}*"
-        msg = heading + "\n━━━━━━━━━━━━━━━━\n" + "\n".join(blocks)
+        body = "\n".join(blocks)
+        if include_prices:
+            body = _align_whatsapp_menu_price_lines(body)
+        msg = heading + "\n━━━━━━━━━━━━━━━━\n" + body
         messages.append(msg)
         first = False
 
@@ -7210,7 +7253,7 @@ def _derived_menu_items_for_section(section_name):
     return [item for item in items if selector(item[0])]
 
 
-def _menu_section_message(section_name, include_prices=False, sender_phone=None, include_cta=True):
+def _menu_section_message(section_name, include_prices=False, sender_phone=None, include_cta=True, align_prices=True):
     """Return a polished, data-driven guest-facing menu section.
 
     Prices are hidden unless the guest explicitly asked for price/rate/cost, matching
@@ -7302,7 +7345,7 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
                             "Item + quantity bhej dijiye.", f"Jaise: {example}"])
                 if CUSTOMER_DEMO_MODE:
                     out.append("_Demo only • kitchen ko order nahi jayega._")
-            return "\n".join(out)
+            return _align_whatsapp_menu_price_lines("\n".join(out)) if include_prices and align_prices else "\n".join(out)
 
         out = [f"{icon} *{get_hotel_name()} — {title}*", "━━━━━━━━━━━━━━━━"]
         for name, price in derived:
@@ -7316,7 +7359,7 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
                 out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
             else:
                 out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
-        return "\n".join(out)
+        return _align_whatsapp_menu_price_lines("\n".join(out)) if include_prices and align_prices else "\n".join(out)
 
     target_upper = str(section_name or "").strip().upper()
     icon, title = _menu_display_title(target_upper)
@@ -7346,7 +7389,7 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
             out.extend(["", "📝 *To order*", "Send item name + quantity.", "Example: 2 Poha + 1 Masala Chai"])
         else:
             out.extend(["", "📝 *Order karna ho?*", "Item name + quantity bhej dein.", "Example: 2 Poha + 1 Masala Chai"])
-    return "\n".join(out)
+    return _align_whatsapp_menu_price_lines("\n".join(out)) if include_prices and align_prices else "\n".join(out)
 
 
 def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):

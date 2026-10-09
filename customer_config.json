@@ -44,25 +44,194 @@
     "Do not claim a booking is confirmed until hotel staff confirms it.",
     "If the guest asks about an extra bed, say public listings mention extra beds may be available for a charge, but current charge and availability must be confirmed by reception."
   ],
-  "menu_intro": "DEMO SAMPLE MENU ONLY. Illustrative food items/prices for the virtual receptionist demonstration, not actual Hotel Shreya Galaxy rates. No real food delivery, staff/kitchen order or payment.",
+  "menu_intro": "DEMO MENU — 45 sample items and prices restored from the earlier Ganga hotel menu. Not verified rates or available dishes for Hotel Shreya Galaxy. No real kitchen dispatch or payment; demo orders use Demo_Orders only.",
   "menu": [
+    {
+      "name": "Cutting Chai",
+      "price": 20
+    },
     {
       "name": "Masala Chai",
       "price": 30
+    },
+    {
+      "name": "Hot Coffee",
+      "price": 40
+    },
+    {
+      "name": "Cold Coffee",
+      "price": 80
+    },
+    {
+      "name": "Hot Milk",
+      "price": 50
+    },
+    {
+      "name": "Mineral Water",
+      "price": 20
+    },
+    {
+      "name": "Sweet Lassi",
+      "price": 60
+    },
+    {
+      "name": "Salted Lassi",
+      "price": 60
+    },
+    {
+      "name": "Plain Butter Toast",
+      "price": 50
     },
     {
       "name": "Poha",
       "price": 70
     },
     {
+      "name": "Veg Besan Chilla",
+      "price": 80
+    },
+    {
+      "name": "Aloo Paratha",
+      "price": 90
+    },
+    {
+      "name": "Paneer Paratha",
+      "price": 130
+    },
+    {
+      "name": "Mix Veg Paratha",
+      "price": 110
+    },
+    {
+      "name": "Puri Bhaji",
+      "price": 110
+    },
+    {
+      "name": "Chole Bhature",
+      "price": 140
+    },
+    {
+      "name": "Veg Pakoda",
+      "price": 90
+    },
+    {
+      "name": "Paneer Pakoda",
+      "price": 140
+    },
+    {
+      "name": "French Fries",
+      "price": 90
+    },
+    {
+      "name": "Veg Sandwich",
+      "price": 90
+    },
+    {
+      "name": "Cheese Grilled Sandwich",
+      "price": 150
+    },
+    {
+      "name": "Plain Maggi",
+      "price": 60
+    },
+    {
+      "name": "Veg Masala Maggi",
+      "price": 80
+    },
+    {
+      "name": "Dal Fry",
+      "price": 130
+    },
+    {
+      "name": "Dal Tadka",
+      "price": 160
+    },
+    {
+      "name": "Dal Makhani",
+      "price": 190
+    },
+    {
+      "name": "Aloo Jeera",
+      "price": 130
+    },
+    {
+      "name": "Mix Veg",
+      "price": 170
+    },
+    {
+      "name": "Matar Paneer",
+      "price": 210
+    },
+    {
+      "name": "Shahi Paneer",
+      "price": 240
+    },
+    {
+      "name": "Kadhai Paneer",
+      "price": 250
+    },
+    {
+      "name": "Paneer Butter Masala",
+      "price": 260
+    },
+    {
+      "name": "Tawa Roti Plain",
+      "price": 15
+    },
+    {
+      "name": "Tawa Roti Butter",
+      "price": 20
+    },
+    {
+      "name": "Plain Naan",
+      "price": 45
+    },
+    {
       "name": "Butter Naan",
-      "price": 40
+      "price": 60
+    },
+    {
+      "name": "Garlic Naan",
+      "price": 75
+    },
+    {
+      "name": "Steamed Rice",
+      "price": 110
+    },
+    {
+      "name": "Jeera Rice",
+      "price": 140
+    },
+    {
+      "name": "Veg Pulao",
+      "price": 170
+    },
+    {
+      "name": "Boondi Raita",
+      "price": 70
+    },
+    {
+      "name": "Veg Raita",
+      "price": 90
+    },
+    {
+      "name": "Green Salad",
+      "price": 50
+    },
+    {
+      "name": "Standard Veg Thali",
+      "price": 200
+    },
+    {
+      "name": "Special Deluxe Ganga Thali",
+      "price": 290
     }
   ],
   "food_rules": [
-    "Do not invent food items or prices.",
-    "If a guest asks for the current menu or food price, say the hotel has restaurant/room service and reception can confirm the latest menu.",
-    "Public listings describe the on-site restaurant as family-friendly and vegetarian options are available; do not promise a specific dish unless confirmed."
+    "DEMO ONLY: Listed menu items and prices are historical sample rates; do not present them as Hotel Shreya Galaxy's real or current menu.",
+    "For actual Hotel Shreya Galaxy food rates, availability and deliveries, ask reception to confirm.",
+    "Demo orders and bills are recorded only in Demo_Orders after guest confirmation; never create a real Kitchen_Orders entry or alert staff for demo orders.",
+    "Do not invent food items, availability, bill payments or completed deliveries."
   ],
   "policies": {
     "early_check_in": "Chargeable and subject to availability",

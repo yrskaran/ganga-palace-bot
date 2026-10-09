@@ -150,7 +150,7 @@ def menu_messages(bot, meal=None, include_prices=False):
         result.append((header + '\n━━━━━━━━━━━━━━━━━━━━\n' + '\n'.join(sections)).strip())
     if result:
         result[0] += '\n\n_DEMO menu • sample items, real hotel rates nahi._'
-        result[-1] += '\n\n📝 *Order karna ho?* Naam + quantity bhej dein.\nExample: 2 Poha + 1 Masala Chai\n_Demo only: no real kitchen dispatch._'
+        result[-1] += '\n\n📝 *Order karna ho?* Naam + quantity bhej dein.\nExample: 2 Poha + 1 Masala Chai\n_DEMO menu only: no real kitchen dispatch._'
     return result
 
 

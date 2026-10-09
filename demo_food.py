@@ -136,7 +136,9 @@ def menu_messages(bot, meal=None, include_prices=False):
         def card_body(groups):
             return '\n\n'.join(
                 f'{symbol} *{name}*\n' +
-                '\n'.join(_menu_item(x, include_prices) for x in entries)
+                (bot._whatsapp_price_block([(x['name'], x['price']) for x in entries])
+                 if include_prices else
+                 '\n'.join(_menu_item(x, False) for x in entries))
                 for symbol, name, entries in groups
             )
 
@@ -187,7 +189,12 @@ def menu_messages(bot, meal=None, include_prices=False):
         for key in groups:
             if grouped[key]:
                 sections += [f'*{next(g[2] for g in MENU_GROUPS if g[0] == key)}*']
-                sections += [_menu_item(item, include_prices) for item in grouped[key]]
+                if include_prices:
+                    sections.append(bot._whatsapp_price_block(
+                        [(x['name'], x['price']) for x in grouped[key]]
+                    ))
+                else:
+                    sections += [_menu_item(item, False) for item in grouped[key]]
                 sections.append('')
         if not sections:
             continue

@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V63-SEMANTIC-DEMO-PILOT"
+APP_VERSION = "HOTEL-AI-V63-ROOM-INTENT-CONSENT-PILOT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -222,6 +222,7 @@ lifecycle_retry_after = {}
 # Latest reception handoff per guest. This prevents an older food-confirmation
 # state from hijacking follow-up questions such as "meri request confirm hui?".
 reception_request_sessions = {}
+reception_consent_sessions = {}
 # Request-level indexes preserve multiple simultaneous reception tickets, even
 # when the same guest creates more than one request before staff replies.
 reception_requests_by_id = {}
@@ -3310,7 +3311,7 @@ def _openai_semantic_schema():
                 "enum": [
                     "ANSWER", "SHOW_PHOTO", "SHOW_MENU", "ORDER", "ORDER_SELECTION",
                     "ORDER_CANCEL", "COMPLAINT", "SERVICE", "CHECKIN", "BILL",
-                    "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE",
+                    "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "ROOM_OPTIONS", "LOCAL_GUIDE",
                     "RECEPTION", "NONE"
                 ],
             },
@@ -6358,6 +6359,8 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     demo_instructions = ""
     if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
         demo_instructions = (
+            "Room category questions like 'Room kaun kaun se hai?' mean ROOM_OPTIONS, not RECEPTION. "
+            "Simple information questions must never create staff requests. "
             "DEMO FOOD ASSISTANT: Interpret food/menu/bill intent with recent dialogue. "
             "If guest asks for breakfast/lunch/dinner dishes, respond SHOW_MENU with "
             "menu_section BREAKFAST/LUNCH/DINNER (FULL if no meal specified). "
@@ -6380,9 +6383,10 @@ Pending: {state_hint}
 {demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 For an unknown hotel fact, offer reception confirmation without alerting staff unless requested.
+When the guest asks what categories/types of rooms the hotel offers, use ROOM_OPTIONS, not RECEPTION. This is informational, not a request to message staff. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. RECEPTION is a potential human handoff only when the guest clearly requests it. Model confidence is never permission to notify staff.
 If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
-{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
+{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6423,7 +6427,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                     print(f"AI UNDERSTANDING INVALID JSON FROM {provider_name.upper()}", flush=True)
                 continue
             action = str(obj.get("action", "NONE")).strip().upper()
-            valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_MENU","ORDER","ORDER_SELECTION","ORDER_CANCEL","COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","LOCAL_GUIDE","RECEPTION","NONE"}
+            valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_MENU","ORDER","ORDER_SELECTION","ORDER_CANCEL","COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","ROOM_OPTIONS","LOCAL_GUIDE","RECEPTION","NONE"}
             if action not in valid_actions:
                 action = "NONE"
             category = str(obj.get("category", "NONE")).strip().upper()

@@ -1892,7 +1892,10 @@ def _load_reception_request(identifier, field):
 
 
 def _reception_question_key(question):
-    return re.sub(r"[^\w]+", " ", normalize_text(question), flags=re.UNICODE).strip()
+    ignored = {"kya", "hai", "hain", "ka", "ki", "ke", "mein", "me", "the", "a", "an", "is", "are", "what"}
+    aliases = {"time": "timing", "times": "timing", "timings": "timing", "hours": "timing"}
+    tokens = re.sub(r"[^\w]+", " ", normalize_text(question), flags=re.UNICODE).split()
+    return " ".join(aliases.get(token, token) for token in tokens if token not in ignored)
 
 
 def _reception_answer_is_reusable(question, answer):

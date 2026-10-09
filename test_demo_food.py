@@ -19,6 +19,9 @@ class Sheet:
     def get_all_values(self):
         return [r.copy() for r in self.rows]
 
+    def update(self, range_name=None, values=None, **kwargs):
+        self.rows = [[str(cell) for cell in values[0]]]
+
     def append_row(self, row, **kwargs):
         self.append_count += 1
         if self.timeout:
@@ -179,6 +182,39 @@ class DemoFoodTests(unittest.TestCase):
         self.turn('1 Poha')
         snapshot=app.session_snapshot(self.phone)
         self.assertEqual(snapshot['demo_food_sessions']['total'],70)
+
+    def test_empty_demo_orders_sheet_is_initialized_before_save(self):
+        self.sheet.rows = []
+        self.turn('1 Poha')
+        self.turn('confirm')
+        self.assertEqual(self.sheet.rows[0], self.demo.HEADERS)
+        self.assertEqual(self.sheet.append_count, 1)
+        self.turn('bill')
+        self.assertIn('Food total: Rs. 70', self.reply())
+        self.kitchen.assert_not_called()
+
+    def test_empty_demo_orders_sheet_can_show_zero_bill(self):
+        self.sheet.rows = []
+        self.turn('bill')
+        self.assertIn('Food total: Rs. 0', self.reply())
+
+    def test_full_legacy_menu_prices_match_demo_bill(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        prices = {row['name']: row['price'] for row in config['menu']}
+        self.assertEqual(len(prices), 45)
+        self.assertEqual(prices['Butter Naan'], 60)
+        self.assertEqual(prices['Special Deluxe Ganga Thali'], 290)
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('menu')
+            self.assertIn('Special Deluxe Ganga Thali', self.reply())
+            self.turn('2 Butter Naan aur 1 Paneer Butter Masala')
+            self.assertIn('Rs. 380', self.reply())
+            self.turn('confirm')
+            self.turn('bill')
+            self.assertIn('Food total: Rs. 380', self.reply())
+        self.kitchen.assert_not_called()
 
     def test_conflicting_headers_preserve_sheet_and_report_failure(self):
         self.sheet.rows[0][0]='Unrelated data'

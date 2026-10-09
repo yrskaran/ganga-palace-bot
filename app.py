@@ -1887,7 +1887,8 @@ def _load_reception_request(identifier, field):
                 reception_request_sessions[ticket["guest_phone"]] = ticket
             return ticket
     except Exception as exc:
-        print("RECEPTION REQUEST LOAD ERROR:", exc, flush=True)
+        if "Reception_Requests" not in str(exc):
+            print("RECEPTION REQUEST LOAD ERROR:", exc, flush=True)
     return None
 
 
@@ -3582,7 +3583,8 @@ def _openai_messages(user_text, guest_info=None, sender_phone=None, structured=F
 You are the semantic AI receptionist for {get_hotel_name()} on WhatsApp.
 {language_rule}
 {ai_time_context()}
-Use hotel_data as the source of truth. Understand meaning, slang, Hinglish and follow-ups from the role-separated recent conversation.
+Use hotel_data as the source of truth. Understand meaning, slang, Hinglish, spelling variations and follow-ups from the role-separated recent conversation.
+For structured routing, “ID kaun si chalegi?” after demo check-in is an identity-document question, not ROOM_OPTIONS; explain demo check-in needs no ID. For a real hotel's undocumented ID policy, choose RECEPTION with needs_reception=true and say you are checking.
 Never invent live availability, payments, bookings, verification or unsupported hotel facts.
 For structured requests return only the required JSON; keep reply <=220 characters unless a genuine list is needed.
 Guest context: {guest_context}
@@ -5074,7 +5076,8 @@ You are the WhatsApp receptionist for {get_hotel_name()}.
 {language_rule}
 {time_context}
 Use the hotel knowledge below as the source of truth.
-Understand natural language and conversation context. Never invent hotel facts or live status.
+Understand natural language, Hinglish, spelling variations and role-separated conversation context before choosing an intent. Never invent hotel facts or live status.
+For structured routing, distinguish identity-document questions from room-category questions. After demo check-in, “ID kaun si chalegi?” (including “I'd kaun kaun se chalengi?”) asks about ID, not rooms; explain that demo check-in does not require ID. For a real hotel's undocumented ID policy, choose RECEPTION with needs_reception=true and say you are checking.
 Return only the requested JSON when the user message asks for structured routing.
 Guest context: {guest_context}
 Hotel knowledge:
@@ -6306,10 +6309,6 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
     correction_needed = False
     with state_lock:
         pending = reception_requests_by_alert.get(remote_id)
-    if not pending:
-        _find_reception_request_by_alert_id(remote_id)
-        with state_lock:
-            pending = reception_requests_by_alert.get(remote_id)
     with state_lock:
         if pending:
             previous = pending.get("delivery_status")
@@ -6618,7 +6617,9 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
         demo_instructions = (
             "Room category questions like 'Room kaun kaun se hai?' mean ROOM_OPTIONS, not RECEPTION. "
-            "Simple information questions must never create staff requests. "
+            "ID/identity-proof questions such as 'ID kaun kaun si chalegi?', 'kaunsi ID lagegi?' or a typo like 'I'd kaun kaun se chalengi?' are about documents, never room options. "
+            "In this demo, explain that demo check-in needs no ID. For real check-in, never guess accepted documents; when the hotel policy is missing, route RECEPTION and say you are checking. "
+            "Simple information questions with a verified hotel answer must never create staff requests. "
             "DEMO FOOD ASSISTANT: Interpret food/menu/bill intent with recent dialogue. "
             "If guest asks for breakfast/lunch/dinner dishes, respond SHOW_MENU with "
             "menu_section BREAKFAST/LUNCH/DINNER (FULL if no meal specified). "
@@ -6640,8 +6641,7 @@ Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
 {demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
-For an unknown hotel fact, offer reception confirmation without alerting staff unless requested.
-When the guest asks what categories/types of rooms the hotel offers, use ROOM_OPTIONS, not RECEPTION. This is informational, not a request to message staff. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. RECEPTION is a potential human handoff only when the guest clearly requests it. Model confidence is never permission to notify staff.
+For a hotel fact that is absent from HOTEL KNOWLEDGE, use RECEPTION with needs_reception=true and a brief, warm acknowledgement that you are checking with reception. This reception-confirmation flow is authorized; do not ask the guest again for permission. Use ROOM_OPTIONS only when the current message actually asks for room categories/types, not when it asks which ID/document works. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. A known, verified informational answer must not create a staff request.
 If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
 {{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}

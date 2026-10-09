@@ -70,5 +70,24 @@ class ReceptionMemoryTests(unittest.TestCase):
         )
 
 
+    def test_demo_checkin_id_question_is_not_a_room_options_intent(self):
+        with patch.object(app, "CUSTOMER_DEMO_MODE", True), \
+             patch.object(app, "CUSTOMER_CONFIG", {"demo_semantic_first": True}):
+            prompt = app._ai_understanding_prompt(
+                "I'd kaun kaun se chalengi?", None, "919555555555"
+            )
+        self.assertIn("ID/identity-proof questions", prompt)
+        self.assertIn("never room options", prompt)
+        self.assertIn("demo check-in needs no ID", prompt)
+        self.assertIn("use RECEPTION with needs_reception=true", prompt)
+
+    def test_delivery_callback_does_not_lookup_sheet_for_unmapped_messages(self):
+        with patch.object(app, "_find_reception_request_by_alert_id") as lookup, \
+             patch.object(app, "_persist_reception_request") as persist:
+            app._update_reception_alert_delivery("wamid-unrelated", "delivered", [])
+        lookup.assert_not_called()
+        persist.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

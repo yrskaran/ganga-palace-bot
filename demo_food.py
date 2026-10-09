@@ -40,6 +40,178 @@ def worksheet(bot, create=False):
     return sheet
 
 
+
+def menu_category(name):
+    """Categories are presentation only: order prices always come from config."""
+    name = str(name or '').lower().strip()
+    if any(word in name for word in ('chai', 'coffee', 'lassi', 'milk', 'water')):
+        return 'Drinks'
+    if any(word in name for word in ('toast', 'poha', 'chilla', 'paratha', 'puri bhaji', 'chole bhature')):
+        return 'Breakfast'
+    if any(word in name for word in ('pakoda', 'fries', 'sandwich', 'maggi')):
+        return 'Snacks'
+    if any(word in name for word in ('roti', 'naan')):
+        return 'Breads'
+    if any(word in name for word in ('rice', 'pulao')):
+        return 'Rice'
+    if any(word in name for word in ('raita', 'salad', 'thali')):
+        return 'Sides & Thali'
+    return 'Main Course'
+
+
+MENU_GROUPS = [
+    ('Breakfast', '☀️', 'Breakfast'),
+    ('Drinks', '☕', 'Beverages'),
+    ('Snacks', '🥪', 'Snacks & Light Bites'),
+    ('Main Course', '🍲', 'Main Course'),
+    ('Breads', '🫓', 'Breads'),
+    ('Rice', '🍚', 'Rice'),
+    ('Sides & Thali', '🥗', 'Sides & Thali'),
+]
+
+
+def meal_request(text):
+    """Handle meal recommendations, but do not misroute timing or food orders."""
+    t = str(text or '').lower().strip()
+    if re.search(r'\b(?:time|timing|kab|baje|hours|open|close)\b|कब|समय|बजे', t):
+        return None
+    # A quantity + meal name is more likely an order than a menu request.
+    if re.search(r'\d', t) and not re.search(r'\bmenu\b|मेन्यू|मेनू', t):
+        return None
+    matchers = (
+        ('BREAKFAST', r'\b(?:breakfast|nashta|nasta|naashta)\b|नाश्ता|नास्ता'),
+        ('LUNCH', r'\b(?:lunch|dopahar ka khana)\b|दोपहर का खाना|लंच'),
+        ('DINNER', r'\b(?:dinner|raat ka khana)\b|रात का खाना|डिनर'),
+    )
+    for key, pattern in matchers:
+        if re.search(pattern, t, re.I):
+            return key
+    return None
+
+
+def menu_messages(bot, meal=None, include_prices=False):
+    """Pretty WhatsApp menus from the *same* configured price list used by orders."""
+    config = bot.CUSTOMER_CONFIG or {}
+    menu = config.get('menu') or []
+    if not menu:
+        return ['DEMO food menu abhi configure nahi hua hai. Is waqt koi sample item ya price available nahi hai.']
+
+    grouped = {key: [] for key, _, _ in MENU_GROUPS}
+    for item in menu:
+        if not isinstance(item, dict) or not item.get('name'):
+            continue
+        group = menu_category(item['name'])
+        grouped[group].append(item)
+
+    hotel = (config.get('hotel') or {}).get('name') or 'Hotel'
+    headings = {
+        'BREAKFAST': ('☀️', 'Breakfast', ['Breakfast', 'Drinks']),
+        'LUNCH': ('🍛', 'Lunch', ['Main Course', 'Breads', 'Rice', 'Sides & Thali']),
+        'DINNER': ('🌙', 'Dinner', ['Main Course', 'Breads', 'Rice', 'Sides & Thali']),
+    }
+    if meal in headings:
+        icon, title, keys = headings[meal]
+        parts = [f'{icon} *{hotel} — {title}*', '━━━━━━━━━━━━━━━━━━━━']
+        if meal == 'DINNER':
+            # Retain the familiar dinner paratha option from the original bot.
+            extras = [x for x in grouped['Breakfast'] if 'mix veg paratha' in x['name'].lower()]
+            if extras:
+                parts += ['*Paratha*'] + [
+                    _menu_item(x, include_prices) for x in extras
+                ] + ['']
+        for key, symbol, group_title in MENU_GROUPS:
+            if key in keys and grouped[key]:
+                parts.append(f'{symbol} *{group_title}*')
+                parts += [_menu_item(x, include_prices) for x in grouped[key]]
+                parts.append('')
+        parts += ['📝 *Order karna ho?*', 'Item name aur quantity bhej dijiye.', 'Jaise: 2 Poha + 1 Masala Chai',
+                  '_DEMO menu: sample items/rates; real hotel kitchen order nahi jayega._']
+        return ['\n'.join(parts).strip()]
+
+    # Entire menu: short, scannable cards rather than one giant 45-item bubble.
+    batches = [
+        ('☀️', 'Breakfast & Drinks', ['Breakfast', 'Drinks']),
+        ('🥪', 'Snacks', ['Snacks']),
+        ('🍲', 'Main Course', ['Main Course']),
+        ('🫓', 'Breads & Rice', ['Breads', 'Rice']),
+        ('🥗', 'Sides & Thali', ['Sides & Thali']),
+    ]
+    result = []
+    for icon, title, groups in batches:
+        sections = []
+        for key in groups:
+            if grouped[key]:
+                sections += [f'*{next(g[2] for g in MENU_GROUPS if g[0] == key)}*']
+                sections += [_menu_item(item, include_prices) for item in grouped[key]]
+                sections.append('')
+        if not sections:
+            continue
+        header = f'{icon} *{hotel} — {title}*' if not result else f'{icon} *{title}*'
+        result.append((header + '\n━━━━━━━━━━━━━━━━━━━━\n' + '\n'.join(sections)).strip())
+    if result:
+        result[0] += '\n\n_DEMO menu • sample items, real hotel rates nahi._'
+        result[-1] += '\n\n📝 *Order karna ho?* Naam + quantity bhej dein.\nExample: 2 Poha + 1 Masala Chai\n_Demo only: no real kitchen dispatch._'
+    return result
+
+
+def _menu_item(item, include_prices=False):
+    name = str(item['name']).strip()
+    return f"• {name} — ₹{int(item['price']):,}" if include_prices else f'• {name}'
+
+
+def pretty_order_lines(items):
+    return '\n'.join(
+        f"• {x['qty']} x {x['name']} — ₹{x['amount']:,}"
+        for x in items
+    )
+
+
+def pretty_total(total):
+    return f'₹{int(total):,}'
+
+
+def formatted_demo_bill(hotel, details, total, count):
+    lines_out = [
+        f'🧾 *{hotel.upper()} — DEMO FOOD BILL*',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '🍽️ *FOOD*',
+    ]
+    lines_out += details or ['No confirmed food orders yet.']
+    lines_out += [
+        '',
+        f'Food total: Rs. {total}',
+        '━━━━━━━━━━━━━━━━━━━━',
+        f'💰 *GRAND TOTAL (FOOD ONLY)  {pretty_total(total)}*',
+        f'✅ *Confirmed demo orders:* {count}',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '_Sample bill only • no room rent or payment included._',
+        '🙏 Dhanyavaad!',
+    ]
+    return '\n'.join(lines_out)
+
+
+def verified_bill_lines(raw):
+    """Parse saved item lines; refuse inconsistent rows instead of guessing."""
+    parsed, subtotal = [], 0
+    for line in str(raw or '').splitlines():
+        match = re.fullmatch(
+            r'\s*(\d+)\s*x\s*(.+?)\s*@\s*Rs\.\s*(\d+)\s*=\s*Rs\.\s*(\d+)\s*',
+            line, re.I
+        )
+        if not match:
+            raise ValueError('Unexpected demo order item format')
+        qty, name, unit_price, amount = match.groups()
+        q, price, value = int(qty), int(unit_price), int(amount)
+        if q <= 0 or price < 0 or value != q * price:
+            raise ValueError('Demo order row total mismatch')
+        subtotal += value
+        parsed.append(f'• {q} x {name} — ₹{value:,}')
+    if not parsed:
+        raise ValueError('Demo order has no items')
+    return parsed, subtotal
+
+
+
 def lines(items):
     return '\n'.join(f"{x['qty']} x {x['name']} @ Rs. {x['unit_price']} = Rs. {x['amount']}" for x in items)
 
@@ -75,22 +247,21 @@ def save(bot, phone, pending):
 def bill(bot, phone):
     sheet = worksheet(bot)
     rows = sheet.get_all_values()[1:] if sheet is not None else []
-    total = 0
-    details = []
-    ids = set()
+    total, details, ids = 0, [], set()
     for row in rows:
         if len(row) < 3 or row[2] != phone:
             continue
-        if len(row) < len(HEADERS) or row[6] != 'DEMO_CONFIRMED' or row[0] in ids:
+        if len(row) < len(HEADERS) or row[6] != 'DEMO_CONFIRMED' or not row[0] or row[0] in ids:
             raise ValueError('Demo order rows need review')
         ids.add(row[0])
+        item_lines, subtotal = verified_bill_lines(row[4])
         amount = int(row[5])
-        if amount < 0:
-            raise ValueError('Invalid demo amount')
+        if amount < 0 or amount != subtotal:
+            raise ValueError('Invalid demo order amount')
+        details.extend(item_lines)
         total += amount
-        details.append(row[4])
-    text = 'DEMO food bill\n' + ('\n\n'.join(details) if details else 'No confirmed food orders yet.')
-    return text + f'\n\nFood total: Rs. {total}\nSample bill only — no payment required.'
+    hotel = ((bot.CUSTOMER_CONFIG or {}).get('hotel') or {}).get('name') or 'Hotel'
+    return formatted_demo_bill(hotel, details, total, len(ids))
 
 
 def handle(bot, phone, text):
@@ -114,14 +285,11 @@ def handle(bot, phone, text):
                 print('DEMO BILL UNAVAILABLE:', type(exc).__name__, flush=True)
                 say('Demo bill abhi Sheet se verify nahi ho pa raha. Thodi der mein dobara poochhein; main total guess nahi karungi.')
             return True
-        if re.search(r'\bmenu\b|मेन्यू|मेनू', normalized):
-            menu = (bot.CUSTOMER_CONFIG or {}).get('menu', [])
-            if not menu:
-                say('DEMO food menu abhi configure nahi hua hai. Is waqt koi sample item ya price available nahi hai.')
-                return True
-            say('Ji, ye raha poora DEMO menu 🙂 (sample rates, hotel ke actual rates nahi):\n\n' +
-                '\n'.join(f"• {x['name']} — ₹{x['price']}" for x in menu) +
-                '\n\nJo pasand ho, quantity ke saath likh dijiye, jaise 2 Masala Chai aur 1 Poha. Confirm karne ke baad sirf demo Sheet mein entry hogi, kitchen ko order nahi jayega.')
+        meal = meal_request(normalized)
+        if re.search(r'\bmenu\b|मेन्यू|मेनू', normalized) or meal:
+            prices = bool(re.search(r'\b(?:price|prices|rate|rates|cost|daam|dam)\b|दाम|कीमत|रेट', normalized))
+            for message in menu_messages(bot, meal=meal, include_prices=prices):
+                say(message)
             return True
         if pending and bot.is_yes(text):
             try:
@@ -131,7 +299,12 @@ def handle(bot, phone, text):
                 say('Demo order ka Sheet update confirm nahi ho paaya. Cart rakha hai; Sheet verify hone tak naya order mat banayein. CONFIRM dobara bhejne par pehle usi entry ko check karungi.')
                 return True
             bot.demo_food_sessions.pop(phone, None)
-            say(f"Demo order save ho gaya — Rs. {pending['total']}. Demo_Orders Sheet mein entry hai. 'Bill' likhein toh item-wise total bata doon. Yeh test order hai, real delivery nahi hogi.")
+            say(
+                f"✅ *Demo order save ho gaya!* {pretty_total(pending['total'])} ka order "
+                "Demo_Orders Sheet mein record ho gaya.\n"
+                "Aap *Bill* likh kar item-wise hisaab dekh sakte hain. 🙂\n"
+                "_Ye demo hai; real kitchen delivery nahi hogi._"
+            )
             return True
         if pending and bot.is_no(text):
             if pending_state(bot, pending) in {'sending', 'unknown', 'saved'}:
@@ -171,6 +344,11 @@ def handle(bot, phone, text):
         pending = {'id':'DEMO-' + uuid4().hex, 'created':time.time(),
                    'items':parsed['items'], 'total':parsed['total'], 'phone':phone}
         bot.demo_food_sessions[phone] = pending
-        say('Demo order note kiya:\n' + lines(pending['items']) +
-            f"\nFood total: Rs. {pending['total']}\nCONFIRM kar dein toh Demo_Orders Sheet mein save kar doon; CANCEL se hata sakte hain. Real kitchen order nahi jayega.")
+        say(
+            "🍽️ *Aapka demo food order*\n━━━━━━━━━━━━━━━━━━━━\n"
+            + pretty_order_lines(pending['items'])
+            + f"\n━━━━━━━━━━━━━━━━━━━━\n💰 *Total: {pretty_total(pending['total'])}*\n\n"
+            + "Ji, order sahi hai? *CONFIRM* ya *CANCEL* bhej dein.\n"
+            + "_Sirf demo: kitchen mein order nahi jayega._"
+        )
         return True

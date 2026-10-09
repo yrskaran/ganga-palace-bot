@@ -7663,6 +7663,164 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
 
 
 
+def _room_occupancy_count(text):
+    """Return a guest count only when it is stated explicitly by the guest."""
+    t = normalize_text(text)
+    match = re.search(
+        r"\b(\d{1,2})\s*(?:log(?:o|on)?|people|persons?|guests?|adults?)\b|"
+        r"\b(?:hum\s*)?(ek|do|teen|tin|chaar|char|paanch|five|four|three|two|one)\s*"
+        r"(?:log|logo|logon|people|persons?|guests?)\b",
+        t,
+    )
+    if match:
+        raw = match.group(1) or match.group(2)
+        try:
+            count = int(raw)
+        except (TypeError, ValueError):
+            count = {
+                "ek": 1, "one": 1, "do": 2, "two": 2,
+                "teen": 3, "tin": 3, "three": 3,
+                "chaar": 4, "char": 4, "four": 4,
+                "paanch": 5, "five": 5,
+            }.get(str(raw).lower(), 0)
+        if 1 <= count <= 20:
+            return count
+    # Natural Hinglish often uses "teeno/tino" without repeating "log".
+    if re.search(r"\b(?:hum\s*)?(?:teeno|tino|all three)\b", t):
+        return 3
+    return None
+
+
+def _configured_room_guest_capacity(room):
+    """Read only an explicit numeric capacity; room names/descriptions are not proof."""
+    if not isinstance(room, dict):
+        return None
+    for key in ("max_guests", "guest_capacity", "capacity", "max_occupancy", "occupancy"):
+        value = room.get(key)
+        if isinstance(value, bool):
+            continue
+        try:
+            count = int(value)
+        except (TypeError, ValueError):
+            continue
+        if count > 0:
+            return count
+    return None
+
+
+def _room_occupancy_request_text(guest_count):
+    return (
+        f"Please confirm which room category at {get_hotel_name()} can accommodate "
+        f"{guest_count} guests, including any extra-bed requirement and charges. "
+        "Do not treat the room as available or booked until reception confirms."
+    )
+
+
+def _handle_room_occupancy_question(sender_phone, user_text, guest_info=None):
+    """Answer group-fit questions only from explicit hotel room-capacity data."""
+    count = _room_occupancy_count(user_text)
+    with state_lock:
+        pending = reception_consent_sessions.get(sender_phone)
+    pending_room_check = bool(
+        pending and pending.get("kind") == "room_capacity"
+        and time.time() - pending.get("created", 0) <= 300
+    )
+    if count is None and not pending_room_check:
+        return False
+
+    if count is None:
+        count = pending.get("guest_count")
+        if not count:
+            return False
+        # A short confused follow-up stays on the same subject and does not
+        # repeat the complete room catalogue or discard the reception request.
+        if get_guest_response_language(sender_phone, user_text) == "english":
+            reply = (
+                f"I understand—you’re asking which room fits {count} people. "
+                "I don’t have verified guest-capacity details for each room, so I won’t guess. "
+                "Would you like me to check with reception?"
+            )
+        else:
+            reply = (
+                f"Samajh gayi ji—aap {count} logon ke liye suitable room pooch rahe hain. "
+                "Mere paas room-wise capacity confirm nahi hai, isliye guess nahi karungi. "
+                "Reception se confirm karwa doon?"
+            )
+        send_whatsapp_message(sender_phone, reply)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", reply)
+        return True
+
+    # Require an explicit room-fit context; do not reinterpret unrelated counts.
+    t = normalize_text(user_text)
+    has_room_context = bool(re.search(
+        r"\b(?:room|rooms|kamra|kamre|kamron|suite|fit|accommodat|stay|aa\s*ja|"
+        r"adjust|ke hisaab|for us|for \d+|mein aa)\b|कमरा|कमरे", t
+    ))
+    if not has_room_context:
+        return False
+
+    configured = (CUSTOMER_CONFIG or {}).get("rooms") if CUSTOMER_CONFIG else None
+    if not isinstance(configured, list):
+        config = get_room_categories()
+        configured = list(config.values()) if isinstance(config, dict) else (config if isinstance(config, list) else [])
+    matches = []
+    for room in configured:
+        capacity = _configured_room_guest_capacity(room)
+        if capacity is not None and capacity >= count:
+            name = room.get("name") if isinstance(room, dict) else ""
+            if name:
+                matches.append((str(name), capacity))
+
+    if matches:
+        names = ", ".join(f"*{name}* (up to {capacity})" for name, capacity in matches)
+        if get_guest_response_language(sender_phone, user_text) == "english":
+            reply = (
+                f"Based on the hotel’s configured room capacity, {names} can accommodate "
+                f"{count} guests. Availability and any extra-bed charges still need confirmation. "
+                "Would you like the photo or starting rate?"
+            )
+        else:
+            reply = (
+                f"Ji 😊 hotel ke configured capacity ke mutabik {names} mein {count} log aa sakte hain. "
+                "Availability aur extra-bed charges reception se confirm honge. Photo ya starting rate dekhna hai?"
+            )
+        send_whatsapp_message(sender_phone, reply)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", reply)
+        return True
+
+    request = _room_occupancy_request_text(count)
+    explicitly_authorized = _guest_authorized_reception_contact(user_text)
+    if explicitly_authorized:
+        reply_to_reception_request(sender_phone, guest_info, request)
+        return True
+
+    with state_lock:
+        reception_consent_sessions[sender_phone] = {
+            "request": request,
+            "kind": "room_capacity",
+            "guest_count": count,
+            "created": time.time(),
+        }
+    if get_guest_response_language(sender_phone, user_text) == "english":
+        reply = (
+            f"Sure, I’ll help check which room fits {count} people. "
+            "I don’t have verified capacity for each room, so I won’t guess. "
+            "Shall I ask reception to confirm?"
+        )
+    else:
+        reply = (
+            f"Ji, {count} logon ke liye kaunsa room sahi rahega, ye check karwa deti hoon. "
+            "Room-wise capacity mere paas confirm nahi hai, isliye guess nahi karungi. "
+            "Reception se pooch loon?"
+        )
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, "user", user_text)
+    remember_conversation(sender_phone, "assistant", reply)
+    return True
+
+
 def _room_category_question(text):
     """Fallback if AI mistakes room types for a request to staff."""
     t = normalize_text(text)
@@ -7707,8 +7865,8 @@ def _guest_authorized_reception_contact(text):
     t = normalize_text(text)
     requested = bool(re.search(
         r'\b(?:reception|front desk|manager|staff|operator|doctor|kisi ko)'
-        r'.{0,60}\b(?:bulao|bulwao|bhejo|bhej do|inform|notify|call|connect|send|alert|karwao|karwa do)\b'
-        r'|\b(?:bulao|bulwao|bhejo|send|notify|inform|connect|alert)\b.{0,60}'
+        r'.{0,60}\b(?:bulao|bulwao|bhejo|bhej do|bhj(?:\s+(?:do|de))?|msg(?:\s+kar(?:\s+(?:do|de))?)?|message(?:\s+(?:bhejo|bhej\s+do|kar\s+do))?|inform|notify|call|connect|send|alert|karwao|karwa do)\b'
+        r'|\b(?:bulao|bulwao|bhejo|bhj(?:\s+(?:do|de))?|send|notify|inform|connect|alert)\b.{0,60}'
         r'\b(?:reception|front desk|manager|staff|doctor|kisi ko)\b'
         r'|रिसेप्शन.{0,30}(?:भेजो|बुलाओ|बताओ)', t,
     ))
@@ -7731,14 +7889,26 @@ def _offer_reception_contact(sender_phone, user_text):
 
 def _handle_reception_consent(sender_phone, user_text, guest_info):
     with state_lock:
-        pending = reception_consent_sessions.pop(sender_phone, None)
+        pending = reception_consent_sessions.get(sender_phone)
     if not pending or time.time() - pending.get('created', 0) > 300:
+        if pending:
+            with state_lock:
+                reception_consent_sessions.pop(sender_phone, None)
         return False
     if is_yes(user_text):
+        with state_lock:
+            reception_consent_sessions.pop(sender_phone, None)
         reply_to_reception_request(sender_phone, guest_info, pending['request'])
         return True
     if is_no(user_text):
+        with state_lock:
+            reception_consent_sessions.pop(sender_phone, None)
         send_whatsapp_message(sender_phone, 'Theek hai ji, abhi reception ko request nahi bhejungi. 🙂')
+        return True
+    if _guest_authorized_reception_contact(user_text):
+        with state_lock:
+            reception_consent_sessions.pop(sender_phone, None)
+        reply_to_reception_request(sender_phone, guest_info, pending['request'])
         return True
     return False
 
@@ -8180,6 +8350,10 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # Proposed AI handoffs need explicit guest confirmation.
     if _handle_reception_consent(sender_phone, user_text, guest_info):
+        return
+
+    # Group-size room questions need verified capacity, not a guessed category.
+    if _handle_room_occupancy_question(sender_phone, user_text, guest_info):
         return
 
     # Reception follow-ups take priority over any older food confirmation state.

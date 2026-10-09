@@ -25,9 +25,17 @@ def worksheet(bot, create=False):
             return None
         sheet = book.add_worksheet(title='Demo_Orders', rows=1000, cols=len(HEADERS))
     rows = sheet.get_all_values()
-    if not rows and create:
+    if not rows:
+        if not create:
+            # An untouched demo tab has no confirmed orders to bill yet.
+            return None
+        # Verify newly initialized headers before writing the first order.
         sheet.update(range_name='A1', values=[HEADERS], value_input_option='RAW')
-    elif not rows or rows[0][:len(HEADERS)] != HEADERS:
+        rows = sheet.get_all_values()
+        if not rows or rows[0][:len(HEADERS)] != HEADERS:
+            raise RuntimeError('Demo_Orders header setup could not be verified')
+    elif rows[0][:len(HEADERS)] != HEADERS:
+        # Leave unexpected existing tab contents untouched.
         raise ValueError('Demo_Orders headers do not match; existing data preserved')
     return sheet
 
@@ -111,9 +119,9 @@ def handle(bot, phone, text):
             if not menu:
                 say('DEMO food menu abhi configure nahi hua hai. Is waqt koi sample item ya price available nahi hai.')
                 return True
-            say('DEMO menu — sample prices, not the hotel\'s actual menu.\n' +
-                '\n'.join(f"{x['name']} — Rs. {x['price']}" for x in menu) +
-                '\n\nTry: 2 Masala Chai aur 1 Poha. Main total dikha kar confirmation loongi; real kitchen ko order nahi jayega.')
+            say('Ji, ye raha poora DEMO menu 🙂 (sample rates, hotel ke actual rates nahi):\n\n' +
+                '\n'.join(f"• {x['name']} — ₹{x['price']}" for x in menu) +
+                '\n\nJo pasand ho, quantity ke saath likh dijiye, jaise 2 Masala Chai aur 1 Poha. Confirm karne ke baad sirf demo Sheet mein entry hogi, kitchen ko order nahi jayega.')
             return True
         if pending and bot.is_yes(text):
             try:

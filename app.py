@@ -10341,11 +10341,14 @@ def monitor_guest_status_lifecycle():
                 # The Shreya demo must not reconcile or message the real
                 # Ganga hotel's Rooms/Lifecycle_Automation data. Previously
                 # this loop retried the missing live guest cache every minute.
-                process_complaint_followups()
-                maybe_send_owner_report(now_ist())
                 if (CUSTOMER_CONFIG or {}).get("demo_reminders_enabled"):
                     import demo_food
                     demo_food.run_demo_reminders(sys.modules[__name__], now_ist())
+                # Preserve other existing periodic jobs after the independent
+                # demo scheduler, so a slow Sheets/owner task cannot skip the
+                # test guest's scheduled reminder on this cycle.
+                process_complaint_followups()
+                maybe_send_owner_report(now_ist())
                 time.sleep(LIFECYCLE_LOOP_SECONDS)
                 continue
             if shared_store.get("schema_valid") is False:

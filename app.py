@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V56-MONIKA-HOUSEKEEPING"
+APP_VERSION = "HOTEL-AI-V57-DEMO-FOOD-BILLING"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -234,6 +234,7 @@ guest_language_cache = {}
 # "more options", "what else?" and "tell me a story" have context.
 # This is intentionally bounded to keep the AI prompt small.
 conversation_memory = {}
+demo_food_sessions = {}
 turn_capture = threading.local()
 CONVERSATION_MEMORY_LIMIT = 15
 # Keep enough recent turns for multi-step hotel conversations and short follow-ups.
@@ -7784,6 +7785,10 @@ def _process_and_reply(message, sender_phone, msg_type):
     # Remember language for both typed messages and voice transcriptions.
     remember_guest_language(sender_phone, user_text)
 
+    import demo_food
+    if demo_food.handle(sys.modules[__name__], sender_phone, user_text):
+        return
+
     t = normalize_text(user_text)
     guest_info = None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone)
     # One targeted live refresh when the in-memory Rooms cache has no matching guest.
@@ -10466,7 +10471,7 @@ def session_snapshot(phone):
         return {name: globals()[name].get(phone) for name in (
             "order_sessions","duplicate_order_sessions","checkin_sessions","service_sessions",
             "reception_request_sessions","active_orders","photo_sessions",
-            "guest_language_cache","conversation_memory","guide_service_sessions")}
+            "guest_language_cache","conversation_memory","guide_service_sessions","demo_food_sessions")}
 
 
 def database_path():

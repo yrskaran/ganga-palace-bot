@@ -18,7 +18,17 @@
 
 ## Demo readiness limits
 
-The repository's existing `customer_config.json` selects the Hotel Shreya Galaxy demo profile. This change preserves it. In demo mode, guest stay lookup and operational booking/order paths are restricted, and some legacy menu details are not configured. Configure a hotel's approved menu and choose the appropriate profile before demonstrating actual guest ordering/billing. Do not blindly disable demo mode against real guests.
+### Food-order demo (V57)
+
+The active demo profile enables `demo_food_enabled: true` and includes a clearly labelled sample menu (Masala Chai Rs.30, Poha Rs.70 and Butter Naan Rs.40). This remains opt-in: both `demo_mode` and `demo_food_enabled` must be enabled. These are illustrative prices, not an assertion about the hotel's actual menu.
+
+Send `menu`, then `2 Masala Chai aur 1 Poha`. Unconfigured menus are reported as unavailable rather than inventing items. A casual `haan` without a pending demo order stays with the normal concierge. Monika shows Rs.130 and asks for confirmation. `CONFIRM` writes one order to the separate `Demo_Orders` tab in the configured Google spreadsheet. `CANCEL` drops an unsaved cart. `bill` reads this WhatsApp sender's confirmed demo food orders and shows item quantities, unit prices and food total only. No room rent, tax, payment request, real kitchen notification or delivery promise is included. Menu/price/bill questions preserve a pending cart. Ordinary hotel questions continue through the existing concierge.
+
+The service account needs permission to create/read/write `Demo_Orders`; the tab and its headers are created on the first confirmed demo order. Existing unrelated headers are rejected. Timeouts are treated as uncertain: the same order ID is checked before another confirmation, and an unresolved write is never blindly appended again. A new order cannot replace an uncertain cart. Confirmed Sheet entries survive hosting restart; pending carts still depend on the configured SQLite storage.
+
+Demo bills include all confirmed demo rows for the current sender in `Demo_Orders`. For a fresh showcase, use a new test sender or deliberately clear only its test rows in that tab after saving any needed demonstration evidence. This flow never writes `Rooms` or `Kitchen_Orders`.
+
+The repository's existing `customer_config.json` selects the Hotel Shreya Galaxy demo profile. Real guest stay lookup and operational booking/order paths remain restricted. The isolated sample food flow above is available for a demo. Configure a hotel's approved menu and choose the appropriate profile before actual guest ordering/billing. Do not blindly disable demo mode against real guests.
 
 `BOT_STORAGE_MODE=demo` uses temporary SQLite storage. Chats and pending state can disappear on restart/redeploy. Download before redeploying. Retaining chats requires `BOT_STORAGE_MODE=persistent` and `BOT_DB_PATH` on a mounted durable volume. This change does not provision hosting or change accounts.
 

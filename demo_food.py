@@ -383,6 +383,65 @@ def verified_semantic_basket(bot, semantic):
 
 # This is a simulated guest for the sales demo, NEVER a verified hotel stay.
 DEMO_STAY_TTL_SECONDS = 12 * 60 * 60
+# Opt-in survives only the current process. A restart requires fresh consent
+# instead of reusing possibly stale session history to send proactive messages.
+DEMO_REMINDER_INSTANCE = uuid4().hex
+DEMO_REMINDER_WINDOWS = (
+    ('BREAKFAST', 'Breakfast Reminder Window', 8 * 60, 10 * 60 + 59),
+    ('LUNCH', 'Lunch Reminder Window', 13 * 60, 15 * 60 + 59),
+    ('GANGA_AARTI', 'Ganga Aarti Reminder Window', 17 * 60, 17 * 60 + 59),
+    ('DINNER', 'Dinner Reminder Window', 19 * 60, 21 * 60 + 59),
+)
+
+
+def run_demo_reminders(bot, current):
+    """Only opted-in test contacts, never guests from the real hotel's Rooms.
+
+    Plain WhatsApp text is attempted only while the guest's 24-hour
+    conversation window is safely open. No retries within the same window:
+    an ambiguous API result must not cause duplicate guest notifications.
+    """
+    if not bot.CUSTOMER_DEMO_MODE or not (bot.CUSTOMER_CONFIG or {}).get('demo_reminders_enabled'):
+        return 0
+    minute = current.hour * 60 + current.minute
+    today = current.date().isoformat()
+    due = []
+    with bot.state_lock:
+        for phone, state in list(bot.demo_guest_sessions.items()):
+            if not isinstance(state, dict) or state.get('status') != 'DEMO_ACTIVE':
+                continue
+            created = float(state.get('created') or 0)
+            last_inbound = float(state.get('last_inbound_at') or 0)
+            if not created or time.time() - created >= DEMO_STAY_TTL_SECONDS:
+                continue
+            if not state.get('reminders_enabled') or state.get('reminder_instance') != DEMO_REMINDER_INSTANCE:
+                continue
+            if not last_inbound or not 0 <= time.time() - last_inbound <= 23 * 60 * 60:
+                continue
+            marked = state.setdefault('reminder_attempted', {})
+            for event, window, default_start, default_end in DEMO_REMINDER_WINDOWS:
+                a, b = bot._lifecycle_time_window(window, default_start, default_end)
+                if not (a <= minute <= b):
+                    continue
+                if marked.get(event) == today:
+                    continue
+                # Fail closed on unclear Meta delivery. Never blast duplicates.
+                marked[event] = today
+                due.append((phone, event))
+    for phone, event in due:
+        msg = (
+            '🧪 *DEMO ONLY — sample hotel reminder*\n'
+            + bot._lifecycle_fallback_message(event,
+                bot.get_guest_response_language(phone), '', '')
+            + '\n_This is a test reminder; no real room booking or delivery is implied._'
+        )
+        try:
+            sent = bot.send_whatsapp_message(phone, msg)
+            print(f'DEMO REMINDER ATTEMPT: event={event} accepted={bool(sent)}', flush=True)
+        except Exception as exc:
+            print(f'DEMO REMINDER ERROR: event={event} kind={type(exc).__name__}', flush=True)
+    return len(due)
+
 
 
 def demo_stay_active(bot, phone):
@@ -422,6 +481,41 @@ def handle(bot, phone, text, semantic=None):
     with lock:
         pending = bot.demo_food_sessions.get(phone)
         require_demo_checkin = bool((bot.CUSTOMER_CONFIG or {}).get('demo_require_checkin'))
+        demo_reminders_supported = bool((bot.CUSTOMER_CONFIG or {}).get('demo_reminders_enabled'))
+        # Remember only explicitly simulated, active guest chat activity; no
+        # non-demo number can become a reminder recipient by accident.
+        with bot.state_lock:
+            active = bot.demo_guest_sessions.get(phone)
+            if isinstance(active, dict) and active.get('status') == 'DEMO_ACTIVE':
+                active['last_inbound_at'] = time.time()
+        if demo_reminders_supported and normalized in {
+            'demo reminders off', 'demo reminder off', 'test reminders off'
+        }:
+            with bot.state_lock:
+                session = bot.demo_guest_sessions.get(phone)
+                if session:
+                    session['reminders_enabled'] = False
+                    session['reminder_instance'] = ''
+            say('Demo reminders OFF hain ji. Koi scheduled test notification nahi bhejungi. 🙂')
+            return True
+        if demo_reminders_supported and normalized in {
+            'demo reminders on', 'demo reminder on', 'test reminders on'
+        }:
+            if not demo_stay_active(bot, phone):
+                say('Pehle *DEMO CHECKIN* bhej dijiye. Bina active demo stay ke reminder schedule nahi hoga.')
+                return True
+            with bot.state_lock:
+                session = bot.demo_guest_sessions[phone]
+                session['reminders_enabled'] = True
+                session['reminder_instance'] = DEMO_REMINDER_INSTANCE
+                session['last_inbound_at'] = time.time()
+                session['reminder_attempted'] = {}
+            say('✅ *Demo reminders ON* 😊\n'
+                'Aaj breakfast, lunch, Ganga Aarti aur dinner ke time sirf isi test chat par sample messages bhejne ki koshish karungi. '
+                'Ye real hotel guest notification nahi hai.\n'
+                'WhatsApp ke 24-hour chat window ke bahar approved template chahiye. '
+                'DEMO REMINDERS OFF se kabhi bhi band kar sakte hain.')
+            return True
         if require_demo_checkin:
             if normalized in {'demo checkin', 'demo check in', 'demo guest checkin',
                               'demo guest check in', 'test checkin', 'test check in'}:

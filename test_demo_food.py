@@ -210,7 +210,7 @@ class DemoFoodTests(unittest.TestCase):
             self.turn('menu')
             self.assertIn('Special Deluxe Ganga Thali', self.reply())
             self.turn('2 Butter Naan aur 1 Paneer Butter Masala')
-            self.assertIn('Rs. 380', self.reply())
+            self.assertIn('₹380', self.reply())
             self.turn('confirm')
             self.turn('bill')
             self.assertIn('Food total: Rs. 380', self.reply())

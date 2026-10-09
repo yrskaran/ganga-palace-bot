@@ -4512,7 +4512,11 @@ def _human_guide_intent(text):
     has_guide = bool(re.search(r"\b(?:guide|gaid|guid)\b|गाइड|मार्गदर्शक", t))
     if not has_guide:
         return ""
-    if re.search(r"(?:guide|gaid|guid|गाइड).*?(?:nahi|nhi|nahin|नहीं|mat|मत)|(?:don't|do not|dont).*?(?:need|want|book|arrange).*?guide", t):
+    # Meaning questions such as "local guide matlab?" are informational.
+    # Keep "mat" as a whole word so it never matches the start of "matlab".
+    if re.search(r"\b(?:matlab|meaning|means|explain|samjhao|kya hota hai|what do you mean)\b", t):
+        return "explain"
+    if re.search(r"(?:guide|gaid|guid|गाइड).*?(?:\b(?:nahi|nhi|nahin|mat)\b|(?<![\w])नहीं(?![\w])|(?<![\w])मत(?![\w]))|(?:don't|do not|dont).*?(?:need|want|book|arrange).*?guide", t):
         return "decline"
     person_phrase = bool(re.search(r"\b(?:local|tour|tourist|darshan|human|personal)\s+(?:guide|gaid|guid)\b|(?:लोकल|टूर|स्थानीय|दर्शन)\s*गाइड", t))
     cues = bool(re.search(r"\b(?:hai|hain|mile?ga|mil|available|hire|arrange|book|need|want|chahiye|chaiye|charges|charge|cost|price|fees)\b|है|मिलेगा|चाहिए|उपलब्ध|शुल्क", t))
@@ -4577,6 +4581,13 @@ def handle_human_guide_request(phone, user_text, guest_info):
             "Do you need a local tour guide, or suggestions for places to visit?",
             "Aapko local tour guide chahiye, ya ghoomne ki jagahon ke suggestions?",
             "आपको स्थानीय टूर गाइड चाहिए, या घूमने की जगहों के सुझाव?")
+    elif intent == "explain":
+        with state_lock:
+            guide_service_sessions.pop(phone, None)
+        reply = bilingual_text(phone,
+            "By local guide, I mean someone who can show you around Haridwar's temples and sightseeing spots. The hotel would need to confirm availability and charges. Were you asking about the guide service, or places to visit?",
+            "Local guide se mera matlab Haridwar ke mandir aur ghoomne ki jagahen dikhane wale guide se hai. Unki availability aur charges hotel confirm karega. Aap guide service pooch rahe the ya ghoomne ki jagahen?",
+            "लोकल गाइड यानी हरिद्वार के मंदिर और घूमने की जगहें दिखाने वाला गाइड। उनकी उपलब्धता और शुल्क होटल कन्फर्म करेगा। आप गाइड सर्विस पूछ रहे थे या घूमने की जगहें?")
     else:
         with state_lock:
             guide_service_sessions.pop(phone, None)
@@ -4611,6 +4622,8 @@ def _recent_assistant_topic(sender_phone):
             return "checkin"
         if any(x in text for x in ("ropeway", "mansa devi", "chandi devi")):
             return "local_place"
+        if any(x in text for x in ("local guide", "tour guide", "sightseeing", "places to visit", "ghoomne ki jagah", "ghoomne ke liye")):
+            return "local_guide"
         if text:
             return ""
     return ""
@@ -4643,7 +4656,7 @@ def _contextual_time_followup_reply(sender_phone, user_text):
 
 def is_guide_followup(text):
     """Detect natural follow-ups that need the previous local-guide context."""
-    t = normalize_text(text)
+    t = re.sub(r"[?!.,]+", " ", normalize_text(text)).strip()
     phrases = {
         "more", "more options", "more places", "other options",
         "anything else", "what else", "what other places",
@@ -4651,6 +4664,9 @@ def is_guide_followup(text):
         "more sightseeing", "more options please", "any other options",
         "anything more", "aur batao", "aur options", "aur jagah",
         "aur places", "aur ghoomne ki jagah", "aur bataiye",
+        "kya kya option hai", "kya kya options hai", "kya options hain",
+        "options kya hain", "what are the options", "what options are there",
+        "what places can i visit", "where can i go",
         "story", "a story", "tell me a story", "koi story",
         "kahani", "history", "historical story"
     }
@@ -4726,6 +4742,22 @@ def build_guide_fallback(user_text, sender_phone=None):
         return "Here are a few places you could explore:\n" + "\n".join(lines) + suffix
     suffix = "\nAapki chuni hui jagah ki aaj ki timing ya tickets reception se confirm kar lein." if timing_query else ""
     return "Ghoomne ke liye yeh jagah dekh sakte hain:\n" + "\n".join(lines) + suffix
+
+
+def _contextual_local_guide_options_reply(sender_phone, user_text):
+    """Answer short options follow-ups against the current sightseeing topic."""
+    if _recent_assistant_topic(sender_phone) != "local_guide" or not is_guide_followup(user_text):
+        return False
+    reply = build_guide_fallback("more options", sender_phone)
+    if not reply:
+        return False
+    reply = attach_google_maps_links(reply).strip()
+    if not reply:
+        return False
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, "user", user_text)
+    remember_conversation(sender_phone, "assistant", reply)
+    return True
 
 
 def _groq_circuit_open():
@@ -8135,6 +8167,11 @@ def _process_and_reply(message, sender_phone, msg_type):
     with state_lock:
         checkin_active = bool(checkin_sessions.get(sender_phone))
     if not checkin_active and handle_human_guide_request(sender_phone, user_text, guest_info):
+        return
+
+    # Short "what options?" replies should continue the sightseeing topic the
+    # bot just introduced, instead of being reclassified as room options.
+    if _contextual_local_guide_options_reply(sender_phone, user_text):
         return
 
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:

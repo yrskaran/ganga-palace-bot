@@ -33,6 +33,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS escalations (
                   id TEXT PRIMARY KEY, created REAL NOT NULL);
             ''')
+            # Existing databases retain all rows. Historic timestamps are only
+            # last-known activity; new messages keep immutable creation times.
+            if 'created' not in {r['name'] for r in db.execute('PRAGMA table_info(outbox)')}:
+                db.execute('ALTER TABLE outbox ADD COLUMN created REAL')
 
     @contextmanager
     def db(self):
@@ -95,8 +99,9 @@ class Store:
 
     def enqueue_send(self,key,payload):
         with self.db() as db:
-            db.execute('INSERT OR IGNORE INTO outbox(id,body,updated) VALUES(?,?,?)',
-                (key,json.dumps(payload),time.time()))
+            now = time.time()
+            db.execute('INSERT OR IGNORE INTO outbox(id,body,updated,created) VALUES(?,?,?,?)',
+                (key,json.dumps(payload),now,now))
             return dict(db.execute('SELECT * FROM outbox WHERE id=?',(key,)).fetchone())
 
     def claim_send(self,key):

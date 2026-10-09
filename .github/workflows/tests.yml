@@ -20,5 +20,5 @@ jobs:
       - run: pip check
       - run: python -m compileall -q .
       - run: python smoke_test.py
-      - run: python -m unittest -v test_guest_flows
+      - run: python -m unittest discover -v
       - run: CUSTOMER_CONFIG_FILE=customer_config.json.example python validate_customer.py

@@ -23,6 +23,11 @@ NOW = datetime(2026, 10, 3, 8, 0, 45, tzinfo=app.IST)
 class GuestFlows(unittest.TestCase):
     def setUp(self):
         self.patches = []
+        # These regressions describe the legacy Ganga View fixture, not whichever
+        # white-label demo profile happens to be deployed in customer_config.json.
+        self.mock('CUSTOMER_CONFIG', None)
+        self.mock('CUSTOMER_DEMO_MODE', False)
+        self.mock('HOTEL_CONFIG_CACHE', {'signature': None, 'data': None})
         self.sent = self.mock('send_whatsapp_message', return_value=True)
         self.notify = self.mock('send_notification_with_id', return_value=(True, 'remote-1'))
         self.sheet = self.mock('_update_service_task_sheet', return_value=True)
@@ -37,7 +42,7 @@ class GuestFlows(unittest.TestCase):
         self.mock('_reroute_service_task', return_value=True)
         for name in ('service_tasks_by_id','service_tasks_by_alert','service_guest_pending',
                      'guide_service_sessions','conversation_memory','order_sessions',
-                     'duplicate_order_sessions','checkin_sessions','reception_request_sessions',
+                     'duplicate_order_sessions','checkin_sessions','photo_sessions','reception_request_sessions',
                      'reception_requests_by_id','reception_requests_by_alert',
                      'service_sessions','lifecycle_pending_by_message_id','lifecycle_pending_keys',
                      'lifecycle_retry_after'):
@@ -170,6 +175,7 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('nahi bhej paaya', self.sent.call_args.args[1])
 
     def test_missing_room_photo_does_not_promise_reception_confirmation(self):
+        self.mock('get_hotel_media', return_value={'photos': {'Deluxe': ''}})
         self.mock('get_room_photo_categories', return_value=[('Deluxe', '')])
         self.mock('get_hotel_photo', return_value=None)
         app._handle_ai_photo_route(
@@ -206,13 +212,13 @@ class GuestFlows(unittest.TestCase):
         app.get_guest_response_language.return_value = 'hinglish'
         self.assertTrue(app._local_conversation_fallback(GUEST, 'Hi'))
         first = self.sent.call_args.args[1]
-        self.assertIn('WhatsApp assistant hoon', first)
-        self.assertIn('Hotel Shreya Galaxy', first)
+        self.assertIn('Monika', first)
+        self.assertIn(app.get_hotel_name(), first)
         self.sent.reset_mock()
         self.assertTrue(app._local_conversation_fallback(GUEST, 'Hi'))
         second = self.sent.call_args.args[1]
-        self.assertNotIn('WhatsApp assistant hoon', second)
-        self.assertNotIn('Welcome to Hotel Shreya Galaxy', second)
+        self.assertNotIn('Monika', second)
+        self.assertNotIn('Welcome to ' + app.get_hotel_name(), second)
         self.assertEqual(self.sent.call_count, 1)
 
     def test_concierge_prompt_answers_before_actions_and_keeps_location_link_together(self):
@@ -291,6 +297,7 @@ class GuestFlows(unittest.TestCase):
         self.assertNotIn('confirmed', reply.lower())
 
     def test_missing_photo_immediate_alert_failure_is_honest_in_one_reply(self):
+        self.mock('get_hotel_media', return_value={'photos': {'Deluxe': ''}})
         self.mock('get_room_photo_categories', return_value=[('Deluxe', '')])
         self.mock('get_hotel_photo', return_value=None)
         app.notify_reception_request.return_value = False
@@ -338,11 +345,11 @@ class GuestFlows(unittest.TestCase):
         self.turn('Hi')
         self.turn('How you assist me')
         english=self.sent.call_args.args[1]
-        self.assertIn("I'm the hotel's WhatsApp assistant",english)
+        self.assertIn("I'm Monika",english)
         self.assertIn('food orders',english)
         self.turn('Kaise assist kroge')
         hinglish=self.sent.call_args.args[1]
-        self.assertIn('Main hotel ka WhatsApp assistant',hinglish)
+        self.assertIn('Main Monika',hinglish)
         self.assertIn('towel',hinglish)
         self.assertNotIn('trouble understanding',hinglish)
         ai.assert_not_called()
@@ -358,7 +365,7 @@ class GuestFlows(unittest.TestCase):
             with self.subTest(text=text):
                 self.turn(text)
                 self.assertEqual(app.order_sessions[GUEST],pending)
-                self.assertIn('WhatsApp',self.sent.call_args.args[1])
+                self.assertTrue(any(name in self.sent.call_args.args[1] for name in ('Monika', 'मोनिका')))
         ai.assert_not_called()
         app.notify_reception_request.assert_not_called()
 
@@ -371,7 +378,7 @@ class GuestFlows(unittest.TestCase):
     def test_hindi_capability_reply_uses_guest_script(self):
         app.get_guest_response_language.return_value='hindi'
         self.turn('आप मेरी मदद कैसे कर सकते हैं?')
-        self.assertIn('मैं होटल का',self.sent.call_args.args[1])
+        self.assertIn('मैं मोनिका',self.sent.call_args.args[1])
 
     def test_knowledge_budget_keeps_relevant_whole_facts(self):
         raw=('1. HOTEL IDENTITY\n- Name: Test Hotel\n- Wi-Fi: Free\n- Check-out: 11 AM\n\n'

@@ -228,26 +228,80 @@ class DemoFoodTests(unittest.TestCase):
         from pathlib import Path
         config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
         with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.sent.reset_mock()
             self.turn('breakfast')
-            breakfast = self.reply()
+            breakfast_cards = [c.args[1] for c in self.sent.call_args_list]
+            self.assertEqual(len(breakfast_cards), 1)
+            breakfast = '\n'.join(breakfast_cards)
             self.assertIn('Poha', breakfast)
             self.assertIn('Masala Chai', breakfast)
+            self.assertIn('☕ *Tea & Drinks*', breakfast)
             self.assertNotIn('Shahi Paneer', breakfast)
 
+            self.sent.reset_mock()
             self.turn('Lunch mein kya kya hai?')
-            lunch = self.reply()
+            lunch_cards = [c.args[1] for c in self.sent.call_args_list]
+            self.assertEqual(len(lunch_cards), 2)
+            lunch = '\n'.join(lunch_cards)
             self.assertIn('Dal Tadka', lunch)
             self.assertIn('Butter Naan', lunch)
+            self.assertIn('🍲 *Sabzi & Dal*', lunch_cards[0])
+            self.assertIn('🫓 *Roti & Naan*', lunch_cards[1])
             self.assertNotIn('Poha', lunch)
             self.assertNotIn('Masala Chai', lunch)
 
+            self.sent.reset_mock()
             self.turn('Dinner me kya kya hai')
-            dinner = self.reply()
+            dinner_cards = [c.args[1] for c in self.sent.call_args_list]
+            self.assertEqual(len(dinner_cards), 2)
+            dinner = '\n'.join(dinner_cards)
             self.assertIn('Shahi Paneer', dinner)
             self.assertIn('Butter Naan', dinner)
             self.assertIn('Mix Veg Paratha', dinner)
             self.assertNotIn('Masala Chai', dinner)
+            self.assertIn('📝 *Kuch order karna hai?*', dinner_cards[-1])
+            self.assertNotIn('Kuch order karna hai?', dinner_cards[0])
+            self.assertEqual(dinner.count('• Shahi Paneer'), 1)
+            self.assertEqual(dinner.count('• Butter Naan'), 1)
+            self.assertIn('_DEMO • sample menu_', dinner_cards[0])
+            self.assertIn('Demo order only', dinner_cards[-1])
+
         self.book.worksheet.assert_not_called()
+
+    def test_meal_price_menu_keeps_original_configured_rates(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('dinner menu with prices')
+            text = '\n'.join(c.args[1] for c in self.sent.call_args_list)
+            self.assertIn('• Butter Naan — ₹60', text)
+            self.assertIn('• Shahi Paneer — ₹240', text)
+            self.assertNotIn('• Poha', text)
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_legacy_fallback_meal_card_is_grouped_too(self):
+        sample = {
+            'dal': ('Dal Tadka', 160),
+            'naan': ('Butter Naan', 60),
+            'rice': ('Jeera Rice', 140),
+            'raita': ('Boondi Raita', 70),
+            'poha': ('Poha', 70),
+        }
+        with patch.object(app, 'get_hotel_data', return_value=''), \
+                patch.object(app, 'get_hotel_menu', return_value=sample), \
+                patch.object(app, 'get_hotel_name', return_value='Hotel Shreya Galaxy'):
+            result = app._menu_section_message('DINNER', include_prices=True, sender_phone=self.phone)
+            self.assertIn('🌙 *Hotel Shreya Galaxy*', result)
+            self.assertIn('🍲 *Sabzi & Dal*', result)
+            self.assertIn('🫓 *Roti & Naan*', result)
+            self.assertIn('🍚 *Rice*', result)
+            self.assertIn('🥗 *Raita & Sides*', result)
+            self.assertIn('Butter Naan — ₹60', result)
+            self.assertNotIn('• Poha', result)
+            self.assertIn('Jaise: 2 Butter Naan + 1 Dal Tadka', result)
+        self.kitchen.assert_not_called()
 
     def test_full_menu_is_pretty_grouped_and_complete_once(self):
         import json

@@ -316,33 +316,88 @@ def bill(bot, phone):
     return formatted_demo_bill(hotel, details, total, len(ids))
 
 
-def handle(bot, phone, text):
+def handle(bot, phone, text, semantic=None):
     if not bot.CUSTOMER_DEMO_MODE or not (bot.CUSTOMER_CONFIG or {}).get('demo_food_enabled'):
         return False
     phone = bot.format_whatsapp_number(phone)
     if not phone:
         return False
     normalized = bot.normalize_text(text)
-    say = lambda message: bot.send_whatsapp_message(phone, message)
+    remembered_user = False
+
+    def say(message):
+        nonlocal remembered_user
+        if not remembered_user:
+            bot.remember_conversation(phone, 'user', text)
+            remembered_user = True
+        result = bot.send_whatsapp_message(phone, message)
+        # Short recall cue, not a second giant menu inside the semantic prompt.
+        if result:
+            bot.remember_conversation(phone, 'assistant', str(message)[:360])
+        return result
+
     with lock:
         pending = bot.demo_food_sessions.get(phone)
         if pending and time.time() - pending['created'] > 600:
             if pending_state(bot, pending) == 'prepared':
                 bot.demo_food_sessions.pop(phone, None)
                 pending = None
-        if re.search(r'\b(?:bill|invoice|hisaab|hisab)\b|बिल|हिसाब', normalized) or normalized in {'total', 'kitna hua', 'total kitna hua', 'food total'}:
+        # AI supplies intent, not rates or authorization. The configured menu,
+        # durable store and verified Sheet still own every number and write.
+        semantic_action = ''
+        if isinstance(semantic, dict):
+            try:
+                confidence = float(semantic.get('confidence') or 0)
+            except (ValueError, TypeError):
+                confidence = 0.0
+            if confidence >= 0.65:
+                semantic_action = str(semantic.get('action', '')).upper()
+
+        wants_bill = semantic_action == 'BILL' or (
+            not semantic_action and (
+                re.search(r'\b(?:bill|invoice|hisaab|hisab)\b|बिल|हिसाब', normalized)
+                or normalized in {'total', 'kitna hua', 'total kitna hua', 'food total'}
+            )
+        )
+        if wants_bill:
             try:
                 say(bill(bot, phone))
             except Exception as exc:
                 print('DEMO BILL UNAVAILABLE:', type(exc).__name__, flush=True)
                 say('Demo bill abhi Sheet se verify nahi ho pa raha. Thodi der mein dobara poochhein; main total guess nahi karungi.')
             return True
-        meal = meal_request(normalized)
-        if re.search(r'\bmenu\b|मेन्यू|मेनू', normalized) or meal:
-            prices = bot.explicitly_asks_price(text)
-            for message in menu_messages(bot, meal=meal, include_prices=prices):
-                say(message)
+
+        wants_menu = semantic_action == 'SHOW_MENU' or (
+            not semantic_action and bool(re.search(r'\bmenu\b|मेन्यू|मेनू', normalized)
+                                         or meal_request(normalized))
+        )
+        if wants_menu:
+            section = str((semantic or {}).get('menu_section') or '').strip().upper()
+            meal = section if section in {'BREAKFAST', 'LUNCH', 'DINNER'} else meal_request(normalized)
+            prices = ((semantic or {}).get('show_prices') is True
+                      if semantic_action == 'SHOW_MENU' else bot.explicitly_asks_price(text))
+            # If AI missed the price flag, explicit local detection is still a
+            # safety net, not the primary language-understanding engine.
+            prices = prices or bot.explicitly_asks_price(text)
+            messages = menu_messages(bot, meal=meal, include_prices=prices)
+            for message in messages:
+                bot.send_whatsapp_message(phone, message)
+            bot.remember_conversation(phone, 'user', text)
+            bot.remember_conversation(
+                phone, 'assistant',
+                f"Showed {'DEMO ' + (meal or 'FULL') + ' menu'}; "
+                f"{'prices included' if prices else 'prices not requested'}. "
+                "Available for order selection or follow-up questions."
+            )
             return True
+
+        # If the AI understood a conversational, non-food turn, let the main
+        # receptionist answer with its semantic reply. Do not hijack it just
+        # because the guest mentioned 'food', 'order' or 'menu' in passing.
+        if semantic_action and semantic_action not in {
+            'ORDER', 'ORDER_SELECTION', 'ORDER_CANCEL'
+        } and not pending:
+            return False
         if pending and bot.is_yes(text):
             try:
                 save(bot, phone, pending)

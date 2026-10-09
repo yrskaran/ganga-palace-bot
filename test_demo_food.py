@@ -336,6 +336,95 @@ class DemoFoodTests(unittest.TestCase):
             self.assertIn('₹260', content)
             self.assertNotIn('• Butter Naan — ₹60', content)
 
+    def test_semantic_first_receives_contextual_price_followup_once(self):
+        import json
+        from pathlib import Path
+        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        self.assertTrue(config['demo_semantic_first'])
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            with patch.object(app, 'understand_guest_request') as brain:
+                brain.return_value = {
+                    'action': 'SHOW_MENU', 'menu_section': 'BREAKFAST',
+                    'show_prices': False, 'confidence': 0.93,
+                }
+                app._process_and_reply({'text': {'body': 'Subah nashta kya milega?'}},
+                                       self.phone, 'text')
+                self.assertEqual(brain.call_count, 1)
+                self.assertIn('Poha', self.reply())
+                self.assertNotIn('₹70', self.reply())
+                self.assertTrue(any(
+                    x.get('role') == 'assistant' and 'BREAKFAST' in x.get('content', '')
+                    for x in app.get_conversation_history(self.phone)
+                ))
+                self.sent.reset_mock()
+                brain.return_value = {
+                    'action': 'SHOW_MENU', 'menu_section': 'BREAKFAST',
+                    'show_prices': True, 'confidence': 0.93,
+                }
+                app._process_and_reply({'text': {'body': 'Aur unke paise bhi?'}},
+                                       self.phone, 'text')
+                self.assertEqual(brain.call_count, 2)
+                self.assertIn('₹70', self.reply())
+                self.assertIn('\x60\x60\x60', self.reply())
+                self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
+    def test_semantic_answer_is_not_hijacked_by_food_word(self):
+        semantic = {'action': 'ANSWER', 'confidence': 0.95,
+                    'reply': 'Ji, dinner options bata sakti hoon. Kya jaana chahenge?'}
+        self.assertFalse(self.demo.handle(app, self.phone,
+                                          'Food delivery me jobs kya hoti hain?', semantic=semantic))
+        self.sent.assert_not_called()
+        self.book.worksheet.assert_not_called()
+
+    def test_semantic_hallucinated_item_cannot_create_demo_order(self):
+        semantic = {
+            'action': 'ORDER', 'confidence': 0.96,
+            'items': [{'name': 'Pizza', 'qty': 99}],
+        }
+        self.assertTrue(self.demo.handle(app, self.phone,
+                                         'Ek pizza order karo', semantic=semantic))
+        self.assertIn('clear nahi', self.reply())
+        self.assertEqual(self.sheet.append_count, 0)
+        self.assertNotIn(self.phone, app.demo_food_sessions)
+        self.kitchen.assert_not_called()
+
+    def test_ai_unavailable_demo_menu_uses_local_fallback_no_retry(self):
+        config = dict(app.CUSTOMER_CONFIG)
+        config['demo_semantic_first'] = True
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            with patch.object(app, 'understand_guest_request', return_value=None) as brain:
+                app._process_and_reply({'text': {'body': 'menu'}}, self.phone, 'text')
+                brain.assert_called_once()
+                self.assertIn('menu', self.reply().lower())
+        self.kitchen.assert_not_called()
+
+    def test_pending_confirm_remains_deterministic_and_single_sheet_append(self):
+        config = dict(app.CUSTOMER_CONFIG)
+        config['demo_semantic_first'] = True
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            self.turn('2 Masala Chai')
+            with patch.object(app, 'understand_guest_request') as brain:
+                app._process_and_reply({'text': {'body': 'confirm'}}, self.phone, 'text')
+                brain.assert_not_called()
+                self.assertEqual(self.sheet.append_count, 1)
+                self.assertIn('save ho gaya', self.reply())
+                app._process_and_reply({'text': {'body': 'confirm'}}, self.phone, 'text')
+                self.assertEqual(self.sheet.append_count, 1)
+        self.kitchen.assert_not_called()
+
+    def test_semantic_json_schema_preserves_show_prices_boolean(self):
+        schema = app._openai_semantic_schema()
+        self.assertEqual(schema['properties']['show_prices']['type'], 'boolean')
+        self.assertIn('show_prices', schema['required'])
+        with patch.object(app, '_ai_provider_functions', return_value=[
+            ('mock', lambda *args, **kwargs:
+             '{"action":"SHOW_MENU","menu_section":"BREAKFAST","show_prices":true,"confidence":0.9}')
+        ]):
+            result = app.understand_guest_request('Breakfast ke paise batao', None, self.phone)
+            self.assertTrue(result['show_prices'])
+            self.assertEqual(result['menu_section'], 'BREAKFAST')
+
     def test_hinglish_paise_ke_sath_always_shows_breakfast_prices(self):
         import json
         from pathlib import Path

@@ -140,7 +140,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V62-HINGLISH-PRICE-INTENT"
+APP_VERSION = "HOTEL-AI-V63-ROOM-INTENT-CONSENT-PILOT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -222,6 +222,7 @@ lifecycle_retry_after = {}
 # Latest reception handoff per guest. This prevents an older food-confirmation
 # state from hijacking follow-up questions such as "meri request confirm hui?".
 reception_request_sessions = {}
+reception_consent_sessions = {}
 # Request-level indexes preserve multiple simultaneous reception tickets, even
 # when the same guest creates more than one request before staff replies.
 reception_requests_by_id = {}
@@ -3310,7 +3311,7 @@ def _openai_semantic_schema():
                 "enum": [
                     "ANSWER", "SHOW_PHOTO", "SHOW_MENU", "ORDER", "ORDER_SELECTION",
                     "ORDER_CANCEL", "COMPLAINT", "SERVICE", "CHECKIN", "BILL",
-                    "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE",
+                    "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "ROOM_OPTIONS", "LOCAL_GUIDE",
                     "RECEPTION", "NONE"
                 ],
             },
@@ -3320,6 +3321,7 @@ def _openai_semantic_schema():
             },
             "photo_target": {"type": "string"},
             "menu_section": {"type": "string"},
+            "show_prices": {"type": "boolean"},
             "generic": {"type": "string"},
             "items": {
                 "type": "array",
@@ -3339,7 +3341,7 @@ def _openai_semantic_schema():
             "confidence": {"type": "number"},
         },
         "required": [
-            "action", "category", "photo_target", "menu_section", "generic", "items",
+            "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
             "service", "needs_reception", "reply", "confidence"
         ],
     }
@@ -6354,6 +6356,23 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     if selection:
         pending.append("pending_food=" + json.dumps(selection, ensure_ascii=False))
     state_hint = "; ".join(pending) or "no pending transaction"
+    demo_instructions = ""
+    if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
+        demo_instructions = (
+            "Room category questions like 'Room kaun kaun se hai?' mean ROOM_OPTIONS, not RECEPTION. "
+            "Simple information questions must never create staff requests. "
+            "DEMO FOOD ASSISTANT: Interpret food/menu/bill intent with recent dialogue. "
+            "If guest asks for breakfast/lunch/dinner dishes, respond SHOW_MENU with "
+            "menu_section BREAKFAST/LUNCH/DINNER (FULL if no meal specified). "
+            "A request for costs, money, paise, rupaye, kitne ke, rates, or a conversational "
+            "follow-up like 'unke daam?' sets show_prices=true. "
+            "A request to place an order uses ORDER; just asking what is available "
+            "is NOT an order. Asking for an already confirmed bill uses BILL. "
+            "Do not calculate prices yourself or promise delivery; Python will retrieve "
+            "the configured demo menu and saved Sheet records. Keep casual nonfood chat "
+            "as ANSWER in the guest's language. The configured demo hotel and menu are "
+            "authoritative, not any older example hotel names in static training text."
+        )
 
     return f"""
 Understand the current hotel guest message and return JSON only.
@@ -6361,11 +6380,13 @@ Understand the current hotel guest message and return JSON only.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
+{demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 For an unknown hotel fact, offer reception confirmation without alerting staff unless requested.
+When the guest asks what categories/types of rooms the hotel offers, use ROOM_OPTIONS, not RECEPTION. This is informational, not a request to message staff. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. RECEPTION is a potential human handoff only when the guest clearly requests it. Model confidence is never permission to notify staff.
 If the current message explicitly asks to send/order a configured food or drink, that is the primary operational intent even when the guest also gives a personal reason or side-context. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the food word itself is genuinely ambiguous (for example plain "chai"). Do not set needs_reception merely because of the reason; set it only when the guest separately asks for reception/medical assistance.
 Return this shape; use empty strings/array when not applicable:
-{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
+{{"action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6406,7 +6427,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                     print(f"AI UNDERSTANDING INVALID JSON FROM {provider_name.upper()}", flush=True)
                 continue
             action = str(obj.get("action", "NONE")).strip().upper()
-            valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_MENU","ORDER","ORDER_SELECTION","ORDER_CANCEL","COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","LOCAL_GUIDE","RECEPTION","NONE"}
+            valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_MENU","ORDER","ORDER_SELECTION","ORDER_CANCEL","COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","ROOM_OPTIONS","LOCAL_GUIDE","RECEPTION","NONE"}
             if action not in valid_actions:
                 action = "NONE"
             category = str(obj.get("category", "NONE")).strip().upper()
@@ -6434,6 +6455,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "category": category,
                 "photo_target": str(obj.get("photo_target", "")).strip(),
                 "menu_section": str(obj.get("menu_section", "")).strip(),
+                "show_prices": obj.get("show_prices") is True,
                 "generic": str(obj.get("generic", "")).strip(),
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
@@ -6659,6 +6681,9 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     """
     t = normalize_text(user_text)
     price_requested = explicitly_asks_price(user_text)
+    # Low-risk, data-backed fallback when every AI provider is unavailable.
+    if _room_category_question(user_text):
+        return _send_verified_room_categories(sender_phone, user_text, price_requested)
 
     # 1) Breakfast timing: answer from hotel_data.txt before spending an AI call.
     # Prefer an explicitly configured service timing; otherwise expose the configured
@@ -7551,6 +7576,87 @@ def _handle_ai_photo_route(sender_phone, guest_info, result, user_text=""):
     return True
 
 
+
+def _room_category_question(text):
+    """Fallback if AI mistakes room types for a request to staff."""
+    t = normalize_text(text)
+    has_room = bool(re.search(r'\b(?:rooms?|kamra|kamre|kamron)\b|कमरे|कमरा', t))
+    kinds = bool(re.search(
+        r'\b(?:kaun|kaunse|kon|konse|konsa|konsi|kis kis|types?|kinds?|'
+        r'categories|category|options?|varieties|room list)\b|कौन|किस तरह|प्रकार|कैटेगरी',
+        t
+    ))
+    return has_room and kinds
+
+
+def _send_verified_room_categories(sender_phone, user_text, show_prices=False):
+    """Verified category information, without a live availability claim."""
+    config = get_room_categories()
+    rooms = list(config.values()) if isinstance(config, dict) else []
+    rooms = [r for r in rooms if isinstance(r, dict) and r.get('name')]
+    if rooms:
+        lines = []
+        for room in rooms:
+            line = f"• {room['name']}"
+            rate = room.get('rate')
+            if show_prices and isinstance(rate, (int, float)) and rate > 0:
+                line += f" — ₹{int(rate):,} starting"
+            lines.append(line)
+        reply = (f"Ji 😊 *{get_hotel_name()}* mein ye room categories hain:\n\n"
+                 + '\n'.join(lines))
+        reply += ("\n\nKis room ki photo ya rate dekhna chahenge?"
+                  if not show_prices else
+                  "\n\nKis room ki photo dekhna chahenge? Rates starting hain; availability/booking reception confirm karegi.")
+    else:
+        reply = ("Room categories ki verified list abhi mere paas nahi hai ji. "
+                 "Aap chahein toh main reception se check karwa sakti hoon.")
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, 'user', user_text)
+    remember_conversation(sender_phone, 'assistant', reply)
+    return True
+
+
+def _guest_authorized_reception_contact(text):
+    """Explicitly asked for staff action, not an enquiry about availability."""
+    t = normalize_text(text)
+    requested = bool(re.search(
+        r'\b(?:reception|front desk|manager|staff|operator|doctor|kisi ko)'
+        r'.{0,60}\b(?:bulao|bulwao|bhejo|bhej do|inform|notify|call|connect|send|alert|karwao|karwa do)\b'
+        r'|\b(?:bulao|bulwao|bhejo|send|notify|inform|connect|alert)\b.{0,60}'
+        r'\b(?:reception|front desk|manager|staff|doctor|kisi ko)\b'
+        r'|रिसेप्शन.{0,30}(?:भेजो|बुलाओ|बताओ)', t,
+    ))
+    return requested and not bool(re.search(
+        r'\b(?:can you|could you|kya aap|kya tum|possible|sakte ho|sakti ho|how to)\b', t,
+    ))
+
+
+def _offer_reception_contact(sender_phone, user_text):
+    with state_lock:
+        reception_consent_sessions[sender_phone] = {
+            'request': user_text, 'created': time.time()
+        }
+    reply = ("Is baare mein reception se confirm karwa sakti hoon ji. "
+             "Kya main unhe message bhejun? Haan ya nahi bata dijiye.")
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, 'user', user_text)
+    remember_conversation(sender_phone, 'assistant', reply)
+
+
+def _handle_reception_consent(sender_phone, user_text, guest_info):
+    with state_lock:
+        pending = reception_consent_sessions.pop(sender_phone, None)
+    if not pending or time.time() - pending.get('created', 0) > 300:
+        return False
+    if is_yes(user_text):
+        reply_to_reception_request(sender_phone, guest_info, pending['request'])
+        return True
+    if is_no(user_text):
+        send_whatsapp_message(sender_phone, 'Theek hai ji, abhi reception ko request nahi bhejungi. 🙂')
+        return True
+    return False
+
+
 def _hotel_service_enquiry_reply(sender_phone, user_text):
     """Treat a laundry question as an enquiry; never dispatch staff without consent."""
     text = normalize_text(user_text)
@@ -7886,7 +7992,16 @@ def _process_and_reply(message, sender_phone, msg_type):
     remember_guest_language(sender_phone, user_text)
 
     import demo_food
-    if demo_food.handle(sys.modules[__name__], sender_phone, user_text):
+    # Pilot: AI interprets the demo guest request; backend alone handles
+    # menu prices, confirmed orders, Sheet writes and bills.
+    demo_ai_attempted = False
+    demo_ai_result = None
+    if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
+        demo_pending = demo_food_sessions.get(sender_phone)
+        if not (demo_pending and (is_yes(user_text) or is_no(user_text))):
+            demo_ai_attempted = True
+            demo_ai_result = understand_guest_request(user_text, None, sender_phone)
+    if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=demo_ai_result):
         return
 
     t = normalize_text(user_text)
@@ -7924,6 +8039,10 @@ def _process_and_reply(message, sender_phone, msg_type):
         reply_to_reception_request(sender_phone, guest_info, user_text)
         return
 
+    # Proposed AI handoffs need explicit guest confirmation.
+    if _handle_reception_consent(sender_phone, user_text, guest_info):
+        return
+
     # Reception follow-ups take priority over any older food confirmation state.
     if handle_reception_request_followup(sender_phone, user_text):
         return
@@ -7954,7 +8073,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     # One semantic AI pass for the whole guest turn. First consume a safe local
     # hotel-data route for common deterministic questions; this dramatically reduces
     # free-tier AI usage without weakening semantic AI for ambiguous requests.
-    ai_understanding = None
+    ai_understanding = demo_ai_result
     with state_lock:
         _dup_pending_now = duplicate_order_sessions.get(sender_phone)
         _order_pending_now = order_sessions.get(sender_phone)
@@ -8025,7 +8144,8 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # AI is the semantic brain for actual language/contextual requests.
     if not _skip_semantic_ai:
-        ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
+        if not demo_ai_attempted:
+            ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
         semantic_ai_unavailable = ai_understanding is None
 
     # Explicit food delivery language is authoritative for the primary action.
@@ -8561,6 +8681,14 @@ def _process_and_reply(message, sender_phone, msg_type):
     if ai_understanding and ai_understanding.get("confidence", 0) >= 0.55:
         ai_action = ai_understanding.get("action")
 
+        if ai_action == "ROOM_OPTIONS":
+            _send_verified_room_categories(
+                sender_phone, user_text,
+                show_prices=(ai_understanding.get('show_prices') is True
+                             or explicitly_asks_price(user_text)),
+            )
+            return
+
         if ai_action == "SHOW_PHOTO":
             _handle_ai_photo_route(sender_phone, guest_info, ai_understanding, user_text)
             return
@@ -8704,6 +8832,21 @@ def _process_and_reply(message, sender_phone, msg_type):
                 return
 
         if ai_action in {"WIFI", "HOTEL_TIMINGS", "ROOM_RATE", "AVAILABILITY", "LOCAL_GUIDE", "ANSWER", "RECEPTION"}:
+            # Catch misleading room-category classifications even if model reply
+            # is empty. Never let a model's RECEPTION label become consent.
+            if (ai_action == "RECEPTION" or ai_understanding.get("needs_reception")) and _room_category_question(user_text):
+                _send_verified_room_categories(
+                    sender_phone, user_text,
+                    show_prices=(explicitly_asks_price(user_text)
+                                 or ai_understanding.get('show_prices') is True),
+                )
+                return
+            if ai_action == "RECEPTION" and not ai_understanding.get("reply", "").strip():
+                if _guest_authorized_reception_contact(user_text):
+                    reply_to_reception_request(sender_phone, guest_info, user_text)
+                else:
+                    _offer_reception_contact(sender_phone, user_text)
+                return
             reply = ai_understanding.get("reply", "").strip()
             if reply:
                 reply = re.sub(r"\[(?:KITCHEN_ALERT|STAFF_ALERT)[^\]]*\]", "", reply).strip()
@@ -8711,7 +8854,17 @@ def _process_and_reply(message, sender_phone, msg_type):
                 reply = _respectful_guest_reply(reply, guest_info)
                 if reply:
                     if ai_action == "RECEPTION" or ai_understanding.get("needs_reception"):
-                        reply_to_reception_request(sender_phone, guest_info, user_text)
+                        # Confidence alone is NOT guest consent. In the reported
+                        # case Groq said RECEPTION (0.95) for a simple room list.
+                        if _room_category_question(user_text):
+                            _send_verified_room_categories(
+                                sender_phone, user_text,
+                                show_prices=explicitly_asks_price(user_text),
+                            )
+                        elif _guest_authorized_reception_contact(user_text):
+                            reply_to_reception_request(sender_phone, guest_info, user_text)
+                        else:
+                            _offer_reception_contact(sender_phone, user_text)
                         return
                     send_whatsapp_message(sender_phone, reply)
                     remember_conversation(sender_phone, "user", user_text)

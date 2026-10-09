@@ -384,5 +384,6 @@
     "When a guest asks for hotel or room photos, send the configured real-property public photos only. Do not treat gallery/reception images as room categories."
   ],
   "demo_mode": true,
-  "demo_food_enabled": true
+  "demo_food_enabled": true,
+  "demo_semantic_first": true
 }

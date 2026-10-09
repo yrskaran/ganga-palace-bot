@@ -7824,10 +7824,10 @@ def _handle_room_occupancy_question(sender_phone, user_text, guest_info=None):
 def _room_category_question(text):
     """Fallback if AI mistakes room types for a request to staff."""
     t = normalize_text(text)
-    has_room = bool(re.search(r'\\b(?:rooms?|kamra|kamre|kamron)\\b|कमरे|कमरा', t))
+    has_room = bool(re.search(r'\b(?:rooms?|kamra|kamre|kamron)\b|कमरे|कमरा', t))
     kinds = bool(re.search(
-        r'\\b(?:kaun|kaunse|kon|konse|konsa|konsi|kis kis|types?|kinds?|'
-        r'categories|category|options?|varieties|room list)\\b|कौन|किस तरह|प्रकार|कैटेगरी',
+        r'\b(?:kaun|kaunse|kon|konse|konsa|konsi|kis kis|types?|kinds?|'
+        r'categories|category|options?|varieties|room list)\b|कौन|किस तरह|प्रकार|कैटेगरी',
         t
     ))
     return has_room and kinds

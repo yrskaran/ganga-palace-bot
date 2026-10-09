@@ -111,22 +111,16 @@ class GuestFlows(unittest.TestCase):
         self.assertIn('₹3,499', self.sent.call_args.args[1])
         app.notify_reception_request.assert_not_called()
 
-    def test_ambiguous_reception_ai_needs_clear_confirmation(self):
+    def test_unknown_hotel_fact_is_sent_to_reception_for_confirmation(self):
         self.mock('understand_guest_request', return_value={
             'action':'RECEPTION', 'confidence':0.99, 'needs_reception':True,
-            'reply':'I will contact reception right now.'
+            'reply':'I will check that with reception.'
         })
         self.turn('Is a doctor available at this hotel?')
-        self.assertIn('Kya main unhe message bhejun', self.sent.call_args.args[1])
-        app.notify_reception_request.assert_not_called()
-        self.assertIn(GUEST, app.reception_consent_sessions)
-        self.turn('nahi')
-        app.notify_reception_request.assert_not_called()
-        self.assertNotIn(GUEST, app.reception_consent_sessions)
-        self.turn('Is a doctor available at this hotel?')
-        self.turn('haan')
         self.assertEqual(app.notify_reception_request.call_count, 1)
         self.assertIn('doctor available', app.notify_reception_request.call_args.args[2])
+        self.assertNotIn(GUEST, app.reception_consent_sessions)
+        self.assertIn('confirmation', self.sent.call_args.args[1].lower())
 
     def test_direct_reception_instruction_still_works(self):
         self.mock('understand_guest_request', return_value={

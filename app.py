@@ -6078,9 +6078,16 @@ def _update_reception_alert_delivery(remote_id, delivery_status, codes):
                 correction_needed = previous != "failed"
 
     if correction_needed and guest_phone:
+        request = str(pending.get("request") or "").strip()[:100]
+        detail = f" ({request})" if request else ""
         send_whatsapp_message(
             guest_phone,
-            "Sorry, reception ko WhatsApp par request nahi pahunchi. Photo ke liye front desk se pooch lena."
+            bilingual_text(
+                guest_phone,
+                f"Sorry, your request{detail} didn't reach reception on WhatsApp. Please check directly with the front desk.",
+                "Sorry, reception ko request nahi pahunchi on WhatsApp" + (f" ({request})" if request else "") + ". Front desk se pooch lena.",
+                f"क्षमा कीजिए, आपकी रिक्वेस्ट{detail} रिसेप्शन के WhatsApp तक नहीं पहुँची। कृपया फ्रंट डेस्क से सीधे पूछें।",
+            )
         )
 
 
@@ -6673,7 +6680,7 @@ def _is_explicit_full_menu_request(user_text):
     )
 
 
-def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
+def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False, facility_only=False):
     """Serve safe, configured hotel answers BEFORE spending an AI call.
 
     This is the main AI-quota protection layer: common, deterministic hotel
@@ -6682,6 +6689,48 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
     """
     t = normalize_text(user_text)
     price_requested = explicitly_asks_price(user_text)
+
+    # Pool availability is seasonal. Use hotel facts, but never imply it is open today.
+    pool_timing_question = bool(re.search(r"\b(?:pool|swimming pool)\b", t)) and bool(re.search(
+        r"\b(?:time|timing|hours|kab|when|baje|khulta|open|operating|chalu)\b", t
+    ))
+    if pool_timing_question:
+        exact = get_hotel_value("Swimming Pool Timing", "").strip().rstrip(".")
+        faq_answer = ""
+        for item in (CUSTOMER_CONFIG or {}).get("faq", []) or []:
+            if isinstance(item, dict) and re.search(r"\b(?:pool|swimming)\b", normalize_text(
+                str(item.get("question", "")) + " " + str(item.get("answer", ""))
+            )):
+                faq_answer = str(item.get("answer", "")).strip()
+                break
+        lang = get_guest_response_language(sender_phone, user_text)
+        if exact:
+            msg = (f"🏊 Pool timing listed by the hotel is {exact}. Please confirm today's operation with reception."
+                   if lang == "english" else f"🏊 Hotel ke hisaab se pool timing {exact} hai. Aaj pool chalu hai ya nahi, reception se confirm karna hoga.")
+        elif faq_answer and re.search(r"\b(?:april|march|summer|season)\b", faq_answer, re.I):
+            msg = ("🏊 Hotel information says the pool usually runs in the summer season (April–September), 6 AM–12 PM. Please confirm whether it is operating today with reception."
+                   if lang == "english" else "🏊 Hotel info ke mutabik pool aam taur par summer season (April–September), subah 6 se dopahar 12 baje tak chalta hai. Aaj chalu hai ya nahi, reception se confirm karna hoga.")
+        else:
+            msg = ("🏊 The hotel lists an indoor pool, but its timings aren't in my verified details. Please check today's timings with reception."
+                   if lang == "english" else "🏊 Hotel info mein indoor pool listed hai, par timing confirm nahi hai. Aaj ke timings reception se pooch lijiye.")
+        send_whatsapp_message(sender_phone, msg)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", msg)
+        return True
+
+    # Keep these verified facility facts deterministic without intercepting
+    # room-category or other nuanced questions that benefit from the AI router.
+    if facility_only:
+        if "parking" in t:
+            parking = get_hotel_value("Parking", "")
+            if parking:
+                msg = f"🚗 {parking}"
+                send_whatsapp_message(sender_phone, msg)
+                remember_conversation(sender_phone, "user", user_text)
+                remember_conversation(sender_phone, "assistant", msg)
+                return True
+        return False
+
     # Low-risk, data-backed fallback when every AI provider is unavailable.
     if _room_category_question(user_text):
         return _send_verified_room_categories(sender_phone, user_text, price_requested)
@@ -6835,8 +6884,8 @@ def _local_hotel_fallback(sender_phone, user_text, allow_broad_menu=False):
         if v and ("wi-fi" in v.lower() or "wifi" in v.lower()):
             basic_fact = f"📶 {v}"
     elif "parking" in t:
-        v = get_hotel_value("Amenities", "")
-        if v and "parking" in v.lower():
+        v = get_hotel_value("Parking", "")
+        if v:
             basic_fact = f"🚗 {v}"
 
     if basic_fact:
@@ -7016,7 +7065,11 @@ def _local_conversation_fallback(sender_phone, user_text, guest_info=None):
         "thank you ji", "thankyou ji", "dhanyavad", "dhanyavaad",
         "shukriya", "bahut shukriya", "bahut dhanyavad",
     }
-    if compact in thanks:
+    combined_thanks = bool(re.fullmatch(
+        r"(?:ok|okay|alright|sure|great|nice|perfect)\s+(?:thanks?(?:\s+you)?|thank you|thankyou|thx|ty)(?:\s+ji)?",
+        compact,
+    ))
+    if compact in thanks or combined_thanks:
         if lang == "english":
             msg = (f"You're most welcome, {name} ji! 😊 " if name else "You're most welcome! 😊 ") + "Kisi bhi help ki zarurat ho to yahin message karein."
         elif lang == "hindi" and guest_script(user_text) == "devanagari":
@@ -7684,6 +7737,44 @@ def _hotel_service_enquiry_reply(sender_phone, user_text):
     return True
 
 
+def _unconfigured_food_order_reply(sender_phone, user_text):
+    """Never guess a dish when the requested item is absent from this hotel's menu."""
+    text = normalize_text(user_text)
+    order_intent = bool(re.search(
+        r"\b(?:bhej(?:\s+do)?|bhijwa(?:\s+do)?|mangwa(?:\s+do)?|order(?:\s+kar(?:\s+do)?)?|send|bring|chahiye|de\s+do)\b",
+        text,
+    ))
+    food_item = bool(re.search(
+        r"\b(?:dal|daal|tadka|paneer|naan|roti|paratha|pulao|biryani|rice|chawal|chai|tea|coffee|khana|food|dish|meal|pizza|burger|soup|breakfast|lunch|dinner)\b",
+        text,
+    ))
+    if not (order_intent and food_item):
+        return False
+
+    parsed = find_menu_items(user_text)
+    parsed_items = parsed.get("items") or []
+    if parsed_items and all(item.get("unit_price") is not None for item in parsed_items):
+        # A recognized menu item with a configured price is safe even when the
+        # guest adds unrelated context (for example, a headache) that makes the
+        # parser's overall basket confidence incomplete.
+        return False
+    if parsed.get("complete") and parsed_items:
+        return False
+    if parsed.get("generic"):
+        choices = get_hotel_config().get("generic_menu", {}).get(parsed["generic"], [])
+        if choices:
+            return False
+
+    if get_guest_response_language(sender_phone, user_text) == "english":
+        reply = "I don't have this hotel's verified food menu yet, so I can't confirm that order. Would you like me to check the menu with reception?"
+    else:
+        reply = "Ji, hotel ka verified food menu abhi set nahi hai, isliye main order confirm nahi kar sakti. Reception se menu confirm karwa doon?"
+    send_whatsapp_message(sender_phone, reply)
+    remember_conversation(sender_phone, "user", user_text)
+    remember_conversation(sender_phone, "assistant", reply)
+    return True
+
+
 def _hotel_location_reply(sender_phone, user_text):
     """Answer hotel-location questions from configured facts and include Maps at once."""
     text = normalize_text(user_text)
@@ -7748,7 +7839,12 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
     else:
         send_whatsapp_message(
             sender_phone,
-            f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai, lekin is room/role ke liye abhi koi eligible on-duty staff nahi mila. Kripya reception se confirm karein."
+            bilingual_text(
+                sender_phone,
+                f"I've noted your {service} request, but couldn't send the staff alert. Please contact the front desk directly.",
+                f"Ji {guest_info.get('name','Guest')} ji, {service} request note kar li hai, par staff ko WhatsApp alert nahi bhej paaya. Front desk se seedhe baat kar lijiye.",
+                f"{service} अनुरोध नोट कर लिया है, लेकिन स्टाफ को WhatsApp अलर्ट नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे बात करें।",
+            )
         )
     return True
 
@@ -8005,6 +8101,11 @@ def _process_and_reply(message, sender_phone, msg_type):
     if demo_food.handle(sys.modules[__name__], sender_phone, user_text, semantic=demo_ai_result):
         return
 
+    # Operational hotels must have a verified menu before accepting an order.
+    # The configured Shreya flow is explicitly demo-only and stays in demo_food.
+    if not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
+        return
+
     t = normalize_text(user_text)
     guest_info = None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone)
     # One targeted live refresh when the in-memory Rooms cache has no matching guest.
@@ -8090,9 +8191,13 @@ def _process_and_reply(message, sender_phone, msg_type):
     # Keep transactional confirmations (pending orders/check-in) on their normal path.
     social_first = _is_symbolic_only_message(user_text) or normalize_text(user_text) in {
         "hi", "hello", "hey", "namaste", "namaskar", "good morning", "good afternoon", "good evening",
-        "thanks", "thank you", "thankyou", "thx", "shukriya", "dhanyavad", "dhanyavaad",
+        "thanks", "thanks ji", "thank you", "thank you ji", "thankyou", "thankyou ji",
+        "thx", "shukriya", "dhanyavad", "dhanyavaad",
         "bye", "goodbye", "good night", "gn", "ok", "okay", "theek hai", "thik hai", "great", "nice", "perfect"
-    }
+    } or bool(re.fullmatch(
+        r"(?:ok|okay|alright|sure|great|nice|perfect)\s+(?:thanks?(?:\s+you)?|thank you|thankyou|thx|ty)(?:\s+ji)?",
+        normalize_text(user_text),
+    ))
     if social_first and not _skip_semantic_ai:
         if _local_conversation_fallback(sender_phone, user_text, guest_info):
             return
@@ -8134,6 +8239,9 @@ def _process_and_reply(message, sender_phone, msg_type):
     # Keep common hotel-location questions conversational and complete: answer
     # the location and share the configured map link in the same turn.
     if not _skip_semantic_ai and _hotel_location_reply(sender_phone, user_text):
+        return
+
+    if not _skip_semantic_ai and _local_hotel_fallback(sender_phone, user_text, facility_only=True):
         return
 
     if not _skip_semantic_ai and _is_explicit_full_menu_request(user_text):
@@ -9229,7 +9337,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             )
             return
 
-        send_staff_alert(
+        staff_notified = send_staff_alert(
             room=guest_info['room'],
             role="Housekeeping" if svc != "Room Service Assistance" else "Room Service",
             message=(
@@ -9238,10 +9346,16 @@ def _process_and_reply(message, sender_phone, msg_type):
             ),
             fallback_phone=STAFF_PHONE,
         )
-        send_whatsapp_message(
-            sender_phone,
-            f"Ji {guest_info['name']} ji, {svc} request note kar li hai. Staff ko inform kar diya gaya hai."
-        )
+        if staff_notified:
+            reply = f"Ji {guest_info['name']} ji, {svc} request note kar li hai aur staff ko inform kar diya hai. 🙏"
+        else:
+            reply = bilingual_text(
+                sender_phone,
+                f"I've noted your {svc} request, but couldn't send the staff alert. Please contact the front desk directly.",
+                f"Ji {guest_info['name']} ji, {svc} request note kar li hai, par staff ko WhatsApp alert nahi bhej paaya. Front desk se seedhe baat kar lijiye.",
+                f"{svc} अनुरोध नोट कर लिया है, लेकिन स्टाफ को WhatsApp अलर्ट नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे बात करें।",
+            )
+        send_whatsapp_message(sender_phone, reply)
         return
 
     # ========================================================
@@ -9360,14 +9474,10 @@ def _process_and_reply(message, sender_phone, msg_type):
                 ai_reply = re.sub(r"\[\[RECEPTION_NOTIFY\s*:\s*.*?\s*\]\]", "", ai_reply, flags=re.I | re.S).strip()
 
             send_whatsapp_message(sender_phone, ai_reply)
-            low_ai = normalize_text(ai_reply)
-            reception_action = bool(marker_reason) or any(x in low_ai for x in [
-                "reception se confirm", "reception se share", "reception se karwa",
-                "reception can confirm", "reception will confirm", "i’ll have reception",
-                "i'll have reception", "reception ko bata", "reception ko bol"
-            ])
-            if reception_action:
-                notify_reception_request(sender_phone, guest_info, marker_reason or user_text, "ai_reception_action")
+            # Only an explicit private handoff marker triggers a side effect.
+            # A factual answer mentioning reception is not guest consent.
+            if marker_reason:
+                notify_reception_request(sender_phone, guest_info, marker_reason, "ai_reception_action")
             remember_conversation(sender_phone, "user", user_text)
             remember_conversation(sender_phone, "assistant", ai_reply)
             return

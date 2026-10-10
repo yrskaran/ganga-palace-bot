@@ -606,7 +606,10 @@ def handle(bot, phone, text, semantic=None):
         # because the guest mentioned 'food', 'order' or 'menu' in passing.
         if semantic_action and semantic_action not in {
             'ORDER', 'ORDER_SELECTION', 'ORDER_CANCEL'
-        } and not pending:
+        }:
+            # A pending cart must not hijack an unrelated question or a
+            # correction of the assistant's last answer. Leave the cart intact
+            # and let the semantic receptionist answer the current intent.
             return False
         if pending and bot.is_yes(text):
             if require_demo_checkin and not demo_stay_active(bot, phone):

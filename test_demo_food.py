@@ -234,6 +234,45 @@ class DemoFoodTests(unittest.TestCase):
         self.assertEqual(app.demo_food_sessions[self.phone]['id'], pending['id'])
         self.kitchen.assert_not_called()
 
+    def test_pending_cart_does_not_hijack_milk_availability_or_correction(self):
+        # Availability and correction turns must stay with the receptionist,
+        # while an existing demo cart remains untouched.
+        pending = {'id': 'DEMO-PENDING', 'created': time.time(),
+                   'items': [{'name': 'Poha', 'qty': 1}], 'total': 70,
+                   'phone': self.phone, 'state': 'prepared'}
+        app.demo_food_sessions[self.phone] = pending.copy()
+        self.sent.reset_mock()
+
+        availability = {
+            'action': 'RECEPTION', 'confidence': 0.94,
+            'understood_as': 'asks whether a glass of milk can be provided for a child',
+            'needs_reception': True,
+            'reply': 'Ji, bachche ke liye doodh available hai ya nahi main reception se confirm karti hoon.',
+        }
+        handled = self.demo.handle(
+            app, self.phone, '1 glass dudh mil sakta hai bache ke liye',
+            semantic=availability,
+        )
+        self.assertFalse(handled)
+        self.assertEqual(app.demo_food_sessions[self.phone]['id'], 'DEMO-PENDING')
+        self.sent.assert_not_called()
+
+        correction = {
+            'action': 'RECEPTION', 'confidence': 0.96,
+            'understood_as': 'corrects the previous misunderstanding and repeats the milk availability question',
+            'needs_reception': True,
+            'reply': 'Samajh gayi ji—doodh ke baare mein pooch rahe hain, dish nahi. Main reception se confirm karti hoon.',
+        }
+        handled = self.demo.handle(
+            app, self.phone, 'Doodh manga, dish nahi',
+            semantic=correction,
+        )
+        self.assertFalse(handled)
+        self.assertEqual(app.demo_food_sessions[self.phone]['id'], 'DEMO-PENDING')
+        self.sent.assert_not_called()
+        self.assertEqual(self.sheet.append_count, 0)
+        self.kitchen.assert_not_called()
+
     def test_menu_is_sample_and_no_entry_before_confirmation(self):
         self.assertTrue(self.turn('menu'))
         self.assertIn('DEMO', self.reply())

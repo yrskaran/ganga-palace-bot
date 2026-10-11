@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V68-RECEPTIONIST-REPLIES"
+APP_VERSION = "HOTEL-AI-V69-DIALOGUE-CONTEXT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5085,7 +5085,7 @@ def _compact_ai_text(text, limit):
     return text[:limit].rstrip() + "\n[HOTEL DATA CONTEXT TRUNCATED FOR AI TOKEN SAFETY]"
 
 
-def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=False):
+def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=False, context_history=None):
     if _groq_circuit_open():
         return None
     model = get_active_groq_model()
@@ -5117,7 +5117,7 @@ def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=Fals
     # Groq's TPM limit is sensitive to INPUT tokens, not only max_tokens.
     # Keep the hotel brain authoritative but compact the AI copy; deterministic
     # backend functions continue to use the complete hotel_data.txt.
-    history = _ai_recent_history(sender_phone)
+    history = context_history if context_history is not None else _ai_recent_history(sender_phone)
     knowledge_query = " ".join(item["content"] for item in history[-4:]) + " " + guest_message
     hotel_db = "" if ai_receptionist.current.get() else _ai_knowledge_snapshot(3000, knowledge_query)
     time_context = ai_time_context()
@@ -5204,6 +5204,14 @@ Hotel knowledge:
             headers=headers,
             timeout=20
         )
+
+        if res.status_code == 429:
+            hint = _rate_limit_retry_seconds(res, GROQ_RATE_LIMIT_COOLDOWN)
+            daily = any(x in res.text.upper() for x in ('TPD', 'TOKENS PER DAY', 'PER DAY'))
+            if not daily and hint <= 5:
+                print(f"GROQ SHORT RESET: waiting {hint}s; one inference retry", flush=True)
+                time.sleep(hint)
+                res = requests.post(url, json=payload, headers=headers, timeout=20)
 
         if res.status_code == 200:
             data = res.json()
@@ -6687,31 +6695,7 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     receptionist_contract = ''
     if ai_receptionist.enabled(sys.modules[__name__]):
         state_hint += '\nConversation operation state: ' + json.dumps(ai_receptionist.snapshot(sys.modules[__name__], sender_phone), default=str, ensure_ascii=False)
-        receptionist_contract = (
-            'YOU own understanding AND guest language. Set language from the current utterance with dialogue context, '
-            'including typos, abbreviated words, Hinglish and code mixing. Previous language is only context, never a forced choice. '
-            'Return language and operation_text in addition to the other fields. '
-            'For operational commands, operation_text contains only resolved backend arguments, not a conversational question. '
-            'For active check-in, use CHECKIN_DETAILS only if the guest is actually supplying the requested OTP/name/address. '
-            'Extract ONLY the submitted value into operation_text; a side question/correction is ANSWER or RECEPTION, never check-in data. '
-            'An image submitted as ID during the ID step is CHECKIN_ID; no other image verifies identity. '
-            'CHECKIN_CANCEL stops only the pending self-check-in, never an active stay. RECEPTION_DECLINE declines proposed staff contact. '
-            'ORDER_CONFIRM is explicit confirmation of the current pending cart; ORDER_DECLINE declines that cart; '
-            'ORDER_CANCEL cancels an existing confirmed order. Do not confirm because of a casual okay or hypothetical. '
-            'A revised order is ORDER with the complete newly requested items and quantities and requires fresh confirmation. '
-            'DEMO_CHECKIN/DEMO_CHECKOUT are explicit simulation commands. DEMO_REMINDERS_ON/OFF require clear guest opt-in/out. '
-            'For SERVICE_FEEDBACK or COMPLAINT_FEEDBACK set operation_text to yes/no only when actually answering a pending completion question. '
-            'For service feedback with an explicit ticket reference, put the resolved S- ticket ID in task_id; never drop the reference. '
-            'For COMPLAINT set operation_text to the complete resolved complaint; for SERVICE use complete resolved task details. '
-            'For a question about a SPECIFIC menu item (price or menu listing), use MENU_ITEM_INFO and put the resolved item name(s) in items; qty defaults to 1. '
-            'Set show_prices=true only when price/cost is requested. This is read-only, never ORDER or a FULL menu request. '
-            'Use SHOW_MENU only for a category or whole menu. For typo names resolve to the configured item if clear, otherwise clarify. '
-            'For BILL set operation_text to full/food/room based on which verified bill was requested. '
-            'The backend will execute ONLY your chosen action and generate verified result data. '
-            'Information, humour, corrections, language changes and side questions use your own reply without any keyword router. '
-            'Never reveal another guest data, infer OTPs, mark payments paid, bypass check-in or promise completed actions. '
-            'Extra valid actions: ' + '|'.join(sorted(ai_receptionist.EXTRA_ACTIONS))
-        )
+        return ai_receptionist.interpretation_prompt(sys.modules[__name__], user_text, guest_info, sender_phone, state_hint)
     demo_instructions = ""
     if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
         demo_instructions = (
@@ -6765,10 +6749,12 @@ def check_ai_readiness():
     try:
         receptionist = ai_receptionist.enabled(sys.modules[__name__])
         item_probe = next((row for row in (CUSTOMER_CONFIG or {}).get('menu', [])
-                           if row.get('name') == 'Boondi Raita'), None) if receptionist else None
-        query = ('Boondi raita kitne ka?' if item_probe else 'Cow milk milega?') if receptionist else 'What are the Wi-Fi, parking and check-out details?'
+                           if row.get('name') == 'Standard Veg Thali'), None) if receptionist else None
+        query = ('Kitne ki hai?' if item_probe else 'Cow milk milega?') if receptionist else 'What are the Wi-Fi, parking and check-out details?'
         prompt = _ai_understanding_prompt(query, None, None)
-        raw = ask_groq_chat(prompt, structured=True)
+        history = ([{'role':'user','content':f"{item_probe['name']} bhi hai?"},
+                    {'role':'assistant','content':f"{item_probe['name']} DEMO menu mein listed hai."}] if item_probe else None)
+        raw = ask_groq_chat(prompt, structured=True, context_history=history)
         obj = _parse_ai_json(raw) or {}
         reply = str(obj.get("reply", "")).strip()
         expected = ({'MENU_ITEM_INFO'} if item_probe else {'RECEPTION', 'AVAILABILITY', 'ANSWER'}) if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}

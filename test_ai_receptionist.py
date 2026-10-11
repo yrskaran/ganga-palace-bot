@@ -36,6 +36,34 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         return dict({'action': 'ANSWER', 'reply': 'AI ne poori baat samjhi.',
                      'language': 'hinglish', 'confidence': 0.95}, **values)
 
+    def test_enabled_interpreter_keeps_recent_context_within_input_budget(self):
+        app.conversation_memory[self.phone] = [
+            {'role':'user','content':'Standard veg thali bhi hai?'},
+            {'role':'assistant','content':'Standard Veg Thali demo menu mein listed hai.'}]
+        response = Mock(status_code=200)
+        response.json.return_value = {'choices':[{'message':{'content':'{"action":"MENU_ITEM_INFO"}'},'finish_reason':'stop'}]}
+        with patch.object(app,'get_active_groq_model',return_value='qwen/qwen3.8-27b'), \
+             patch.object(app,'_groq_circuit_open',return_value=False), \
+             patch.object(app.requests,'post',return_value=response) as post:
+            app.ask_groq_chat(app._ai_understanding_prompt('Kitne ki hai?', None, self.phone),sender_phone=self.phone,structured=True)
+        messages = post.call_args.kwargs['json']['messages']
+        self.assertTrue(any(m['role']=='user' and m['content']=='Standard veg thali bhi hai?' for m in messages))
+        self.assertTrue(any(m['role']=='assistant' and 'Standard Veg Thali' in m['content'] for m in messages))
+        self.assertLess(sum(len(m['content'].encode()) for m in messages),12400)
+
+    def test_short_provider_rate_limit_retries_once_before_fallback(self):
+        limited = Mock(status_code=429,text='input tokens per minute',headers={'retry-after':'1'})
+        success = Mock(status_code=200)
+        success.json.return_value = {'choices':[{'message':{'content':'{"action":"ANSWER","reply":"Ji"}'},'finish_reason':'stop'}]}
+        with patch.object(app,'get_active_groq_model',return_value='qwen/qwen3.8-27b'), \
+             patch.object(app,'_groq_circuit_open',return_value=False), \
+             patch.object(app.requests,'post',side_effect=[limited,success]) as post, \
+             patch.object(app.time,'sleep') as wait:
+            self.assertIsNotNone(app.ask_groq_chat('hello',structured=True))
+        self.assertEqual(post.call_count,2)
+        wait.assert_called_once_with(1)
+        app.send_whatsapp_message.assert_not_called()
+
     def test_live_readiness_uses_one_read_only_contract_probe(self):
         import json
         with patch.object(app, 'GROQ_API_KEY', 'test'), patch.object(app, 'ask_groq_chat',
@@ -47,11 +75,11 @@ class ReceptionistBoundaryTests(unittest.TestCase):
 
     def test_live_item_result_probe_actually_runs_composer_without_transport(self):
         import json
-        app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70}]
-        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita ka DEMO menu rate ₹70 hai."}', '{"supported":true}']
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':70}]
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Standard Veg Thali ka DEMO menu rate ₹70 hai."}', '{"supported":true}']
         with patch.object(app, 'GROQ_API_KEY','test'), patch.object(app,'ask_groq_chat',
             return_value=json.dumps(self.understanding(action='MENU_ITEM_INFO', operation_text='',
-                show_prices=True,items=[{'name':'Boondi Raita','qty':1}]))):
+                show_prices=True,items=[{'name':'Standard Veg Thali','qty':1}]))):
             app.check_ai_readiness()
         self.assertEqual(app.ask_ai_chat.call_count, 2)
         self.assertEqual(app.AI_READINESS['status'], 'available')

@@ -331,7 +331,12 @@ def normal_probes(bot,run_id):
         guest={'name':'QA Guest','room':'240','status':'CHECKED_IN','is_inhouse':True} if case['id']=='PROBE-QTY' else None
         prompt=ai.interpretation_prompt(bot,case['text'],guest,None,'{}')
         obj=bot._parse_ai_json(bot.ask_groq_chat(prompt,guest,structured=True,context_history=[]))
-        obj=ai.review_plan(bot,case['text'],obj,[],guest=guest,pending={})
+        print('HOTEL QA DIAGNOSTIC: '+json.dumps({'id':case['id'],'stage':'candidate','parsed':obj},ensure_ascii=False),flush=True)
+        def review_provider(prompt,guest,phone,structured=True):
+            raw=bot.ask_groq_chat(prompt,guest,phone,structured=structured,context_history=[])
+            print('HOTEL QA DIAGNOSTIC: '+json.dumps({'id':case['id'],'stage':'review','parsed':bot._parse_ai_json(raw)},ensure_ascii=False),flush=True)
+            return raw
+        obj=ai.review_plan(bot,case['text'],obj,[],guest=guest,pending={},provider=review_provider)
         errors=errors_for(case,obj,bot.CUSTOMER_CONFIG)
         reply=''
         if isinstance(obj,dict):

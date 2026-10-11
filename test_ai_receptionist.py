@@ -65,6 +65,28 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertEqual(result['items'],[{'name':'Masala Chai','qty':2}])
         self.assertFalse(result['needs_reception'])
 
+    def test_every_review_branch_explicitly_requests_current_language(self):
+        import json,re
+        provider=Mock(return_value=json.dumps({'menu_related':False,'blocked':False,'language':'hinglish','reply':'Ji.'}))
+        gateway.review_plan(app,'Standard veg thali bhi hai?',self.understanding(),[],provider=provider,pending={})
+        prompt=provider.call_args.args[0]
+        schemas=re.findall(r'return (\{.*?\})',prompt,re.I)
+        self.assertTrue(schemas)
+        self.assertTrue(all('language' in schema for schema in schemas))
+
+    def test_observed_operational_reception_review_routes_task_without_claiming_stock(self):
+        import json
+        review={'operational':True,'action':'RECEPTION','items':[],'category':'NONE',
+                'operation_text':'Check room availability for 2 guests tomorrow','language':'hinglish',
+                'confidence':0.95,'reply':'Room available hai, booking kar lo.'}
+        result=gateway.review_plan(app,'Kal 2 logo ke liye kamra milega?',self.understanding(action='RECEPTION'),[],
+                   provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertIsNotNone(result)
+        self.assertEqual(result['action'],'RECEPTION')
+        self.assertTrue(result['needs_reception'])
+        self.assertEqual(result['reception_request'],review['operation_text'])
+        self.assertEqual(result['reply'],'')
+
     def test_operational_review_validates_inventory_and_confirmation_state(self):
         import json
         app.CUSTOMER_CONFIG['menu']=[{'name':'Masala Chai','price':30}]

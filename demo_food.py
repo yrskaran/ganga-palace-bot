@@ -591,8 +591,11 @@ def handle(bot, phone, text, semantic=None):
             # safety net, not the primary language-understanding engine.
             prices = prices or bot.explicitly_asks_price(text)
             messages = menu_messages(bot, meal=meal, include_prices=prices)
-            for message in messages:
-                bot.send_whatsapp_message(phone, message)
+            if ai_receptionist.enabled(bot) and ai_receptionist.current.get():
+                ai_receptionist.send_menu(bot, phone, messages)
+            else:
+                for message in messages:
+                    bot.send_whatsapp_message(phone, message)
             bot.remember_conversation(phone, 'user', text)
             bot.remember_conversation(
                 phone, 'assistant',

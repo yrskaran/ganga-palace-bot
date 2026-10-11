@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V67-RECEPTIONIST-GATEWAY"
+APP_VERSION = "HOTEL-AI-V68-RECEPTIONIST-REPLIES"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -3596,7 +3596,8 @@ def _openai_messages(user_text, guest_info=None, sender_phone=None, structured=F
 
     # Semantic AI receives only a relevance-ranked hotel-data packet to keep
     # request tokens controlled; the backend still uses the full hotel_data.txt.
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
+    hotel_db = ("" if ai_receptionist.current.get() else
+                (_ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()))
     history = get_conversation_history(sender_phone) if sender_phone else []
 
     system_prompt = f"""
@@ -3818,7 +3819,8 @@ def ask_gemini_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
+    hotel_db = ("" if ai_receptionist.current.get() else
+                (_ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()))
     history = get_conversation_history(sender_phone) if sender_phone else []
     time_context = ai_time_context()
     system_prompt = f"""
@@ -3961,6 +3963,11 @@ def _ai_content_is_usable(content, provider_name="AI"):
         "analysis:",
         "user message:",
         "internal reasoning",
+        "verified backend result",
+        "we need to produce",
+        "we should not mention",
+        "ai understanding:",
+        "we need to reply",
     }
     if lowered in blocked_exact or (
         "user safety:" in lowered and "response safety:" in lowered
@@ -4160,7 +4167,8 @@ def ask_cerebras_chat(user_text, guest_info=None, sender_phone=None, structured=
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
+    hotel_db = ("" if ai_receptionist.current.get() else
+                (_ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()))
     history = get_conversation_history(sender_phone) if sender_phone else []
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 650)}"
@@ -4300,7 +4308,8 @@ def ask_cohere_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
+    hotel_db = ("" if ai_receptionist.current.get() else
+                (_ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()))
     history = get_conversation_history(sender_phone) if sender_phone else []
     history_text = "\n".join(
         f"{item.get('role','user').upper()}: {_compact_ai_text(item.get('content',''), 650)}"
@@ -4365,6 +4374,10 @@ Hotel knowledge:\n{hotel_db}
             choices = data.get("choices") if isinstance(data, dict) else None
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                 finish_reason = str(choices[0].get("finish_reason") or "").strip().upper()
+
+            if finish_reason in {"LENGTH", "MAX_TOKENS"}:
+                print("COHERE INCOMPLETE OUTPUT: final reply rejected", flush=True)
+                return None
 
             if usable:
                 print(f"COHERE SUCCESS: model={COHERE_MODEL} finish_reason={finish_reason or 'unknown'}", flush=True)
@@ -4435,7 +4448,8 @@ def ask_openrouter_chat(user_text, guest_info=None, sender_phone=None, structure
         elif guest_info.get("status") == "CHECKED_OUT":
             guest_context = f"CHECKED-OUT GUEST: {guest_info.get('name')}"
 
-    hotel_db = _ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()
+    hotel_db = ("" if ai_receptionist.current.get() else
+                (_ai_knowledge_snapshot(7000, guest_message) if structured else get_hotel_data()))
     history = get_conversation_history(sender_phone) if sender_phone else []
 
     system_prompt = f"""
@@ -4534,7 +4548,7 @@ def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
     """Resilient conversational gateway using the same provider order everywhere."""
     for provider_name, provider_fn in _ai_provider_functions():
         try:
-            reply = provider_fn(user_text, guest_info, sender_phone)
+            reply = _ai_content_is_usable(provider_fn(user_text, guest_info, sender_phone), provider_name)
             if reply:
                 print(f"AI GATEWAY SUCCESS: provider={provider_name}", flush=True)
                 return reply
@@ -5105,7 +5119,7 @@ def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=Fals
     # backend functions continue to use the complete hotel_data.txt.
     history = _ai_recent_history(sender_phone)
     knowledge_query = " ".join(item["content"] for item in history[-4:]) + " " + guest_message
-    hotel_db = _ai_knowledge_snapshot(3000, knowledge_query)
+    hotel_db = "" if ai_receptionist.current.get() else _ai_knowledge_snapshot(3000, knowledge_query)
     time_context = ai_time_context()
 
     system_prompt = f"""
@@ -6689,6 +6703,9 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
             'For SERVICE_FEEDBACK or COMPLAINT_FEEDBACK set operation_text to yes/no only when actually answering a pending completion question. '
             'For service feedback with an explicit ticket reference, put the resolved S- ticket ID in task_id; never drop the reference. '
             'For COMPLAINT set operation_text to the complete resolved complaint; for SERVICE use complete resolved task details. '
+            'For a question about a SPECIFIC menu item (price or menu listing), use MENU_ITEM_INFO and put the resolved item name(s) in items; qty defaults to 1. '
+            'Set show_prices=true only when price/cost is requested. This is read-only, never ORDER or a FULL menu request. '
+            'Use SHOW_MENU only for a category or whole menu. For typo names resolve to the configured item if clear, otherwise clarify. '
             'For BILL set operation_text to full/food/room based on which verified bill was requested. '
             'The backend will execute ONLY your chosen action and generate verified result data. '
             'Information, humour, corrections, language changes and side questions use your own reply without any keyword router. '
@@ -6747,19 +6764,37 @@ def check_ai_readiness():
         return
     try:
         receptionist = ai_receptionist.enabled(sys.modules[__name__])
-        query = 'Cow milk milega?' if receptionist else 'What are the Wi-Fi, parking and check-out details?'
+        item_probe = next((row for row in (CUSTOMER_CONFIG or {}).get('menu', [])
+                           if row.get('name') == 'Boondi Raita'), None) if receptionist else None
+        query = ('Boondi raita kitne ka?' if item_probe else 'Cow milk milega?') if receptionist else 'What are the Wi-Fi, parking and check-out details?'
         prompt = _ai_understanding_prompt(query, None, None)
         raw = ask_groq_chat(prompt, structured=True)
         obj = _parse_ai_json(raw) or {}
         reply = str(obj.get("reply", "")).strip()
-        expected = {'RECEPTION', 'AVAILABILITY', 'ANSWER'} if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}
+        expected = ({'MENU_ITEM_INFO'} if item_probe else {'RECEPTION', 'AVAILABILITY', 'ANSWER'}) if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}
         ok = bool(obj.get('action') in expected and _ai_content_is_usable(reply, 'Groq'))
         if receptionist:
             # A single read-only probe checks the full contract without consuming
             # two large interpreter prompts back-to-back under the TPM allowance.
             ok = (ok and obj.get('language') == 'hinglish'
                   and isinstance(obj.get('operation_text'), str))
+            if item_probe:
+                ok = (ok and obj.get('show_prices') is True
+                      and any(normalize_text(item.get('name', '')) == normalize_text(item_probe['name'])
+                              for item in obj.get('items', [])))
             print(f"AI RECEPTIONIST READ-ONLY PROBE: action={obj.get('action')} language={obj.get('language')} valid={ok}", flush=True)
+            if ok and item_probe:
+                source = f"{item_probe['name']} — ₹{item_probe['price']}\nDEMO menu price; no real kitchen availability confirmed."
+                token = ai_receptionist.current.set({'phone':'', 'text':query,
+                    'language':'hinglish','meaning':'Guest asks the configured item price','guest':None})
+                try:
+                    final = ai_receptionist.compose(sys.modules[__name__], '', source)
+                finally:
+                    ai_receptionist.current.reset(token)
+                result_ok = final != source
+                print(f"AI RECEPTIONIST RESULT PROBE: valid={result_ok} reply={final[:300]!r}", flush=True)
+                ok = ok and result_ok
+
         _record_ai_readiness("available" if ok else "unavailable", "groq")
         print(f"AI READINESS CHECK: provider=groq status={'available' if ok else 'unavailable'} reply={reply[:400]!r}", flush=True)
     except Exception as exc:

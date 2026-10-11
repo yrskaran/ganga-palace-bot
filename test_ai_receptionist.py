@@ -11,6 +11,7 @@ import ai_receptionist as gateway
 class ReceptionistBoundaryTests(unittest.TestCase):
     def setUp(self):
         self.real_send = app.send_whatsapp_message
+        self.real_ask = app.ask_ai_chat
         self.patches = []
         for name, value in {
             'CUSTOMER_CONFIG': {'ai_receptionist_flow': True},
@@ -43,6 +44,80 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         provider.assert_called_once()
         self.assertEqual(app.AI_READINESS['status'], 'available')
         app.send_whatsapp_message.assert_not_called()
+
+    def test_composer_rejects_drafting_even_when_fact_checker_accepts(self):
+        token = gateway.current.set({'phone':self.phone, 'text':'menu',
+            'language':'hinglish', 'meaning':'asks menu'})
+        try:
+            source = 'Breads & Rice: Plain Naan, Jeera Rice'
+            app.ask_ai_chat.side_effect = [
+                'We have a verified backend result. We need to produce a natural Hinglish reply. '+source,
+                '{"supported":true}']
+            self.assertEqual(gateway.compose(app, self.phone, source), source)
+        finally: gateway.current.reset(token)
+
+    def test_composer_rejects_drafting_inside_reply_envelope(self):
+        token = gateway.current.set({'phone':self.phone, 'text':'menu',
+            'language':'hinglish', 'meaning':'asks menu'})
+        try:
+            source = 'Breads & Rice: Plain Naan, Jeera Rice'
+            app.ask_ai_chat.side_effect = [
+                '{"reply":"We need to produce a natural Hinglish reply. Breads & Rice: Plain Naan, Jeera Rice"}',
+                '{"supported":true}']
+            self.assertEqual(gateway.compose(app, self.phone, source), source)
+        finally: gateway.current.reset(token)
+
+    def test_result_provider_uses_only_verified_result_without_hotel_database(self):
+        token = gateway.current.set({'phone':self.phone,'text':'price', 'language':'hinglish', 'meaning':'asks price'})
+        try:
+            with patch.object(app, 'get_hotel_data',return_value='EXTRA HOTEL FACTS SHOULD NOT ENTER RESULT REPLY'):
+                messages = app._openai_messages('VERIFIED RESULT: Boondi Raita ₹80', structured=False)
+            self.assertNotIn('EXTRA HOTEL FACTS', str(messages))
+        finally: gateway.current.reset(token)
+
+    def test_provider_gateway_rejects_draft_and_uses_next_provider(self):
+        with patch.object(app, '_ai_provider_functions', return_value=[
+            ('bad', lambda *args: 'We have a verified backend result. We need to produce a reply.'),
+            ('good', lambda *args: 'Ji, yeh raha menu.')]):
+            result = self.real_ask('Menu')
+        self.assertEqual(result, 'Ji, yeh raha menu.')
+
+    def test_two_item_price_rows_cannot_swap_amounts(self):
+        self.assertFalse(gateway.faithful_numbers_and_links(
+            '• Poha — ₹70\n• Chai — ₹30', '• Poha — ₹30\n• Chai — ₹70'))
+        self.assertFalse(gateway.faithful_numbers_and_links(
+            'Poha — ₹70\nChai — ₹30', 'Poha — ₹30\nChai — ₹70'))
+
+    def test_item_price_enquiry_returns_only_verified_item_without_order(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':80},{'name':'Poha','price':70}]
+        with patch.object(app, '_process_and_reply', side_effect=AssertionError('enquiry executed as order')):
+            gateway.handle(app, self.phone, 'Boondi raita kitne ka', None,
+                semantic=self.understanding(action='MENU_ITEM_INFO', show_prices=True,
+                    items=[{'name':'Boondi Raita','qty':1}]))
+        output = app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('Boondi Raita', output)
+        self.assertIn('80', output)
+        self.assertNotIn('Poha', output)
+        self.assertEqual(app.demo_food_sessions, {})
+
+    def test_menu_cards_preserve_data_without_composing_each_card(self):
+        app.CUSTOMER_CONFIG.update(demo_food_enabled=True,
+            menu=[{'name':'Poha','price':70},{'name':'Butter Naan','price':40},
+                  {'name':'Boondi Raita','price':80},{'name':'Hot Coffee','price':40}])
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, demo menu yeh raha."}', '{"supported":true}']
+        gateway.handle(app, self.phone, 'Menu dikhao', None,
+            semantic=self.understanding(action='SHOW_MENU',menu_section='FULL'))
+        self.assertEqual(app.ask_ai_chat.call_count, 2)
+        body = '\n'.join(call.args[1] for call in app.send_whatsapp_message.call_args_list)
+        for item in ('Poha','Butter Naan','Boondi Raita','Hot Coffee'):
+            self.assertIn(item, body)
+
+    def test_cohere_length_output_is_not_a_final_reply(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {'choices':[{'message':{'content':'We need to produce a natural Hinglish reply'},'finish_reason':'length'}]}
+        with patch.object(app, 'COHERE_API_KEY','test'), patch.object(app, '_cohere_circuit_open',return_value=False), \
+             patch.object(app.requests, 'post', return_value=response):
+            self.assertIsNone(app.ask_cohere_chat('Menu reply'))
 
     def test_enabled_router_bypasses_keyword_and_language_shortcuts(self):
         result = self.understanding()
@@ -83,7 +158,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         response = Mock(status_code=200)
         try:
             app.ask_ai_chat.return_value = 'Ji, Rs. 70 hai.'
-            app.ask_ai_chat.side_effect = ['Ji, Rs. 70 hai.', '{"supported":true}']
+            app.ask_ai_chat.side_effect = ['{"reply":"Ji, Rs. 70 hai."}', '{"supported":true}']
             with patch.object(app, 'whatsapp_request', return_value=response) as transport:
                 self.assertTrue(real_send(self.phone, 'Total Rs. 70'))
             self.assertEqual(transport.call_args.args[0]['text']['body'], 'Ji, Rs. 70 hai.')
@@ -120,10 +195,10 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         token = gateway.current.set({'phone': self.phone, 'text': 'hisaab batao',
             'language': 'hinglish', 'meaning': 'asks for verified bill'})
         try:
-            app.ask_ai_chat.return_value = 'Ji, total Rs. 80 hai.'
+            app.ask_ai_chat.return_value = '{"reply":"Ji, total Rs. 80 hai."}'
             self.assertEqual(gateway.compose(app, self.phone, 'Total Rs. 70'), 'Total Rs. 70')
             app.ask_ai_chat.return_value = 'Ji, total Rs. 70 hai.'
-            app.ask_ai_chat.side_effect = ['Ji, total Rs. 70 hai.', '{"supported":true}']
+            app.ask_ai_chat.side_effect = ['{"reply":"Ji, total Rs. 70 hai."}', '{"supported":true}']
             self.assertEqual(gateway.compose(app, self.phone, 'Total Rs. 70'), 'Ji, total Rs. 70 hai.')
         finally:
             gateway.current.reset(token)
@@ -133,7 +208,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
             'language': 'english', 'meaning': 'confirm order'})
         try:
             source = 'Order save failed. No order was created.'
-            app.ask_ai_chat.side_effect = ['Your order was saved and confirmed.', '{"supported":false}']
+            app.ask_ai_chat.side_effect = ['{"reply":"Your order was saved and confirmed."}', '{"supported":false}']
             self.assertEqual(gateway.compose(app, self.phone, source), source)
         finally: gateway.current.reset(token)
 

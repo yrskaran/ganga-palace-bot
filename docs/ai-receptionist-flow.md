@@ -10,7 +10,9 @@ The interpreter returns one structured action, confidence, language, resolved op
 
 Canonical action arguments invoke existing operational handlers. Orders retain verified menu matching, integer quantities, check-in permissions, fresh confirmation, duplicate-write protection and uncertain-write handling. Bills use sender-bound verified records and fresh refreshes. Check-in step changes and OTP equality remain Python checks. ID upload does not bypass reception verification.
 
-Backend guest messages are result data for an AI response composer. Staff messages are not rewritten. The composer receives the original guest utterance, AI meaning, selected language and actual operation result. It cannot request further actions. Numeric values, links, identifiers and item-price breakdown rows are validated; invalid generation or provider failure retains the verified result rather than losing a completed operation or inventing a price. Pure informational replies already authored by the interpreter are sent directly. Existing proactive lifecycle AI wording and opt-in reminder schedules remain preserved.
+Specific menu enquiries use MENU_ITEM_INFO: the AI supplies item names and whether prices were requested; the read-only executor retrieves configured entries without creating a cart. Full menus compose one AI introduction and preserve the configured cards verbatim.
+
+Backend guest messages are result data for an AI response composer. The composer accepts only a parsed final-reply JSON envelope; drafting text and incomplete Cohere responses are rejected. Staff messages are not rewritten. The composer receives the original guest utterance, AI meaning, selected language and actual operation result. It cannot request further actions. Numeric values, links, identifiers and item-price breakdown rows are validated; invalid generation or provider failure retains the verified result rather than losing a completed operation or inventing a price. Pure informational replies already authored by the interpreter are sent directly. Existing proactive lifecycle AI wording and opt-in reminder schedules remain preserved.
 
 ## Implementation and verification
 

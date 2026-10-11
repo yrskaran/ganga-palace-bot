@@ -6786,7 +6786,7 @@ def check_ai_readiness():
             if ok and item_probe:
                 source = f"{item_probe['name']} — ₹{item_probe['price']}\nDEMO menu price; no real kitchen availability confirmed."
                 token = ai_receptionist.current.set({'phone':format_whatsapp_number(''), 'text':query,
-                    'language':'hinglish','meaning':'Guest asks the configured item price','guest':None})
+                    'language':'hinglish','meaning':'Guest asks the configured item price','guest':None,'diagnostic':True})
                 try:
                     final = ai_receptionist.compose(sys.modules[__name__], '', source)
                 finally:

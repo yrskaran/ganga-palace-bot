@@ -51,6 +51,8 @@ def compose(bot, phone, backend_text):
         'Use only the verified backend result below. Do not turn accepted into delivered, '
         'pending into confirmed, a demo into a real order, or failed into successful. '
         'Preserve every numeric value, URL, ticket ID, menu item, quantity and price. '
+        'If the result contains DEMO, the final reply MUST explicitly contain the word DEMO, '
+        'including for a simple price question. Keep the configured item name exactly. '
         'For menu/bill/order breakdowns, copy the data lines exactly; write the surrounding '
         'explanation naturally. Do not add numbers or invent any facts. Return JSON only: {"reply":"final guest-facing message"}. '
         'Do not include drafts, instructions, analysis, backend terminology or commentary about writing a reply.\n'
@@ -61,7 +63,10 @@ def compose(bot, phone, backend_text):
     obj = bot._parse_ai_json(raw) if raw else None
     reply = obj.get('reply') if isinstance(obj, dict) else None
     reply = bot._ai_content_is_usable(reply, 'Receptionist') if isinstance(reply, str) else None
-    if reply and faithful_numbers_and_links(backend_text, reply) and supported_result(bot, backend_text, reply):
+    protected = bool(reply and faithful_numbers_and_links(backend_text, reply))
+    if turn.get('diagnostic'):
+        print(f"AI RECEPTIONIST COMPOSE PROBE: parsed_reply={bool(reply)} protected={protected} demo_label={bool(reply and re.search(r'(?i)demo|डेमो', reply))}", flush=True)
+    if reply and protected and supported_result(bot, backend_text, reply):
         return reply
     # Provider failure must not hide a completed action or corrupt financial data.
     print('AI RECEPTIONIST COMPOSER: unavailable or changed protected data; verified result retained', flush=True)

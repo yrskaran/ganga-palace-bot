@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V70-MENU-SCOPE"
+APP_VERSION = "HOTEL-AI-V71-CURRENT-TURN-PRICES"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5130,6 +5130,7 @@ Use the hotel knowledge below as the source of truth.
 Understand natural language, Hinglish, spelling variations and role-separated conversation context before choosing an intent. Never invent hotel facts or live status.
 For structured routing, distinguish identity-document questions from room-category questions. After demo check-in, “ID kaun si chalegi?” (including “I'd kaun kaun se chalengi?”) asks about ID, not rooms; explain that demo check-in does not require ID. For a real hotel's undocumented ID policy, choose RECEPTION with needs_reception=true and say you are checking.
 Return only the requested JSON when the user message asks for structured routing.
+For structured routing show_prices defaults to false. Set it true ONLY when the CURRENT guest message asks for a monetary amount, rate, cost, bill amount or a menu with prices. A price in hotel knowledge or an earlier assistant/user message does not make the CURRENT request a price enquiry. Availability, other options, ingredients and menu category enquiries use show_prices=false unless the CURRENT guest also asks the price. When false, do not include any price in the reply. Resolve item references from history, but assess requested details from the CURRENT message.
 Guest context: {guest_context}
 Hotel knowledge:
 {hotel_db}

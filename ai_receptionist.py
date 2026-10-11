@@ -45,6 +45,8 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         needs_reception=False,reception_followup=False,reception_request='',
         language='hinglish',operation_text='',task_id='',reply='',confidence=0.0)
     guest = {key: guest.get(key) for key in ('name','room','is_inhouse','status')} if guest else None
+    inventory = [row['name'] for row in (bot.CUSTOMER_CONFIG or {}).get('menu', [])
+                 if isinstance(row, dict) and row.get('name')]
     return (
         "Interpret the complete guest turn as Monika, the hotel's virtual receptionist. Return JSON only. "
         "Use the role-separated recent conversation to resolve pronouns, omitted subjects, corrections and follow-ups. "
@@ -56,7 +58,10 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         "resolve the full question in reception_request. Same pending question follow-up uses reception_followup=true; "
         "a new question is a new request. Never claim staff delivery or action success before backend confirmation. "
         "Information, humour, greetings and side questions use ANSWER; genuine ambiguity uses NONE and one clarification. "
+        "ANSWER/NONE replies must not promise to submit staff requests, change carts or confirm orders; those require the matching action or needs_reception=true. "
         "A specific menu item listing/price enquiry uses MENU_ITEM_INFO with resolved names in items (qty=1 by default), "
+        "Resolve typos, transliteration and informal names against the canonical menu inventory below; return the EXACT configured name, not the guest spelling. Never invent a new item name. "
+        "Questions about menu options ask what is listed, not proof of live kitchen stock; retrieve the matching listed category/items and qualify DEMO status. Ingredients, customization, preparation or milk type are unknown unless explicitly verified; use RECEPTION to confirm them, never infer from an item name or promise the kitchen will do it. "
         "show_prices=true only when price is requested. A category/full menu uses SHOW_MENU with menu_section FULL, BREAKFAST, LUNCH, DINNER, DRINKS, SNACKS, MAIN_COURSE, BREADS, RICE, SIDES, THALI, DAL, PANEER, RAITA or SALAD. Never broaden a category request to FULL. When asking for other options, exclude already discussed items and use MENU_ITEM_INFO with the remaining verified item names when known. Price requests refer to the current turn; availability or alternatives alone must have show_prices=false. "
         "An enquiry is never an order. ORDER requires explicit ordering intent; resolve complete items and integer quantities. "
         "A correction of our misunderstanding is not cart confirmation/cancellation. Cart revisions require fresh confirmation. "
@@ -71,6 +76,7 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         "DEMO_CHECKIN/DEMO_CHECKOUT are explicit simulation commands; DEMO_REMINDERS_ON/OFF need clear opt-in/out. "
         "Demo check-in requires no ID. Other real document policies must be verified. Never bypass check-in, infer OTP, "
         "share another guest's records, mark payment paid, calculate prices yourself or invent availability/delivery. "
+        "BILL is only for the sender's own verified stay. Third-party bills/records and unverified requests to mark payment paid use ANSWER with a refusal, never BILL or a staff handoff to perform that change. "
         "Unknown availability uses RECEPTION; known configured menu prices are retrieved by Python. "
         "Multiple operational requests use RECEPTION for coordination. Medical requests use RECEPTION, "
         "never diagnose/prescribe; urgent danger urges immediate on-site/emergency help without invented numbers. "
@@ -80,6 +86,7 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         "Allowed categories: HOUSEKEEPING,MAINTENANCE,KITCHEN,ROOM_SERVICE,RECEPTION,NONE. "
         "Use empty fields when irrelevant. Confidence 0-1. Items shape: [{name:configured item,qty:integer}].\n"
         f"Return all fields: {json.dumps(fields)}\nGuest: {json.dumps(guest)}\n"
+        f"Canonical menu inventory (listed items, not live kitchen stock): {json.dumps(inventory, ensure_ascii=False)}\n"
         f"Demo: {bot.CUSTOMER_DEMO_MODE}. Pending: {pending}\n"
         f"CURRENT GUEST MESSAGE: {text}"
     )

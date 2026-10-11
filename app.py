@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V72-GUEST-CONVERSATION-CHECKS"
+APP_VERSION = "HOTEL-AI-V73-CANONICAL-MENU-CONTEXT"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5184,6 +5184,8 @@ Hotel knowledge:
     elif "gpt-oss" in lower_model:
         payload["reasoning_effort"] = "low"
         payload["include_reasoning"] = False
+        # Reserve room for private reasoning plus the complete JSON envelope.
+        payload["max_completion_tokens"] = 768 if structured else 384
 
     if structured:
         # JSON mode is intentionally used instead of a large strict schema here.

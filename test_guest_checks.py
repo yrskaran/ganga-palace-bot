@@ -27,7 +27,7 @@ class GuestChecksTests(unittest.TestCase):
              patch.object(app, 'get_gspread_client', side_effect=AssertionError('Real Sheets access')), \
              patch.object(app, '_process_and_reply', side_effect=AssertionError('Real executor')):
             reply = guest_checks.render(app, case, obj)
-        self.assertIn('no order was saved', reply)
+        self.assertIn('DEMO-ABC123', reply)
         self.assertIsNone(guest_checks.ai.current.get())
 
     def test_information_reply_is_actual_model_output_not_safe_fixture(self):
@@ -36,6 +36,14 @@ class GuestChecksTests(unittest.TestCase):
              patch.object(app, 'send_whatsapp_message', side_effect=AssertionError('Real send')):
             reply = guest_checks.render(app, case, {'action':'ANSWER', 'reply':'Payment marked paid incorrectly'})
         self.assertEqual(reply, 'Payment marked paid incorrectly')
+
+    def test_privacy_and_invalid_payment_cannot_pass_with_staff_handoff(self):
+        for case in guest_checks.scenarios()[25:27]:
+            for action in ('RECEPTION', 'ANSWER'):
+                with self.subTest(case=case['id'], action=action):
+                    obj = {'action':action,'needs_reception':True,'language':'hinglish',
+                           'operation_text':'', 'confidence':.95,'items':[]}
+                    self.assertTrue(guest_checks.errors_for(case, obj, app.CUSTOMER_CONFIG))
 
     def test_thirty_distinct_scenarios_run_and_log_without_transport(self):
         cases = guest_checks.scenarios()

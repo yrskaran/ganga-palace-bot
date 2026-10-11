@@ -51,6 +51,19 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertTrue(any(m['role']=='assistant' and 'Standard Veg Thali' in m['content'] for m in messages))
         self.assertLess(sum(len(m['content'].encode()) for m in messages),12400)
 
+    def test_typo_interpretation_receives_complete_canonical_inventory(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70},{'name':'Jeera Rice','price':140}]
+        response = Mock(status_code=200)
+        response.json.return_value = {'choices':[{'message':{'content':'{"action":"MENU_ITEM_INFO"}'},'finish_reason':'stop'}]}
+        with patch.object(app, '_ai_knowledge_snapshot', return_value='Free parking'), \
+             patch.object(app, 'get_active_groq_model', return_value='qwen/qwen3.8-27b'), \
+             patch.object(app, '_groq_circuit_open', return_value=False), \
+             patch.object(app.requests, 'post', return_value=response) as provider:
+            app.ask_groq_chat(app._ai_understanding_prompt('Bundi rayta kitne ka h?', None, self.phone), structured=True)
+        context = '\n'.join(row['content'] for row in provider.call_args.kwargs['json']['messages'])
+        self.assertIn('Boondi Raita', context)
+        self.assertIn('Jeera Rice', context)
+
     def test_short_provider_rate_limit_retries_once_before_fallback(self):
         limited = Mock(status_code=429,text='input tokens per minute',headers={'retry-after':'1'})
         success = Mock(status_code=200)

@@ -8,7 +8,7 @@ Copy `customer_config.json.example` for another hotel and select it with `CUSTOM
 
 Each hotel requires its own WhatsApp API credentials and authorized Google service account. Set `integrations.sheet_id` to its operational Sheet and `contacts.reception_phone`, `contacts.kitchen_phone`, `contacts.staff_phone`, and `contacts.owner_phone` to its assigned numbers. Configured hotel deployments take these connections from their JSON profile, so changing hotel identity cannot silently reuse old environment Sheet/staff/owner connections. An empty connection is unavailable, never simulated success.
 
-The Shreya profile currently has an empty operational Sheet binding. Its configured menu and FAQs are available, but guest records, check-in verification, real order writes and bills require the correct Sheet connection. Never connect another hotel's existing guest records just to demonstrate the interface.
+The active Shreya profile temporarily uses the existing Ganga Palace operational Sheet at the owner's explicit request. Guest records, check-in, order writes and bills therefore use that shared Sheet. Replace this temporary binding with the destination hotel's own operational Sheet when onboarding that hotel.
 
 Keep the established Rooms, Kitchen_Orders, Staff_Roster and lifecycle schemas. Real room service requires a verified active stay; cart revisions require fresh explicit confirmation. Kitchen notification, delivery, payment and order persistence are separate outcomes.
 

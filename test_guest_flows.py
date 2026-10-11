@@ -21,6 +21,26 @@ STAFF = '919222222222'
 NOW = datetime(2026, 10, 3, 8, 0, 45, tzinfo=app.IST)
 
 class GuestFlows(unittest.TestCase):
+    def test_reception_followup_uses_pending_topic_without_duplicate_alert(self):
+        self.mock('understand_guest_request', return_value={
+            'action': 'RECEPTION', 'confidence': 0.95, 'needs_reception': True,
+            'reception_followup': True, 'reception_request': 'Cow milk milega?',
+            'reply': 'Cow milk reception se poochti hoon.'})
+        app.reception_request_sessions[GUEST] = {
+            'request': 'Cow milk milega?', 'status': 'pending',
+            'delivery_status': 'delivered', 'created': __import__('time').time()}
+        self.turn('Puch ke batao')
+        self.assertIn('Cow milk', self.sent.call_args.args[1])
+        app.notify_reception_request.assert_not_called()
+
+    def test_reception_handoff_sends_ai_resolved_question(self):
+        self.mock('understand_guest_request', return_value={
+            'action': 'RECEPTION', 'confidence': 0.95, 'needs_reception': True,
+            'reception_followup': False, 'reception_request': 'Cow milk milega?',
+            'reply': 'Cow milk reception se poochti hoon.'})
+        self.turn('Puch ke batao')
+        self.assertEqual(app.notify_reception_request.call_args.args[2], 'Cow milk milega?')
+
     def setUp(self):
         self.patches = []
         # These regressions describe the legacy Ganga View fixture, not whichever

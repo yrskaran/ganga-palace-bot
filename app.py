@@ -428,7 +428,7 @@ def guest_language(text):
         scores[lang] += sum(2 for phrase in phrases if phrase in low)
 
     # One clear Roman Hindi marker should be enough for code-mixed chat.
-    if re.search(r"\b(?:hai|hain|kya|kaha|kahan|kahaan|nahi|ni|bhi|chahiye|karo|karna|bhejna|dikhao|waale|wala|wali|mein|mujhe|aapka|aapki)\b", raw, re.I):
+    if re.search(r"\b(?:hai|hain|kya|kaha|kahan|kahaan|nahi|ni|bhi|chahiye|karo|karna|bhejna|dikhao|waale|wala|wali|mein|mujhe|aapka|aapki|mile(?:ga|gi|nge)?|milta|milti|batao|bataiye|puch|pooch|puchho|poochho)\b", raw, re.I):
         return "hinglish"
 
     best = max(scores, key=scores.get)
@@ -3543,12 +3543,14 @@ def _openai_semantic_schema():
             },
             "service": {"type": "string"},
             "needs_reception": {"type": "boolean"},
+            "reception_followup": {"type": "boolean"},
+            "reception_request": {"type": "string"},
             "reply": {"type": "string"},
             "confidence": {"type": "number"},
         },
         "required": [
             "understood_as", "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
-            "service", "needs_reception", "reply", "confidence"
+            "service", "needs_reception", "reception_followup", "reception_request", "reply", "confidence"
         ],
     }
 
@@ -6640,12 +6642,16 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
         active = active_orders.get(sender_phone)
         photo = photo_sessions.get(sender_phone)
         selection = order_sessions.get(sender_phone)
+        reception = reception_request_sessions.get(sender_phone)
     if active:
         pending.append(f"active_order={str(active.get('order',''))[:160]}")
     if photo:
         pending.append("pending_photo=" + ",".join(str(x) for x in photo.get("categories", []))[:180])
     if selection:
         pending.append("pending_food=" + json.dumps(selection, ensure_ascii=False))
+    if reception and time.time() - reception.get('created', 0) <= RECEPTION_REQUEST_TTL_SECONDS:
+        pending.append('reception_ticket=' + json.dumps({key: reception.get(key) for key in
+            ('request', 'status', 'delivery_status', 'last_reply')}, ensure_ascii=False))
     state_hint = "; ".join(pending) or "no pending transaction"
     demo_instructions = ""
     if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
@@ -6673,13 +6679,15 @@ Understand the current hotel guest message and return JSON only.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
+Reply language: {get_guest_response_language(sender_phone)}. {language_instruction(get_guest_response_language(sender_phone), user_text)}
 {demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 Read the whole latest message with recent chat context before choosing an action; never route on a keyword alone. Use context for typos, speech-to-text errors, abbreviations and Hinglish. Summarize the guest's intent in understood_as. If still unclear, ask one natural clarification. Backend actions happen only after this interpretation and validation; never claim success before confirmation.
 For a hotel fact that is absent from HOTEL KNOWLEDGE, use RECEPTION with needs_reception=true and a brief, warm acknowledgement that you are checking with reception. This reception-confirmation flow is authorized; do not ask the guest again for permission. Use ROOM_OPTIONS only when the current message actually asks for room categories/types, not when it asks which ID/document works. Do not claim live room availability; the backend has the configured category list. Use show_prices only if costs are requested. A known, verified informational answer must not create a staff request.
 Choose intent from the whole utterance and recent dialogue, not merely because a food/drink word appears. A question asking whether something is available or can be provided (for example, a glass of milk for a child) is an AVAILABILITY question, not an order; if the hotel knowledge/menu does not confirm it, use RECEPTION with needs_reception=true and say you are checking. Use ORDER only when the guest clearly asks you to bring/send/place the food or drink order. A correction such as "I asked for milk, not a dish" refers to your previous misunderstanding: acknowledge it and answer/check that same question; do not treat it as changing, cancelling, or confirming a cart. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the guest is genuinely asking what food item they mean, not when they ask if it is available. Do not set needs_reception merely because of a personal reason; set it only when the fact is unknown or the guest separately asks for reception/medical help.
+For RECEPTION, put the complete resolved question in reception_request, in the guest's language. Resolve 'pooch ke batao' or 'check and tell me' to the actual topic from the pending ticket/recent conversation, never send those words alone to staff. Set reception_followup=true only when asking about the SAME pending question; changing milk to cow milk is a new specific question, while 'pooch ke batao' after cow milk is a follow-up. A new unrelated question is never a reception follow-up merely because it contains 'reception' or 'confirm'. Do not claim that a message has reached staff; Python checks delivery state.
 Return this shape; use empty strings/array when not applicable:
-{{"understood_as":"short plain-language meaning of the whole message in context","action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reply":"","confidence":0.0}}
+{{"understood_as":"short plain-language meaning of the whole message in context","action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reception_followup":false,"reception_request":"","reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6754,6 +6762,8 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "items": cleaned_items,
                 "service": str(obj.get("service", "")).strip(),
                 "needs_reception": obj.get("needs_reception") is True,
+                "reception_followup": obj.get("reception_followup") is True,
+                "reception_request": str(obj.get("reception_request", "")).strip()[:1000],
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
@@ -8390,20 +8400,34 @@ def reply_to_reception_request(phone, guest_info, user_text):
     )
 
     if ok:
+        with state_lock:
+            ticket = dict(reception_request_sessions.get(phone) or {})
+        delivery = ticket.get('delivery_status', 'accepted')
+        topic = str(ticket.get('request') or user_text).strip()[:180]
+        if delivery == 'failed' or ticket.get('status') in {'send_failed', 'delivery_failed'}:
+            return handle_reception_request_followup(phone, 'status')
+        if delivery in {'delivered', 'read'}:
+            english = f"Reception received your question: {topic}. Their answer is still pending. I'll share their reply here."
+            hinglish = f"Ji, reception tak aapka sawaal pahunch gaya: {topic}. Unka jawab abhi baaki hai; aate hi isi chat par bataungi."
+            hindi = f"जी, आपका सवाल रिसेप्शन तक पहुँच गया: {topic}। जवाब आते ही इसी चैट पर बताऊँगी।"
+        else:
+            english = f"I'm checking with reception about: {topic}. WhatsApp accepted the message; delivery and their answer are still unconfirmed."
+            hinglish = f"Ji, reception se yeh pooch rahi hoon: {topic}. Message delivery ki confirmation aur unka jawab abhi baaki hai."
+            hindi = f"जी, रिसेप्शन से यह पूछ रही हूँ: {topic}। संदेश की डिलीवरी और उनका जवाब अभी पक्का नहीं हुआ है।"
         reply = bilingual_text(phone,
-            "I've submitted the request to reception. Their confirmation is still pending.",
-            "Reception ke liye request bhej di hai. Unki confirmation abhi baaki hai.",
-            "रिसेप्शन के लिए अनुरोध भेज दिया है। उनकी पुष्टि अभी बाकी है।")
+            english, hinglish, hindi)
     else:
         reply = bilingual_text(phone,
             "I couldn't send the request to reception just now. Please contact the front desk directly to confirm it.",
             "Reception ko request abhi nahi bhej paaya. Iski confirmation ke liye front desk se seedhe sampark karein.",
             "रिसेप्शन को अनुरोध अभी नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे पुष्टि करें।")
     send_whatsapp_message(phone,reply)
+    remember_conversation(phone, 'user', user_text)
+    remember_conversation(phone, 'assistant', reply)
     return ok
 
 
-def handle_reception_request_followup(phone, user_text):
+def handle_reception_request_followup(phone, user_text, semantic=None):
     """Answer status follow-ups for the most recent reception handoff.
 
     This runs before food-order confirmation handling so an older pending chai/order
@@ -8427,7 +8451,10 @@ def handle_reception_request_followup(phone, user_text):
         "request", "confirm", "confirmation", "hua", "hui", "kiya", "status",
         "kab", "reception", "saridon", "seridon", "medicine", "dawai", "goli"
     )
-    if not any(term in t for term in status_terms):
+    if isinstance(semantic, dict):
+        if semantic.get('reception_followup') is not True or semantic.get('confidence', 0) < 0.65:
+            return False
+    elif not any(term in t for term in status_terms):
         return False
 
     request_text = pending.get("request", "aapki request")
@@ -8443,12 +8470,19 @@ def handle_reception_request_followup(phone, user_text):
             f"Reception's latest update: {update}",
             f"Reception ka latest update: {update}",
             f"रिसेप्शन का नवीनतम अपडेट: {update}")
-    else:
+    elif pending.get('delivery_status') in {'delivered', 'read'}:
         reply = bilingual_text(phone,
             f"Your reception request ({request_text}) has been sent. I still don't have a confirmed response from reception.",
             f"Aapki request ({request_text}) reception ko bhej di gayi hai. Reception se confirmed response abhi nahi mila hai.",
             f"आपकी रिक्वेस्ट ({request_text}) रिसेप्शन को भेज दी गई है। रिसेप्शन से पुष्टि अभी नहीं मिली है।")
+    else:
+        reply = bilingual_text(phone,
+            f"I'm checking with reception about ({request_text}). Message delivery and their answer are still unconfirmed; I won't submit a duplicate request.",
+            f"Ji, reception se ({request_text}) pooch rahi hoon. Message ki delivery aur unka jawab abhi confirm nahi hai. Wahi request pending hai; dobara nahi bhejungi.",
+            f"जी, रिसेप्शन से ({request_text}) पूछ रही हूँ। संदेश की डिलीवरी और जवाब अभी पक्का नहीं है। वही अनुरोध लंबित है; दोबारा नहीं भेजूँगी।")
     send_whatsapp_message(phone, reply)
+    remember_conversation(phone, 'user', user_text)
+    remember_conversation(phone, 'assistant', reply)
     return True
 
 
@@ -8595,6 +8629,9 @@ def _process_and_reply(message, sender_phone, msg_type):
     if semantic_ai_unavailable and _contextual_local_guide_options_reply(sender_phone, user_text):
         return
 
+    if handle_reception_request_followup(sender_phone, user_text, semantic=ai_understanding):
+        return
+
     if t in {"confirm krwao phir", "confirm karwao phir", "confirm karwa do", "reception se confirm karwao"}:
         reply_to_reception_request(sender_phone, guest_info, user_text)
         return
@@ -8605,10 +8642,6 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # Group-size room questions need verified capacity, not a guessed category.
     if semantic_ai_unavailable and _handle_room_occupancy_question(sender_phone, user_text, guest_info):
-        return
-
-    # Reception follow-ups take priority over any older food confirmation state.
-    if handle_reception_request_followup(sender_phone, user_text):
         return
 
     if semantic_ai_unavailable and handle_notification_question(sender_phone, user_text, guest_info):
@@ -9418,7 +9451,8 @@ def _process_and_reply(message, sender_phone, msg_type):
                 )
                 return
             if ai_understanding.get("needs_reception") and not ai_understanding.get("reply", "").strip():
-                reply_to_reception_request(sender_phone, guest_info, user_text)
+                reply_to_reception_request(sender_phone, guest_info,
+                    ai_understanding.get('reception_request') or user_text)
                 return
             reply = ai_understanding.get("reply", "").strip()
             if reply:
@@ -9435,7 +9469,8 @@ def _process_and_reply(message, sender_phone, msg_type):
                                 show_prices=explicitly_asks_price(user_text),
                             )
                         else:
-                            reply_to_reception_request(sender_phone, guest_info, user_text)
+                            reply_to_reception_request(sender_phone, guest_info,
+                                ai_understanding.get('reception_request') or user_text)
                         return
                     send_whatsapp_message(sender_phone, reply)
                     remember_conversation(sender_phone, "user", user_text)

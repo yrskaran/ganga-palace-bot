@@ -16,6 +16,52 @@ class ReceptionMemoryTests(unittest.TestCase):
         app.reception_knowledge_cache.clear()
         app.reception_knowledge_loaded_at = 0.0
 
+    def test_mixed_milk_question_keeps_hinglish(self):
+        phone = 'language-test'
+        with patch.object(app, 'guest_language_cache', {}):
+            app.remember_guest_language(phone, 'Dudh milega?')
+            self.assertEqual(app.remember_guest_language(phone, 'Cow milk milega?'), 'hinglish')
+
+    def test_accepted_reception_alert_does_not_claim_delivery(self):
+        phone = '919555555555'
+        def notify(*args):
+            app.reception_request_sessions[phone] = {
+                'request': 'Cow milk milega?', 'status': 'pending',
+                'delivery_status': 'accepted', 'created': time.time()}
+            return True
+        with patch.object(app, 'notify_reception_request', side_effect=notify), \
+             patch.object(app, 'get_guest_response_language', return_value='hinglish'), \
+             patch.object(app, 'send_whatsapp_message', return_value=True) as send:
+            app.reply_to_reception_request(phone, None, 'Cow milk milega?')
+        reply = send.call_args.args[1]
+        self.assertIn('Cow milk', reply)
+        self.assertIn('delivery', reply.lower())
+        self.assertNotIn('request bhej di', reply)
+
+    def test_semantic_followup_preserves_request_and_does_not_resend(self):
+        phone = '919555555555'
+        app.reception_request_sessions[phone] = {
+            'request': 'Cow milk milega?', 'status': 'pending',
+            'delivery_status': 'delivered', 'created': time.time()}
+        with patch.object(app, 'notify_reception_request') as notify, \
+             patch.object(app, 'get_guest_response_language', return_value='hinglish'), \
+             patch.object(app, 'send_whatsapp_message', return_value=True) as send:
+            handled = app.handle_reception_request_followup(phone, 'Puch ke batao', semantic={
+                'action': 'RECEPTION', 'reception_followup': True, 'confidence': 0.95})
+        self.assertTrue(handled)
+        self.assertIn('Cow milk', send.call_args.args[1])
+        notify.assert_not_called()
+
+    def test_semantic_new_question_is_not_hijacked_by_old_ticket(self):
+        phone = '919555555555'
+        app.reception_request_sessions[phone] = {
+            'request': 'Cow milk milega?', 'status': 'pending', 'created': time.time()}
+        with patch.object(app, 'send_whatsapp_message') as send:
+            handled = app.handle_reception_request_followup(phone, 'Reception ka number kya hai?', semantic={
+                'action': 'ANSWER', 'reception_followup': False, 'confidence': 0.95})
+        self.assertFalse(handled)
+        send.assert_not_called()
+
     def test_only_stable_confirmed_facts_are_reusable(self):
         self.assertTrue(app._reception_answer_is_reusable(
             "Swimming pool ke timings kya hain", "Pool is open from 6 AM to 8 PM."

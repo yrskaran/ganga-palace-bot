@@ -13,7 +13,8 @@
   "contacts": {
     "reception_phone": "918899292999",
     "kitchen_phone": "",
-    "staff_phone": ""
+    "staff_phone": "",
+    "owner_phone": ""
   },
   "rooms": [
     {
@@ -44,7 +45,7 @@
     "Do not claim a booking is confirmed until hotel staff confirms it.",
     "If the guest asks about an extra bed, say public listings mention extra beds may be available for a charge, but current charge and availability must be confirmed by reception."
   ],
-  "menu_intro": "DEMO MENU — 45 sample items and prices restored from the earlier Ganga hotel menu. Not verified rates or available dishes for Hotel Shreya Galaxy. No real kitchen dispatch or payment; demo orders use Demo_Orders only.",
+  "menu_intro": "This is the hotel's configured room-service menu. Listed prices are the configured menu rates; current kitchen stock and preparation changes require confirmation.",
   "menu": [
     {
       "name": "Cutting Chai",
@@ -228,10 +229,9 @@
     }
   ],
   "food_rules": [
-    "DEMO ONLY: Listed menu items and prices are historical sample rates; do not present them as Hotel Shreya Galaxy's real or current menu.",
-    "For actual Hotel Shreya Galaxy food rates, availability and deliveries, ask reception to confirm.",
-    "Demo orders and bills are recorded only in Demo_Orders after guest confirmation; never create a real Kitchen_Orders entry or alert staff for demo orders.",
-    "Do not invent food items, availability, bill payments or completed deliveries."
+    "Food orders require a verified active stay and explicit guest confirmation before kitchen dispatch.",
+    "Use exact configured menu prices and quantities. Never invent an item, price, payment or successful delivery.",
+    "Do not quote prices unless requested; an availability enquiry never places an order."
   ],
   "policies": {
     "early_check_in": "Chargeable and subject to availability",
@@ -373,9 +373,7 @@
     "Shantikunj": "https://www.google.com/maps/search/?api=1&query=Gayatri+Tirth+Shantikunj+Haridwar"
   },
   "custom_rules": [
-    "This configuration is for a sales demo tailored to Hotel Shreya Galaxy using publicly available hotel information.",
-    "Never imply that Hotel Shreya Galaxy has officially adopted this bot unless Karan explicitly says the hotel has approved it.",
-    "Speak as the hotel's AI receptionist during the demo, but do not fabricate live PMS inventory, payments, bookings, staff actions or unpublished policies.",
+    "Act as this hotel's virtual receptionist. Use configured hotel information; unknown facts and live availability require reception confirmation.",
     "For live availability or final booking price, collect dates, adults, children and room count, then ask for reception confirmation.",
     "If public sources conflict, prefer the hotel's own official website/terms and ask reception to confirm the latest rule.",
     "The official website lists Chardham packages, Uttarakhand tours, Haridwar sightseeing, pick & drop/car rental and helicopter booking assistance.",
@@ -383,10 +381,9 @@
     "Keep WhatsApp replies short, natural and helpful in the guest's language.",
     "When a guest asks for hotel or room photos, send the configured real-property public photos only. Do not treat gallery/reception images as room categories."
   ],
-  "demo_mode": true,
-  "demo_food_enabled": true,
-  "demo_semantic_first": true,
-  "demo_require_checkin": true,
-  "demo_reminders_enabled": true,
-  "ai_receptionist_flow": true
+  "ai_receptionist_flow": true,
+  "demo_mode": false,
+  "integrations": {
+    "sheet_id": ""
+  }
 }

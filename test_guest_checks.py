@@ -54,7 +54,7 @@ class GuestChecksTests(unittest.TestCase):
              patch.object(app, 'get_gspread_client', side_effect=AssertionError('Real Sheets access')), \
              patch.object(guest_checks.time, 'sleep'), patch('builtins.print'):
             results = guest_checks.run(app, 'unit', delay=0)
-        self.assertEqual(len(results), 30)
+        self.assertEqual(len(results), len(guest_checks.scenarios(demo=app.CUSTOMER_DEMO_MODE)))
         self.assertTrue(all(not row['passed'] for row in results))
 
 

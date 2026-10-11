@@ -13,7 +13,8 @@
   "contacts": {
     "reception_phone": "",
     "kitchen_phone": "",
-    "staff_phone": ""
+    "staff_phone": "",
+    "owner_phone": ""
   },
   "rooms": [
     {
@@ -87,5 +88,10 @@
   },
   "custom_rules": [
     "Any hotel-specific fact not listed here must be confirmed by reception."
-  ]
+  ],
+  "ai_receptionist_flow": true,
+  "demo_mode": false,
+  "integrations": {
+    "sheet_id": ""
+  }
 }

@@ -113,25 +113,26 @@ COHERE_LOCK = threading.RLock()
 COHERE_RATE_LIMIT_COOLDOWN = max(60, int(os.getenv("COHERE_RATE_LIMIT_COOLDOWN", "300")))
 
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
-SHEET_ID = os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
+
 
 try:
     CUSTOMER_CONFIG, CUSTOMER_CONFIG_PATH = load_customer_config(Path(__file__).resolve().parent)
 except CustomerConfigError as exc:
     raise RuntimeError(f"Customer configuration error: {exc}") from exc
 CUSTOMER_ENV_DEFAULTS = env_defaults_from_config(CUSTOMER_CONFIG or {})
+SHEET_ID = str(CUSTOMER_CONFIG.get("integrations", {}).get("sheet_id", "")).strip() if CUSTOMER_CONFIG else os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 CUSTOMER_DEMO_MODE = bool((CUSTOMER_CONFIG or {}).get("demo_mode", False))
 
-KITCHEN_PHONE = os.getenv("KITCHEN_PHONE", CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "919058929796")).strip()
-STAFF_PHONE = os.getenv("STAFF_PHONE", CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", "917668426524")).strip()
+KITCHEN_PHONE = CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "") if CUSTOMER_CONFIG else os.getenv("KITCHEN_PHONE", "919058929796").strip()
+STAFF_PHONE = CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", "") if CUSTOMER_CONFIG else os.getenv("STAFF_PHONE", "917668426524").strip()
 # Dedicated reception operator. Keep this separate from generic staff routing so
 # reception replies can be authenticated and mapped back to the correct guest.
-RECEPTION_PHONE = os.getenv("RECEPTION_PHONE", CUSTOMER_ENV_DEFAULTS.get("RECEPTION_PHONE", STAFF_PHONE)).strip()
+RECEPTION_PHONE = CUSTOMER_ENV_DEFAULTS.get("RECEPTION_PHONE", STAFF_PHONE) if CUSTOMER_CONFIG else os.getenv("RECEPTION_PHONE", STAFF_PHONE).strip()
 RECEPTION_REQUEST_TTL_SECONDS = max(1800, int(os.getenv("RECEPTION_REQUEST_TTL_SECONDS", "21600")))
 SERVICE_CONFIRM_TIMEOUT_MINUTES = max(5, int(os.getenv("SERVICE_CONFIRM_TIMEOUT_MINUTES", "20")))
 SERVICE_TASK_RETENTION_HOURS = max(24, int(os.getenv("SERVICE_TASK_RETENTION_HOURS", "72")))
 LIFECYCLE_LOOP_SECONDS = max(30, int(os.getenv("LIFECYCLE_LOOP_SECONDS", "60")))
-OWNER_PHONE = os.getenv("OWNER_PHONE", "").strip()
+OWNER_PHONE = str(CUSTOMER_CONFIG.get("contacts", {}).get("owner_phone", "")).strip() if CUSTOMER_CONFIG else os.getenv("OWNER_PHONE", "").strip()
 OWNER_REPORT_TIMES = tuple(x.strip() for x in os.getenv("OWNER_REPORT_TIMES", "09:00,13:00,18:00,22:00").split(",") if re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x.strip()))
 
 RENDER_EXTERNAL_URL = os.getenv(
@@ -142,7 +143,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V73-CANONICAL-MENU-CONTEXT"
+APP_VERSION = "HOTEL-AI-V75-PRODUCTION-RECEPTIONIST"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -1381,6 +1382,8 @@ def validate_operational_layout(headers):
 def fetch_sheet_data_sync(force=False):
     """Refresh the Sheet cache, but never hammer Google Sheets on every code path."""
     global last_sheet_sync_attempt
+    if not SHEET_ID:
+        return False
     if CUSTOMER_DEMO_MODE:
         # A demo profile can reuse the same WhatsApp/Render service, but it must
         # never read the live hotel's guest/staff sheet or send lifecycle actions
@@ -6807,6 +6810,12 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 if raw:
                     print(f"AI UNDERSTANDING INVALID JSON FROM {provider_name.upper()}", flush=True)
                 continue
+            if ai_receptionist.enabled(sys.modules[__name__]):
+                obj = ai_receptionist.review_plan(sys.modules[__name__], user_text, obj,
+                    _ai_recent_history(sender_phone), guest_info, sender_phone, provider=fn)
+                if not obj:
+                    print(f"AI PLAN REVIEW INVALID FROM {provider_name.upper()}", flush=True)
+                    continue
             if ai_receptionist.enabled(sys.modules[__name__]) and (
                 obj.get('language') not in ai_receptionist.LANGUAGES
                 or not isinstance(obj.get('operation_text'), str)
@@ -7715,12 +7724,19 @@ def _derived_menu_items_for_section(section_name):
     selectors = {
         "BREAKFAST": is_breakfast,
         "BEVERAGES & DRINKS": is_beverage,
+        "DRINKS": is_beverage,
         "SNACKS / LIGHT BITES": is_snack,
+        "SNACKS": is_snack,
         "DAL": is_dal,
         "PANEER / MAIN COURSE OPTIONS": is_paneer_main,
+        "PANEER": is_paneer_main,
+        "MAIN_COURSE": lambda name: is_dal(name) or is_paneer_main(name) or normalize_text(name) in {"aloo jeera", "mix veg"},
         "BREADS": is_bread,
         "RICE": is_rice,
         "SIDES / ACCOMPANIMENTS": is_side,
+        "SIDES": is_side,
+        "RAITA": lambda name: has_any(name, ("raita",)),
+        "SALAD": lambda name: has_any(name, ("salad",)),
         "THALI": is_thali,
         "SWEETS & DESSERTS": lambda name: has_any(name, ("sweet", "dessert", "halwa", "gulab jamun", "rasgulla")),
         "LUNCH": lambda name: is_dal(name) or is_paneer_main(name) or has_any(name, ("aloo jeera", "mix veg")),
@@ -7757,7 +7773,9 @@ def _menu_section_message(section_name, include_prices=False, sender_phone=None,
         "breads": "breads",
         "rice": "rice",
         "sides": "sides / accompaniments",
-        "raita": "sides / accompaniments",
+        "raita": "raita",
+        "salad": "salad",
+        "main_course": "main course",
         "thali": "thali",
         "sweets": "sweets & desserts",
         "desserts": "sweets & desserts",
@@ -10855,7 +10873,7 @@ def update_owner_daily_revenue(send_message=False):
         else:
             sheet.append_row(values[0], value_input_option="USER_ENTERED")
         if send_message:
-            msg = (f"📊 *Hotel Ganga View — Daily Update*\n"
+            msg = (f"📊 *{get_hotel_name()} — Daily Update*\n"
                    f"Date: {date_text}\n"
                    f"🛏️ Room revenue today: ₹{metrics['room_revenue']:,}\n"
                    f"🍽️ Kitchen revenue today: ₹{metrics['kitchen_revenue']:,}\n"

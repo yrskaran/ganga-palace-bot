@@ -16,7 +16,7 @@ def dialogue(question, answer):
     return [{'role': 'user', 'content': question}, {'role': 'assistant', 'content': answer}]
 
 
-def scenarios():
+def scenarios(demo=True):
     thali = dialogue('Veg thali hai?', 'Standard Veg Thali DEMO menu mein listed hai.')
     options = dialogue('Thali ke options?', 'Standard Veg Thali aur Special Deluxe Ganga Thali DEMO menu mein hain.')
     chai = dialogue('Chai ke options?', 'Cutting Chai aur Masala Chai DEMO menu mein hain.')
@@ -54,6 +54,25 @@ def scenarios():
         ('थाली कितने की है?', ['MENU_ITEM_INFO'], {'history': thali, 'names': ['Standard Veg Thali'], 'prices': True, 'language': 'hindi'}),
         ('Ek poha room mein bhijwa do, abhi checkin nahi kiya', ['ORDER', 'ORDER_SELECTION'], {'names': ['Poha'], 'qty': 1, 'source': 'DEMO food ordering requires active DEMO check-in. No order was created, confirmed or dispatched.'}),
     ]
+    if not demo:
+        cart = {'order_sessions': {'order':'2 x Masala Chai', 'total':60, 'state':'PENDING_CONFIRMATION'}}
+        for index, (text, actions, details) in enumerate(cases):
+            if 'history' in details:
+                details['history'] = [{**row, 'content':row['content'].replace('DEMO menu', 'menu')} for row in details['history']]
+            if 'source' in details:
+                details['source'] = details['source'].replace('DEMO cart', 'cart').replace('DEMO food ordering requires active DEMO check-in', 'Room-service ordering requires a verified active stay')
+            if index in {20,21,22,23}:
+                details['pending'] = cart
+        cases[16] = (cases[16][0], ['RECEPTION'], {'source':'Accepted real identity documents are not configured. Reception confirmation is required.'})
+        cases[23][2]['source'] = 'Order saved. Order ID: ABC123. Kitchen notification delivery is not yet confirmed. No payment occurred.'
+        cases.extend([
+            ('Garlic naan veg raita tawa roti buttur waali 4', ['ORDER','ORDER_SELECTION','NONE','ANSWER'],
+             {'history':dialogue('Order karna hai', 'Item aur quantity bata dijiye.'),
+              'order_enquiry':True, 'source':'No verified active stay exists for this sender. No cart or order was saved. Room service requires a verified active stay.'}),
+            ('Confirm to kar', ['NONE','ANSWER'],
+             {'history':dialogue('Garlic naan veg raita tawa roti buttur waali 4', 'Garlic Naan, Veg Raita aur Tawa Roti Butter menu mein hain.'),
+              'source':'No saved pending cart exists. Menu information alone cannot be confirmed as an order. Ask for the intended order quantities and verify active stay before creating any order.'})
+        ])
     return [dict(id=f'{i:02}', text=text, actions=actions, **details)
             for i, (text, actions, details) in enumerate(cases, 1)]
 
@@ -105,7 +124,7 @@ def render(bot, case, obj):
     proxy = SimpleNamespace(**{name: getattr(bot, name) for name in (
         'CUSTOMER_CONFIG', 'CUSTOMER_DEMO_MODE', 'normalize_text', 'get_hotel_menu',
         '_whatsapp_price_block', 'format_whatsapp_number', 'ask_ai_chat',
-        '_parse_ai_json', '_ai_content_is_usable')})
+        '_parse_ai_json', '_ai_content_is_usable', '_menu_section_message', '_full_menu_presentation_messages')})
     replies = []
     proxy.send_whatsapp_message = lambda phone, text: replies.append(ai.compose(proxy, phone, text)) or True
     token = ai.current.set({'phone': bot.format_whatsapp_number(''), 'text': case['text'],
@@ -115,7 +134,13 @@ def render(bot, case, obj):
         if obj.get('action') == 'MENU_ITEM_INFO':
             ai._menu_item_info(proxy, '', obj)
         elif obj.get('action') == 'SHOW_MENU':
-            cards = demo_food.menu_messages(proxy, obj.get('menu_section') or 'FULL', obj.get('show_prices') is True)
+            section = obj.get('menu_section') or 'FULL'
+            if proxy.CUSTOMER_DEMO_MODE:
+                cards = demo_food.menu_messages(proxy, section, obj.get('show_prices') is True)
+            elif section == 'FULL':
+                cards = proxy._full_menu_presentation_messages(include_prices=obj.get('show_prices') is True, sender_phone='')
+            else:
+                cards = [proxy._menu_section_message(section, include_prices=obj.get('show_prices') is True, sender_phone='', include_cta=False)]
             ai.send_menu(proxy, '', cards)
         elif obj.get('action') in {'ANSWER', 'NONE', 'WIFI', 'HOTEL_TIMINGS', 'AVAILABILITY', 'LOCAL_GUIDE'} and not obj.get('needs_reception'):
             # Production sends informational replies directly. Do not replace a
@@ -132,12 +157,13 @@ def render(bot, case, obj):
 def run(bot, run_id, ids=None, delay=45):
     """Opt-in worker: uses real primary model, logs only synthetic conversations."""
     results = []
-    for case in scenarios():
+    for case in scenarios(demo=bot.CUSTOMER_DEMO_MODE):
         if ids and case['id'] not in ids:
             continue
         started = time.monotonic()
         prompt = ai.interpretation_prompt(bot, case['text'], None, None, json.dumps(case.get('pending', {})))
         obj = bot._parse_ai_json(bot.ask_groq_chat(prompt, structured=True, context_history=case.get('history', [])))
+        obj = ai.review_plan(bot, case['text'], obj, case.get('history', []))
         errors = errors_for(case, obj, bot.CUSTOMER_CONFIG)
         reply = ''
         if isinstance(obj, dict):
@@ -145,6 +171,8 @@ def run(bot, run_id, ids=None, delay=45):
                 reply = render(bot, case, obj)
                 if not bot._ai_content_is_usable(reply, 'Guest check'):
                     errors.append('Missing or non-guest-facing reply')
+                if not bot.CUSTOMER_DEMO_MODE and 'demo' in reply.casefold():
+                    errors.append('Demo wording in production reply')
                 if 'is listed on the configured menu' in reply:
                     errors.append('Raw backend prose appended')
                 if any(name.casefold() in reply.casefold() for name in case.get('exclude', [])):

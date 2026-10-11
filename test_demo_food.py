@@ -11,6 +11,15 @@ import app
 from reliability import Store
 
 
+def demo_config():
+    import json
+    from pathlib import Path
+    config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+    config.update(demo_mode=True, demo_food_enabled=True, demo_semantic_first=True,
+                  demo_require_checkin=True, demo_reminders_enabled=True)
+    return config
+
+
 class Sheet:
     def __init__(self, headers):
         self.rows = [headers.copy()]
@@ -467,7 +476,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_full_legacy_menu_prices_match_demo_bill(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         prices = {row['name']: row['price'] for row in config['menu']}
         self.assertEqual(len(prices), 45)
         self.assertEqual(prices['Butter Naan'], 60)
@@ -492,7 +501,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_breakfast_lunch_dinner_only_show_relevant_items(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.sent.reset_mock()
             self.turn('breakfast')
@@ -569,7 +578,7 @@ class DemoFoodTests(unittest.TestCase):
         import json
         import re
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.turn('menu with prices')
             text = '\n'.join(c.args[1] for c in self.sent.call_args_list)
@@ -605,7 +614,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_semantic_first_receives_contextual_price_followup_once(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         self.assertTrue(config['demo_semantic_first'])
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             with patch.object(app, 'understand_guest_request') as brain:
@@ -646,7 +655,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_ai_one_veg_pulao_leke_aa_gets_safe_cart_and_itemized_bill(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             interpretation = {
                 'action': 'ORDER', 'confidence': 0.95,
@@ -667,7 +676,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_ai_recovers_followup_likha_to_hua_veg_pulao(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             interpretation = {
                 'action': 'ORDER_SELECTION', 'confidence': 0.95,
@@ -681,7 +690,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_verified_ai_typo_matches_menu_but_guest_must_confirm(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             semantic = {
                 'action': 'ORDER', 'confidence': 0.92,
@@ -697,7 +706,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_uncertain_similar_dishes_request_clarification_no_cart(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             semantic = {
                 'action': 'ORDER', 'confidence': 0.93,
@@ -712,7 +721,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_ai_never_partially_accepts_unsupported_dishes_or_bad_quantity(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             for interpretation in [
                 {'action': 'ORDER', 'confidence': .96, 'items': [
@@ -734,7 +743,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_fallback_known_dish_leke_aa_without_explicit_quantity(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.assertTrue(self.turn('Veg Pulao leke aa'))
             self.assertIn('1 x Veg Pulao', self.reply())
@@ -744,7 +753,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_real_text_router_uses_ai_order_once_not_second_old_parser(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             with patch.object(app, 'understand_guest_request', return_value={
                 'action': 'ORDER', 'confidence': .95,
@@ -808,7 +817,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_hinglish_paise_ke_sath_always_shows_breakfast_prices(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             cases = [
                 ('Breakfast ke options paise ke sath batao', 'Poha', '₹70'),
@@ -852,7 +861,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_meal_price_menu_keeps_original_configured_rates(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.turn('dinner menu with prices')
             text = '\n'.join(c.args[1] for c in self.sent.call_args_list)
@@ -894,7 +903,7 @@ class DemoFoodTests(unittest.TestCase):
     def test_full_menu_is_pretty_grouped_and_complete_once(self):
         import json
         from pathlib import Path
-        config = json.loads(Path(__file__).with_name('customer_config.json').read_text(encoding='utf-8'))
+        config = demo_config()
         with patch.object(app, 'CUSTOMER_CONFIG', config):
             self.turn('menu')
             bubbles = [call.args[1] for call in self.sent.call_args_list]

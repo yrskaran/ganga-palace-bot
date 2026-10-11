@@ -64,6 +64,56 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertIn('Boondi Raita', context)
         self.assertIn('Jeera Rice', context)
 
+    def test_plan_review_replaces_broad_menu_selection_without_dispatch(self):
+        import json
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Masala Chai'},{'name':'Hot Coffee'}]
+        original = self.understanding(action='SHOW_MENU', menu_section='DRINKS', operation_text='')
+        review = {'menu_related':True,'action':'MENU_ITEM_INFO','items':[{'name':'Masala Chai','qty':1}],
+                  'excluded_items':['Hot Coffee'],'show_prices':False,'needs_reception':False,
+                  'request_kind':'listed_options','understood_as':'Only chai options'}
+        provider = Mock(return_value=json.dumps(review))
+        result = gateway.review_plan(app, 'Chai ke options?', original, [], provider=provider)
+        self.assertEqual(result['action'], 'MENU_ITEM_INFO')
+        self.assertEqual(result['items'], review['items'])
+        self.assertEqual(result['reply'], '')
+        app.send_whatsapp_message.assert_not_called()
+
+    def test_plan_review_rejects_invented_or_excluded_selection(self):
+        import json
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Masala Chai'}]
+        for name, excluded in [('Invented Chai', []), ('Masala Chai', ['Masala Chai'])]:
+            provider = Mock(return_value=json.dumps({'menu_related':True,'action':'MENU_ITEM_INFO',
+                'items':[{'name':name,'qty':1}], 'excluded_items':excluded,'show_prices':False,
+                'needs_reception':False,'request_kind':'listed_options'}))
+            self.assertIsNone(gateway.review_plan(app, 'Chai?', self.understanding(action='SHOW_MENU'), [], provider=provider))
+
+    def test_plan_review_preserves_full_menu_and_rejects_preparation_listing(self):
+        import json
+        full = {'menu_related':True,'action':'SHOW_MENU','menu_section':'FULL','items':[],
+                'excluded_items':[],'show_prices':False,'needs_reception':False,'request_kind':'listed_options'}
+        original = self.understanding(action='SHOW_MENU')
+        result = gateway.review_plan(app, 'Poora menu?', original, [], provider=Mock(return_value=json.dumps(full)))
+        self.assertEqual(result['menu_section'], 'FULL')
+        invalid = dict(full, request_kind='preparation')
+        self.assertIsNone(gateway.review_plan(app, 'How is it prepared?', original, [], provider=Mock(return_value=json.dumps(invalid))))
+
+    def test_plan_review_blocks_third_party_bill_before_executor(self):
+        import json
+        provider = Mock(return_value=json.dumps({'menu_related':False,'blocked':True,
+            'reply':'Doosre guest ka bill share nahi kar sakti.'}))
+        result = gateway.review_plan(app, 'Room 302 ka bill?', self.understanding(action='BILL', needs_reception=True), [], provider=provider)
+        self.assertEqual(result['action'], 'ANSWER')
+        self.assertFalse(result['needs_reception'])
+        app.send_whatsapp_message.assert_not_called()
+
+    def test_real_menu_reply_has_no_demo_or_order_claim(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Tawa Roti Butter','price':25}]
+        with patch.object(app, 'CUSTOMER_DEMO_MODE', False):
+            gateway.handle(app, self.phone, 'Butter roti hai?', None,
+                semantic=self.understanding(action='MENU_ITEM_INFO', items=[{'name':'Tawa Roti Butter','qty':1}], show_prices=False))
+        source = app.send_whatsapp_message.call_args.args[1]
+        self.assertEqual(source, '• Tawa Roti Butter')
+
     def test_short_provider_rate_limit_retries_once_before_fallback(self):
         limited = Mock(status_code=429,text='input tokens per minute',headers={'retry-after':'1'})
         success = Mock(status_code=200)

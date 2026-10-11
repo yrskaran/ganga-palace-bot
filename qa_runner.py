@@ -305,7 +305,7 @@ def run(bot, run_id, resume=True):
                 source=sources.get(case['id'],'')
                 if source and reply and not ai.faithful_numbers_and_links(source,reply):
                     errors.append('Backend numeric/item/URL facts changed or missing')
-                result={'source':source,'id':case['id'],'run_id':run_id,'segment':chat.chat['segment'],'question':case['message'],'reply':reply,'passed':not errors,'errors':errors,'plan':plan,'model':model,'prior_history':copy.deepcopy(chat.history[-8:]),'pending_before':case['verified_session_state'],'execution':'isolated synthetic records; no WhatsApp/Sheets writes','mode':'batched production interpretation policy; independent review stage not executed'}
+                result={'source':source,'id':case['id'],'run_id':run_id,'segment':chat.chat['segment'],'question':case['message'],'reply':reply,'passed':not errors,'errors':errors,'plan':plan,'model':model,'code_revision':os.getenv('RENDER_GIT_COMMIT','unknown'),'prior_history':copy.deepcopy(chat.history[-8:]),'pending_before':case['verified_session_state'],'execution':'isolated synthetic records; no WhatsApp/Sheets writes','mode':'batched production interpretation policy; independent review stage not executed'}
                 rows.append(result)
                 print('HOTEL QA ROW: '+json.dumps(result,ensure_ascii=False),flush=True)
                 chat.remember(case['message'],reply or '[No model reply: provider failure]')
@@ -325,6 +325,7 @@ def normal_probes(bot,run_id):
         {'id':'PROBE-QTY','text':'2 masala chai room mein bhej do','actions':['ORDER','ORDER_SELECTION'],'names':['Masala Chai'],'qty':2},
         {'id':'PROBE-FAILURE','text':'Kal 2 logo ke liye kamra milega?','actions':['RECEPTION','AVAILABILITY'],'source':'Reception request for 2 guests tomorrow recorded locally, but WhatsApp delivery to reception failed. No staff availability confirmation received. No booking created.'},
         {'id':'PROBE-ID','text':'Checkin kaise karna hai?','actions':['ANSWER','CHECKIN','RECEPTION']},
+        {'id':'PROBE-MILK','text':'Cow milk milega?','actions':['RECEPTION'],'source':'Cow milk type/availability is not verified. Reception WhatsApp notification failed. No milk order was created, no staff confirmation received.'},
     ]
     for case in cases:
         guest={'name':'QA Guest','room':'240','status':'CHECKED_IN','is_inhouse':True} if case['id']=='PROBE-QTY' else None
@@ -338,7 +339,7 @@ def normal_probes(bot,run_id):
                 chat=ChatState({'id':'P-QTY','guest':guest})
                 case['source']=execution_result(chat,obj,bot.CUSTOMER_CONFIG,bot)
             reply=render(bot,case,obj)
-        print('HOTEL QA NORMAL PROBE: '+json.dumps({'id':case['id'],'run_id':run_id,'question':case['text'],'plan':obj,'reply':reply,'errors':errors,'source':case.get('source',''),'mode':'normal production interpreter, plan review and composer; isolated execution receipt'},ensure_ascii=False),flush=True)
+        print('HOTEL QA NORMAL PROBE: '+json.dumps({'id':case['id'],'run_id':run_id,'code_revision':os.getenv('RENDER_GIT_COMMIT','unknown'),'question':case['text'],'plan':obj,'reply':reply,'errors':errors,'source':case.get('source',''),'mode':'normal production interpreter, plan review and composer; isolated execution receipt'},ensure_ascii=False),flush=True)
         time.sleep(45)
 
 

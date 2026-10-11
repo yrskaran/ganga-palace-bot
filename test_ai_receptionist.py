@@ -51,6 +51,49 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertTrue(any(m['role']=='assistant' and 'Standard Veg Thali' in m['content'] for m in messages))
         self.assertLess(sum(len(m['content'].encode()) for m in messages),12400)
 
+    def test_review_repairs_menu_misclassification_into_two_item_order(self):
+        import json
+        app.CUSTOMER_CONFIG['menu']=[{'name':'Masala Chai','price':30}]
+        candidate=self.understanding(action='MENU_ITEM_INFO',items=[{'name':'Masala Chai','qty':1}])
+        review={'operational':True,'action':'ORDER','items':[{'name':'Masala Chai','qty':2}],
+                'category':'KITCHEN','operation_text':'','reply':'','language':'hinglish','confidence':0.97}
+        provider=Mock(return_value=json.dumps(review))
+        result=gateway.review_plan(app,'2 masala chai room mein bhej do',candidate,[],provider=provider,pending={})
+        self.assertIn('operational',provider.call_args.args[0])
+        self.assertIn('Revisions return the complete resulting cart',provider.call_args.args[0])
+        self.assertEqual(result['action'],'ORDER')
+        self.assertEqual(result['items'],[{'name':'Masala Chai','qty':2}])
+        self.assertFalse(result['needs_reception'])
+
+    def test_operational_review_validates_inventory_and_confirmation_state(self):
+        import json
+        app.CUSTOMER_CONFIG['menu']=[{'name':'Masala Chai','price':30}]
+        candidate=self.understanding(action='ORDER')
+        review={'operational':True,'action':'ORDER','items':[{'name':'Invented Tea','qty':2}],
+                'category':'KITCHEN','operation_text':'','reply':'','language':'hinglish','confidence':0.97}
+        self.assertIsNone(gateway.review_plan(app,'2 chai bhejo',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={}))
+        review.update(action='ORDER_CONFIRM',items=[])
+        self.assertIsNone(gateway.review_plan(app,'Haan confirm',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={}))
+
+    def test_duplicate_cart_confirmation_survives_operational_review(self):
+        import json
+        app.CUSTOMER_CONFIG['menu']=[{'name':'Masala Chai','price':30}]
+        review={'operational':True,'action':'ORDER_CONFIRM','items':[],'category':'KITCHEN',
+                'operation_text':'','reply':'','language':'hinglish','confidence':0.97}
+        result=gateway.review_plan(app,'Haan wahi confirm',self.understanding(action='ORDER_CONFIRM'),[],
+                    provider=Mock(return_value=json.dumps(review)),pending={'duplicate_order_sessions':{'order':'2 Masala Chai','total':60}})
+        self.assertEqual(result['action'],'ORDER_CONFIRM')
+
+    def test_order_candidate_can_be_repaired_to_price_enquiry_without_execution(self):
+        import json
+        app.CUSTOMER_CONFIG['menu']=[{'name':'Masala Chai','price':30}]
+        review={'menu_related':True,'action':'MENU_ITEM_INFO','request_kind':'price','items':[{'name':'Masala Chai','qty':1}],
+                'excluded_items':[],'show_prices':True,'needs_reception':False,'reception_request':'','menu_section':''}
+        result=gateway.review_plan(app,'Chai ka rate poocha bhejna nahi',self.understanding(action='ORDER'),[],
+                    provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'MENU_ITEM_INFO')
+        self.assertTrue(result['show_prices'])
+
     def test_typo_interpretation_receives_complete_canonical_inventory(self):
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70},{'name':'Jeera Rice','price':140}]
         response = Mock(status_code=200)

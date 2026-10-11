@@ -143,7 +143,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V75-PRODUCTION-RECEPTIONIST"
+APP_VERSION = "HOTEL-AI-V76-FOCUSED-PLAN-REVIEW"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -460,6 +460,8 @@ def guest_script(text):
 def language_instruction(language, text=None):
     if ai_receptionist.enabled(sys.modules[__name__]):
         active = ai_receptionist.current.get()
+        if active and active.get('plan_review'):
+            return 'Infer the current guest language yourself from CURRENT GUEST MESSAGE. Recent dialogue is context, not a mandatory language. Return the requested review JSON.'
         if active:
             return 'Reply in the language selected by the interpreting AI: ' + active['language'] + '. Match the guest script and conversational style.'
         return ('Infer the guest language from CURRENT GUEST MESSAGE and dialogue context yourself, including Hinglish and typos. '
@@ -5214,7 +5216,7 @@ Hotel knowledge:
         if res.status_code == 429:
             hint = _rate_limit_retry_seconds(res, GROQ_RATE_LIMIT_COOLDOWN)
             daily = any(x in res.text.upper() for x in ('TPD', 'TOKENS PER DAY', 'PER DAY'))
-            if not daily and hint <= 5:
+            if not daily and hint <= 15:
                 print(f"GROQ SHORT RESET: waiting {hint}s; one inference retry", flush=True)
                 time.sleep(hint)
                 res = requests.post(url, json=payload, headers=headers, timeout=20)

@@ -71,7 +71,10 @@ def scenarios(demo=True):
               'order_enquiry':True, 'source':'No verified active stay exists for this sender. No cart or order was saved. Room service requires a verified active stay.'}),
             ('Confirm to kar', ['NONE','ANSWER'],
              {'history':dialogue('Garlic naan veg raita tawa roti buttur waali 4', 'Garlic Naan, Veg Raita aur Tawa Roti Butter menu mein hain.'),
-              'source':'No saved pending cart exists. Menu information alone cannot be confirmed as an order. Ask for the intended order quantities and verify active stay before creating any order.'})
+              'source':'No saved pending cart exists. Menu information alone cannot be confirmed as an order. Ask for the intended order quantities and verify active stay before creating any order.'}),
+            ('Mera poha wala order confirm hua tha na?', ['ANSWER','NONE'],
+             {'pending':{'active_orders':{'order':'1 Poha','total':70}},
+              'source':'The existing 1 Poha order is saved, total ₹70. No new order was created. Kitchen delivery or payment is not verified.'})
         ])
     return [dict(id=f'{i:02}', text=text, actions=actions, **details)
             for i, (text, actions, details) in enumerate(cases, 1)]
@@ -103,6 +106,8 @@ def errors_for(case, obj, config):
             errors.append('Wrong menu scope')
     elif case.get('names') and not set(case['names']).issubset(names):
         errors.append('Missing/wrong referenced item')
+    if case.get('names') and any(name not in case['names'] for name in names):
+        errors.append('Items outside requested references')
     if obj.get('action') == 'MENU_ITEM_INFO' and case.get('section') in {'RICE', 'BREADS'}:
         if not names or any(demo_food.menu_category(name).upper() != case['section'] for name in names):
             errors.append('Items outside requested menu scope')
@@ -154,7 +159,7 @@ def render(bot, case, obj):
     return '\n\n'.join(replies)
 
 
-def run(bot, run_id, ids=None, delay=45):
+def run(bot, run_id, ids=None, delay=75):
     """Opt-in worker: uses real primary model, logs only synthetic conversations."""
     results = []
     for case in scenarios(demo=bot.CUSTOMER_DEMO_MODE):
@@ -163,7 +168,7 @@ def run(bot, run_id, ids=None, delay=45):
         started = time.monotonic()
         prompt = ai.interpretation_prompt(bot, case['text'], None, None, json.dumps(case.get('pending', {})))
         obj = bot._parse_ai_json(bot.ask_groq_chat(prompt, structured=True, context_history=case.get('history', [])))
-        obj = ai.review_plan(bot, case['text'], obj, case.get('history', []))
+        obj = ai.review_plan(bot, case['text'], obj, case.get('history', []), pending=case.get('pending', {}))
         errors = errors_for(case, obj, bot.CUSTOMER_CONFIG)
         reply = ''
         if isinstance(obj, dict):

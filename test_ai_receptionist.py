@@ -114,6 +114,39 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         source = app.send_whatsapp_message.call_args.args[1]
         self.assertEqual(source, '• Tawa Roti Butter')
 
+    def test_snapshot_preserves_only_senders_confirmed_order(self):
+        with patch.object(app, 'active_orders', {
+                self.phone:{'order':'1 Poha','total':70},
+                'other':{'order':'Private order','total':999}}):
+            state = gateway.snapshot(app, self.phone)
+        self.assertEqual(state['active_orders'], {'order':'1 Poha','total':70})
+        self.assertNotIn('Private order', str(state))
+
+    def test_plan_review_uses_focused_context_and_restores_turn(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {'choices':[{'message':{'content':'{"menu_related":false,"blocked":false}'},'finish_reason':'stop'}]}
+        with patch.object(app,'_ai_knowledge_snapshot',return_value='UNRELATED_HOTEL_FACTS'), \
+             patch.object(app,'get_active_groq_model',return_value='openai/gpt-oss-120b'), \
+             patch.object(app,'_groq_circuit_open',return_value=False), \
+             patch.object(app.requests,'post',return_value=response) as provider:
+            gateway.review_plan(app, 'Puch ke batao', self.understanding(action='RECEPTION'), [], provider=app.ask_groq_chat)
+        messages = provider.call_args.kwargs['json']['messages']
+        self.assertNotIn('UNRELATED_HOTEL_FACTS', '\n'.join(row['content'] for row in messages))
+        self.assertIsNone(gateway.current.get())
+
+    def test_provider_allows_one_six_second_inference_reset(self):
+        limited = Mock(status_code=429,text='input tokens per minute',headers={'retry-after':'6'})
+        success = Mock(status_code=200)
+        success.json.return_value = {'choices':[{'message':{'content':'{"action":"ANSWER","reply":"Ji"}'},'finish_reason':'stop'}]}
+        with patch.object(app,'get_active_groq_model',return_value='openai/gpt-oss-120b'), \
+             patch.object(app,'_groq_circuit_open',return_value=False), \
+             patch.object(app.requests,'post',side_effect=[limited,success]) as post, \
+             patch.object(app.time,'sleep') as wait:
+            self.assertIsNotNone(app.ask_groq_chat('hello',structured=True))
+        self.assertEqual(post.call_count,2)
+        wait.assert_called_once_with(6)
+        app.send_whatsapp_message.assert_not_called()
+
     def test_short_provider_rate_limit_retries_once_before_fallback(self):
         limited = Mock(status_code=429,text='input tokens per minute',headers={'retry-after':'1'})
         success = Mock(status_code=200)

@@ -19,6 +19,15 @@ class GuestChecksTests(unittest.TestCase):
         good = dict(bad, show_prices=False, items=[{'name':'Special Deluxe Ganga Thali','qty':1}])
         self.assertEqual(guest_checks.errors_for(case, good, config), [])
 
+    def test_price_followup_rejects_extra_items(self):
+        case = guest_checks.scenarios(demo=False)[28]
+        obj = {'action':'MENU_ITEM_INFO','language':'hindi','show_prices':True,
+               'confidence':.95,'operation_text':'',
+               'items':[{'name':'Standard Veg Thali','qty':1},
+                        {'name':'Special Deluxe Ganga Thali','qty':1}]}
+        self.assertIn('Items outside requested references',
+                      guest_checks.errors_for(case, obj, app.CUSTOMER_CONFIG))
+
     def test_operational_scenario_renders_fixture_without_executing_any_action(self):
         case = guest_checks.scenarios()[23]
         obj = {'action':'ORDER_CONFIRM','language':'hinglish','understood_as':'Explicit cart confirmation'}

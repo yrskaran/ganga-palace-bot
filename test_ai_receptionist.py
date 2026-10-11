@@ -147,6 +147,19 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertNotIn('Poha', output)
         self.assertEqual(app.demo_food_sessions, {})
 
+    def test_multiple_item_availability_is_one_natural_reply_without_raw_appendix(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Cutting Chai','price':20},{'name':'Masala Chai','price':30}]
+        app.ask_ai_chat.side_effect = ['{"reply":"Chai mein Cutting Chai aur Masala Chai DEMO menu mein listed hain. Kitchen availability confirm nahi hai."}', '{"supported":true}']
+        with patch.object(app, 'send_whatsapp_message', wraps=self.real_send), \
+             patch.object(app, 'whatsapp_request', return_value=Mock(status_code=200)) as transport:
+            gateway.handle(app, self.phone, 'Chai me kya kya option hai', None,
+                semantic=self.understanding(action='MENU_ITEM_INFO', show_prices=False,
+                    items=[{'name':'Cutting Chai','qty':1},{'name':'Masala Chai','qty':1}]))
+            output = transport.call_args.args[0]['text']['body']
+        self.assertNotIn('is listed on the configured menu', output)
+        self.assertEqual(output.count('Cutting Chai'), 1)
+        self.assertEqual(output.count('Masala Chai'), 1)
+
     def test_menu_cards_preserve_data_without_composing_each_card(self):
         app.CUSTOMER_CONFIG.update(demo_food_enabled=True,
             menu=[{'name':'Poha','price':70},{'name':'Butter Naan','price':40},

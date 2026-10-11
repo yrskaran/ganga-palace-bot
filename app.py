@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V71-CURRENT-TURN-PRICES"
+APP_VERSION = "HOTEL-AI-V72-GUEST-CONVERSATION-CHECKS"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -11540,6 +11540,10 @@ def startup():
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
     if os.getenv("AI_STARTUP_CHECK", "0").strip().lower() in {"1", "true", "yes"}:
         threading.Thread(target=check_ai_readiness, daemon=True, name="ai-readiness").start()
+    if os.getenv("AI_GUEST_CHECK_RUN", "").strip():
+        import guest_checks
+        selected_checks = {value.strip() for value in os.getenv("AI_GUEST_CHECK_IDS", "").split(',') if value.strip()}
+        guest_checks.start(sys.modules[__name__], os.getenv("AI_GUEST_CHECK_RUN"), selected_checks or None)
     try:
         fetch_sheet_data_sync()
         # Keep checkout delivery state in Rooms; Lifecycle_Automation is only for active stays.

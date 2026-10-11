@@ -93,7 +93,7 @@ def compose(bot, phone, backend_text):
         'Write the final WhatsApp reply as the hotel virtual receptionist. '
         'This is a RESULT, not a new guest request. No actions may be requested here. '
         'Match the language chosen by the interpreting AI. Be natural and specific, '
-        'acknowledge corrections, answer the actual question, and avoid repeated greetings. '
+        'acknowledge corrections and answer the actual question directly without a greeting. '
         'Use only the verified backend result below. Do not turn accepted into delivered, '
         'pending into confirmed, a demo into a real order, or failed into successful. '
         'Preserve every numeric value, URL, ticket ID, menu item, quantity and price. '
@@ -155,6 +155,9 @@ def faithful_numbers_and_links(source, reply):
         price_line = next((line.strip() for line in str(source).splitlines()
                            if name in line and re.search(r'(?:Rs\.?|₹|INR)\s*\d', line)), None)
         rows = [row for row in rows if row != price_line]
+    listed_names = re.findall(r'^• ([^\n]+)$', str(source), re.M)
+    if any(name.casefold() not in str(reply).casefold() for name in listed_names):
+        return False
     demo_preserved = not re.search(r'\bdemo\b', str(source), re.I) or bool(re.search(r'\bdemo\b|डेमो', str(reply), re.I))
     return (demo_preserved and numbers(source) == numbers(reply) and links(source) == links(reply)
             and ids(source) == ids(reply) and all(row in str(reply) for row in rows))
@@ -222,13 +225,13 @@ def _menu_item_info(bot, phone, result):
             bot.send_whatsapp_message(phone, 'The requested item could not be matched to a verified menu entry. No price or availability confirmed; no order created. Please clarify the item name.')
             return
         name, price = match
-        lines.append(f'{name} — ₹{price}' if result.get('show_prices') else f'{name} is listed on the configured menu.')
+        lines.append(f'{name} — ₹{price}' if result.get('show_prices') else f'• {name}')
     if not lines:
         bot.send_whatsapp_message(phone, 'The specific menu item is unclear. Ask which item the guest means; no order created.')
         return
     if bot.CUSTOMER_DEMO_MODE:
-        lines.append(('DEMO menu price' if result.get('show_prices') else 'DEMO menu listing') + '; no real kitchen availability confirmed.')
-    if len(result['items']) == 1:
+        lines.append('DEMO menu; kitchen availability confirm nahi hai.' if (current.get() or {}).get('language') == 'hinglish' else 'DEMO menu; no real kitchen availability confirmed.')
+    if len(result['items']) == 1 or not result.get('show_prices'):
         bot.send_whatsapp_message(phone, '\n'.join(lines))
     else:
         intro = item_info_introduction(

@@ -57,7 +57,7 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         "a new question is a new request. Never claim staff delivery or action success before backend confirmation. "
         "Information, humour, greetings and side questions use ANSWER; genuine ambiguity uses NONE and one clarification. "
         "A specific menu item listing/price enquiry uses MENU_ITEM_INFO with resolved names in items (qty=1 by default), "
-        "show_prices=true only when price is requested. A category/full menu uses SHOW_MENU with menu_section. "
+        "show_prices=true only when price is requested. A category/full menu uses SHOW_MENU with menu_section FULL, BREAKFAST, LUNCH, DINNER, DRINKS, SNACKS, MAIN_COURSE, BREADS, RICE, SIDES, THALI, DAL, PANEER, RAITA or SALAD. Never broaden a category request to FULL. When asking for other options, exclude already discussed items and use MENU_ITEM_INFO with the remaining verified item names when known. Price requests refer to the current turn; availability or alternatives alone must have show_prices=false. "
         "An enquiry is never an order. ORDER requires explicit ordering intent; resolve complete items and integer quantities. "
         "A correction of our misunderstanding is not cart confirmation/cancellation. Cart revisions require fresh confirmation. "
         "ORDER_CONFIRM requires explicit affirmative confirmation of the current cart, never casual okay, acknowledgement, "
@@ -190,8 +190,8 @@ def _direct(bot, phone, text):
 def compose_cards(bot, phone, cards, introduction_result=None):
     """Compose only the explanation; financial and menu rows remain exact."""
     result = introduction_result or (
-        'Requested DEMO menu is shown below. Demo only; no real kitchen dispatch.'
-        if bot.CUSTOMER_DEMO_MODE else 'Requested hotel menu is shown below.')
+        'Yeh DEMO menu ke options hain. Kitchen availability confirm nahi hai.'
+        if bot.CUSTOMER_DEMO_MODE else 'Yeh hotel menu ke options hain.')
     intro = compose(bot, phone, result)
     return [(intro + '\n\n' if index == 0 else '') + card
             for index, card in enumerate(cards)]
@@ -227,7 +227,7 @@ def _menu_item_info(bot, phone, result):
         bot.send_whatsapp_message(phone, 'The specific menu item is unclear. Ask which item the guest means; no order created.')
         return
     if bot.CUSTOMER_DEMO_MODE:
-        lines.append('DEMO menu price; no real kitchen availability confirmed.')
+        lines.append(('DEMO menu price' if result.get('show_prices') else 'DEMO menu listing') + '; no real kitchen availability confirmed.')
     if len(result['items']) == 1:
         bot.send_whatsapp_message(phone, '\n'.join(lines))
     else:

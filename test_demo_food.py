@@ -91,6 +91,32 @@ class DemoFoodTests(unittest.TestCase):
     def reply(self):
         return self.sent.call_args.args[1]
 
+    def test_ai_category_scope_never_expands_to_full_menu(self):
+        config = dict(app.CUSTOMER_CONFIG, menu=[
+            {'name':'Standard Veg Thali','price':200},
+            {'name':'Special Deluxe Ganga Thali','price':290},
+            {'name':'Boondi Raita','price':70},
+            {'name':'Dal Tadka','price':140},
+            {'name':'Paneer Butter Masala','price':180},
+            *app.CUSTOMER_CONFIG['menu']])
+        cases = [('THALI', ['Standard Veg Thali', 'Special Deluxe Ganga Thali']),
+                 ('DAL', ['Dal Tadka']), ('PANEER', ['Paneer Butter Masala']),
+                 ('DRINKS', ['Masala Chai']), ('BREADS', ['Butter Naan']),
+                 ('UNKNOWN_SECTION', [])]
+        with patch.object(app, 'CUSTOMER_CONFIG', config):
+            for section, expected in cases:
+                with self.subTest(section=section):
+                    self.sent.reset_mock()
+                    self.demo.handle(app, self.phone, 'menu', semantic={
+                        'action':'SHOW_MENU','menu_section':section,'show_prices':False,'confidence':0.95})
+                    output = '\n'.join(c.args[1] for c in self.sent.call_args_list)
+                    for row in config['menu']:
+                        self.assertEqual(row['name'] in output, row['name'] in expected)
+                    self.assertNotIn('₹', output)
+                    if not expected:
+                        self.assertIn('configure', output)
+        self.kitchen.assert_not_called()
+
     def test_demo_reminders_require_clear_opt_in_and_demo_checkin(self):
         config = dict(app.CUSTOMER_CONFIG, demo_reminders_enabled=True)
         with patch.object(app, 'CUSTOMER_CONFIG', config):

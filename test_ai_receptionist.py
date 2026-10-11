@@ -75,11 +75,11 @@ class ReceptionistBoundaryTests(unittest.TestCase):
 
     def test_live_item_result_probe_actually_runs_composer_without_transport(self):
         import json
-        app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':70}]
-        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Standard Veg Thali ka DEMO menu rate ₹70 hai."}', '{"supported":true}']
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':70}, {'name':'Special Deluxe Ganga Thali','price':290}]
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Special Deluxe Ganga Thali bhi DEMO menu mein listed hai. Kitchen availability confirm nahi hai."}', '{"supported":true}']
         with patch.object(app, 'GROQ_API_KEY','test'), patch.object(app,'ask_groq_chat',
             return_value=json.dumps(self.understanding(action='MENU_ITEM_INFO', operation_text='',
-                show_prices=True,items=[{'name':'Standard Veg Thali','qty':1}]))):
+                show_prices=False,items=[{'name':'Special Deluxe Ganga Thali','qty':1}]))):
             app.check_ai_readiness()
         self.assertEqual(app.ask_ai_chat.call_count, 2)
         self.assertEqual(app.AI_READINESS['status'], 'available')

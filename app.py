@@ -142,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V69-DIALOGUE-CONTEXT"
+APP_VERSION = "HOTEL-AI-V70-MENU-SCOPE"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -6750,14 +6750,14 @@ def check_ai_readiness():
         receptionist = ai_receptionist.enabled(sys.modules[__name__])
         item_probe = next((row for row in (CUSTOMER_CONFIG or {}).get('menu', [])
                            if row.get('name') == 'Standard Veg Thali'), None) if receptionist else None
-        query = ('Kitne ki hai?' if item_probe else 'Cow milk milega?') if receptionist else 'What are the Wi-Fi, parking and check-out details?'
+        query = ('Aur koi thali bhi hai?' if item_probe else 'Cow milk milega?') if receptionist else 'What are the Wi-Fi, parking and check-out details?'
         prompt = _ai_understanding_prompt(query, None, None)
         history = ([{'role':'user','content':f"{item_probe['name']} bhi hai?"},
-                    {'role':'assistant','content':f"{item_probe['name']} DEMO menu mein listed hai."}] if item_probe else None)
+                    {'role':'assistant','content':f"{item_probe['name']} DEMO menu mein listed hai, price ₹{item_probe['price']} hai."}] if item_probe else None)
         raw = ask_groq_chat(prompt, structured=True, context_history=history)
         obj = _parse_ai_json(raw) or {}
         reply = str(obj.get("reply", "")).strip()
-        expected = ({'MENU_ITEM_INFO'} if item_probe else {'RECEPTION', 'AVAILABILITY', 'ANSWER'}) if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}
+        expected = ({'MENU_ITEM_INFO', 'SHOW_MENU'} if item_probe else {'RECEPTION', 'AVAILABILITY', 'ANSWER'}) if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}
         ok = bool(obj.get('action') in expected and _ai_content_is_usable(reply, 'Groq'))
         if receptionist:
             # A single read-only probe checks the full contract without consuming
@@ -6765,14 +6765,19 @@ def check_ai_readiness():
             ok = (ok and obj.get('language') == 'hinglish'
                   and isinstance(obj.get('operation_text'), str))
             if item_probe:
-                ok = (ok and obj.get('show_prices') is True
-                      and any(normalize_text(item.get('name', '')) == normalize_text(item_probe['name'])
-                              for item in obj.get('items', [])))
-            print(f"AI RECEPTIONIST READ-ONLY PROBE: action={obj.get('action')} language={obj.get('language')} valid={ok}", flush=True)
+                alternatives = [row for row in (CUSTOMER_CONFIG or {}).get('menu', [])
+                                if 'thali' in row.get('name', '').lower().split()
+                                and row['name'] != item_probe['name']]
+                names = [item.get('name', '') for item in obj.get('items', [])]
+                scoped = (obj.get('action') == 'SHOW_MENU' and str(obj.get('menu_section', '')).upper() == 'THALI')
+                selected = (obj.get('action') == 'MENU_ITEM_INFO' and names
+                            and all(name in [row['name'] for row in alternatives] for name in names))
+                ok = ok and obj.get('show_prices') is False and bool(scoped or selected)
+            print(f"AI RECEPTIONIST READ-ONLY PROBE: action={obj.get('action')} language={obj.get('language')} menu={obj.get('menu_section')} prices={obj.get('show_prices')} items={obj.get('items')} valid={ok}", flush=True)
             if ok and item_probe:
-                source = f"{item_probe['name']} — ₹{item_probe['price']}\nDEMO menu price; no real kitchen availability confirmed."
+                source = '\n'.join(f"{row['name']} is listed on the configured menu." for row in alternatives) + '\nDEMO menu listing; no real kitchen availability confirmed.'
                 token = ai_receptionist.current.set({'phone':format_whatsapp_number(''), 'text':query,
-                    'language':'hinglish','meaning':'Guest asks the configured item price','guest':None,'diagnostic':True})
+                    'language':'hinglish','meaning':'Guest asks for other thali options after Standard Veg Thali','guest':None,'diagnostic':True})
                 try:
                     final = ai_receptionist.compose(sys.modules[__name__], '', source)
                 finally:
@@ -6849,7 +6854,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
-            print(f"AI UNDERSTANDING: provider={provider_name} meaning={result['understood_as']!r} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} items={result['items']!r}", flush=True)
+            print(f"AI UNDERSTANDING: provider={provider_name} meaning={result['understood_as']!r} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} prices={result['show_prices']!r} items={result['items']!r}", flush=True)
             _record_ai_readiness("available", provider_name)
             return result
         except Exception as exc:

@@ -105,6 +105,32 @@ def menu_messages(bot, meal=None, include_prices=False):
         group = menu_category(item['name'])
         grouped[group].append(item)
 
+    # Scope is an AI-selected argument; only configured inventory is filtered.
+    scope = str(meal or 'FULL').upper().replace('&', 'AND').replace(' ', '_')
+    aliases = {'BEVERAGES':'DRINKS', 'ROTI':'BREADS', 'BREAD':'BREADS',
+               'NAAN':'BREADS', 'MAIN_COURSE':'MAIN_COURSE',
+               'SIDES_AND_THALI':'SIDES_AND_THALI', 'THALIS':'THALI'}
+    scope = aliases.get(scope, scope)
+    if scope not in {'FULL', 'BREAKFAST', 'LUNCH', 'DINNER'}:
+        categories = {'DRINKS':'Drinks', 'SNACKS':'Snacks', 'BREADS':'Breads',
+                      'RICE':'Rice', 'MAIN_COURSE':'Main Course',
+                      'SIDES_AND_THALI':'Sides & Thali'}
+        if scope in categories:
+            entries = grouped[categories[scope]]
+        elif scope in {'THALI', 'DAL', 'PANEER', 'RAITA', 'SALAD'}:
+            entries = [row for row in menu if isinstance(row, dict)
+                       and scope.lower() in str(row.get('name', '')).lower().split()]
+        elif scope == 'SIDES':
+            entries = [row for row in grouped['Sides & Thali']
+                       if 'thali' not in row['name'].lower().split()]
+        else:
+            entries = []
+        if not entries:
+            return ['DEMO menu mein is category ke items configure nahi hain. Kitchen availability confirm nahi hai.']
+        body = (bot._whatsapp_price_block([(row['name'], row['price']) for row in entries])
+                if include_prices else '\n'.join(_menu_item(row, False) for row in entries))
+        return [f'*{scope.replace("_", " ").title()}*\n{body}\n_DEMO menu • kitchen availability confirm nahi hai._']
+
     hotel = (config.get('hotel') or {}).get('name') or 'Hotel'
     headings = {
         'BREAKFAST': ('☀️', 'Breakfast', ['Breakfast', 'Drinks']),
@@ -584,12 +610,13 @@ def handle(bot, phone, text, semantic=None):
         )
         if wants_menu:
             section = str((semantic or {}).get('menu_section') or '').strip().upper()
-            meal = section if section in {'BREAKFAST', 'LUNCH', 'DINNER'} else meal_request(normalized)
+            meal = (section or 'FULL') if semantic_action == 'SHOW_MENU' else meal_request(normalized)
             prices = ((semantic or {}).get('show_prices') is True
                       if semantic_action == 'SHOW_MENU' else bot.explicitly_asks_price(text))
             # If AI missed the price flag, explicit local detection is still a
             # safety net, not the primary language-understanding engine.
-            prices = prices or bot.explicitly_asks_price(text)
+            if not semantic_action:
+                prices = prices or bot.explicitly_asks_price(text)
             messages = menu_messages(bot, meal=meal, include_prices=prices)
             if ai_receptionist.enabled(bot) and ai_receptionist.current.get():
                 ai_receptionist.send_menu(bot, phone, messages)

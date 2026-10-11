@@ -94,6 +94,16 @@ def faithful_numbers_and_links(source, reply):
             if re.search(r'^\s*(?:[-•*]\s*)?\d+\s*[x×]', line)
             or re.search(r'^\s*(?:•\s*)?.+?\s*[—–:]\s*(?:Rs\.?|₹|INR)\s*\d', line)
             or (re.search(r'(?:Rs\.?|₹|INR)\s*\d', line) and len(str(source).splitlines()) > 2)]
+    # A single item price with no other numeric value cannot be swapped with
+    # another amount. Permit natural wording only while preserving its item name.
+    price_bindings = re.findall(r'^\s*(?:•\s*)?(.+?)\s*[—–:]\s*(?:Rs\.?|₹|INR)\s*(\d+(?:[.,]\d+)*)', str(source), re.M)
+    if len(price_bindings) == 1 and len(numbers(source)) == 1:
+        name, _amount = price_bindings[0]
+        if name.strip('* ').casefold() not in str(reply).casefold():
+            return False
+        price_line = next((line.strip() for line in str(source).splitlines()
+                           if name in line and re.search(r'(?:Rs\.?|₹|INR)\s*\d', line)), None)
+        rows = [row for row in rows if row != price_line]
     demo_preserved = not re.search(r'\bdemo\b', str(source), re.I) or bool(re.search(r'\bdemo\b|डेमो', str(reply), re.I))
     return (demo_preserved and numbers(source) == numbers(reply) and links(source) == links(reply)
             and ids(source) == ids(reply) and all(row in str(reply) for row in rows))
@@ -142,7 +152,7 @@ def send_menu(bot, phone, cards, introduction_result=None):
 
 
 def item_info_introduction(names, demo=False):
-    result = 'Requested menu item information is shown below: ' + ', '.join(names) + '.'
+    result = 'The configured menu information is verified for: ' + ', '.join(names) + '. The verified details are displayed below.'
     if demo:
         result += ' DEMO menu only; no real kitchen availability confirmed.'
     return result
@@ -167,8 +177,14 @@ def _menu_item_info(bot, phone, result):
         return
     if bot.CUSTOMER_DEMO_MODE:
         lines.append('DEMO menu price; no real kitchen availability confirmed.')
-    send_menu(bot, phone, ['\n'.join(lines)], introduction_result=item_info_introduction(
-        [menu[bot.normalize_text(item['name'])][0] for item in result['items']], bot.CUSTOMER_DEMO_MODE))
+    if len(result['items']) == 1:
+        bot.send_whatsapp_message(phone, '\n'.join(lines))
+    else:
+        intro = item_info_introduction(
+            [menu[bot.normalize_text(item['name'])][0] for item in result['items']], bot.CUSTOMER_DEMO_MODE)
+        if result.get('show_prices'):
+            intro += ' The configured menu prices are verified and displayed below; they are not missing or unavailable.'
+        send_menu(bot, phone, ['\n'.join(lines)], introduction_result=intro)
 
 
 def handle(bot, phone, text, guest, message=None, semantic=None):

@@ -48,7 +48,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
     def test_live_item_result_probe_actually_runs_composer_without_transport(self):
         import json
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70}]
-        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita ki demo menu jaankari yeh rahi."}', '{"supported":true}']
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita ka DEMO menu rate ₹70 hai."}', '{"supported":true}']
         with patch.object(app, 'GROQ_API_KEY','test'), patch.object(app,'ask_groq_chat',
             return_value=json.dumps(self.understanding(action='MENU_ITEM_INFO', operation_text='',
                 show_prices=True,items=[{'name':'Boondi Raita','qty':1}]))):
@@ -94,6 +94,12 @@ class ReceptionistBoundaryTests(unittest.TestCase):
             ('good', lambda *args: 'Ji, yeh raha menu.')]):
             result = self.real_ask('Menu')
         self.assertEqual(result, 'Ji, yeh raha menu.')
+
+    def test_single_price_may_be_worded_naturally_without_changing_item_or_amount(self):
+        source = 'Boondi Raita — ₹70\nDEMO menu price; kitchen availability unconfirmed.'
+        self.assertTrue(gateway.faithful_numbers_and_links(source, 'Boondi Raita ka DEMO rate ₹70 hai.'))
+        self.assertFalse(gateway.faithful_numbers_and_links(source, 'Poha ka DEMO rate ₹70 hai.'))
+        self.assertFalse(gateway.faithful_numbers_and_links(source, 'Boondi Raita ka DEMO rate ₹80 hai.'))
 
     def test_two_item_price_rows_cannot_swap_amounts(self):
         self.assertFalse(gateway.faithful_numbers_and_links(

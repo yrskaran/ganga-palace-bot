@@ -387,5 +387,6 @@
   "demo_food_enabled": true,
   "demo_semantic_first": true,
   "demo_require_checkin": true,
-  "demo_reminders_enabled": true
+  "demo_reminders_enabled": true,
+  "ai_receptionist_flow": true
 }

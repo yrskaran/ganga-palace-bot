@@ -6,6 +6,7 @@ import re
 from difflib import SequenceMatcher
 import threading
 import time
+import ai_receptionist
 from uuid import uuid4
 
 from gspread.exceptions import WorksheetNotFound
@@ -436,7 +437,7 @@ def run_demo_reminders(bot, current):
             + '\n_This is a test reminder; no real room booking or delivery is implied._'
         )
         try:
-            sent = bot.send_whatsapp_message(phone, msg)
+            sent = ai_receptionist.send_guest_event(bot, phone, msg, 'DEMO_' + event)
             print(f'DEMO REMINDER ATTEMPT: event={event} accepted={bool(sent)}', flush=True)
         except Exception as exc:
             print(f'DEMO REMINDER ERROR: event={event} kind={type(exc).__name__}', flush=True)
@@ -663,7 +664,7 @@ def handle(bot, phone, text, semantic=None):
                 say('Sample prices ke liye MENU bhejein.')
             return True
         if require_demo_checkin and not demo_stay_active(bot, phone):
-            say('Ji, Veg Pulao ho ya koi aur dish, menu aap dekh sakte hain 😊 '
+            say('Ji, menu aap dekh sakte hain 😊 '
                 'Lekin room-service demo order se pehle check-in active hona zaroori hai.\n'
                 'Test ke liye *DEMO CHECKIN* bhej dijiye. Ye sirf simulation hai, real hotel check-in nahi.')
             return True

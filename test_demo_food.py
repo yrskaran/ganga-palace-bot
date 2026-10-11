@@ -31,6 +31,33 @@ class Sheet:
 
 
 class DemoFoodTests(unittest.TestCase):
+    def test_ai_gateway_preserves_demo_checkin_revision_confirm_and_single_billing(self):
+        config = dict(app.CUSTOMER_CONFIG, ai_receptionist_flow=True)
+        results = [
+            {'action': 'DEMO_CHECKIN'},
+            {'action': 'ORDER', 'items': [{'name': 'Masala Chai', 'qty': 2}, {'name': 'Poha', 'qty': 1}]},
+            {'action': 'ANSWER', 'reply': 'Ji, doodh ki availability pooch rahe hain; order nahi.'},
+            {'action': 'ORDER', 'items': [{'name': 'Masala Chai', 'qty': 1}]},
+            {'action': 'ORDER_CONFIRM'},
+            {'action': 'BILL'},
+            {'action': 'ANSWER', 'reply': 'Ji 🙂'},
+        ]
+        results = [dict(result, confidence=0.95, language='hinglish') for result in results]
+        with patch.object(app, 'CUSTOMER_CONFIG', config), \
+             patch.object(app, 'understand_guest_request', side_effect=results) as brain:
+            for text in ['Test guest checkin shuru karo', 'Do chai aur ek poha',
+                         'Dudh manga dish nahi', 'Nahi sirf ek chai kar do',
+                         'Haan yehi pakka', 'Ab hisaab dikhao', 'Theek hai thanks']:
+                app._process_and_reply({'text': {'body': text}}, self.phone, 'text')
+                if text == 'Dudh manga dish nahi':
+                    self.assertEqual(app.demo_food_sessions[self.phone]['total'], 130)
+                if text == 'Nahi sirf ek chai kar do':
+                    self.assertEqual(app.demo_food_sessions[self.phone]['total'], 30)
+        self.assertEqual(brain.call_count, 7)
+        self.assertEqual(self.sheet.append_count, 1)
+        self.assertTrue(any('Food total: Rs. 30' in str(c.args[1]) for c in self.sent.call_args_list))
+        self.kitchen.assert_not_called()
+
     def setUp(self):
         self.assertIsNotNone(importlib.util.find_spec('demo_food'), 'demo food flow is not implemented')
         self.demo = importlib.import_module('demo_food')

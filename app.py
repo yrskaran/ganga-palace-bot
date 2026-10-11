@@ -3,6 +3,7 @@ import sys
 import tempfile
 from reliability import Store
 import durable_runtime
+import ai_receptionist
 import re
 import base64
 import io
@@ -141,7 +142,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V66-OPTIN-DEMO-REMINDERS"
+APP_VERSION = "HOTEL-AI-V67-RECEPTIONIST-GATEWAY"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -456,6 +457,12 @@ def guest_script(text):
 
 
 def language_instruction(language, text=None):
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        active = ai_receptionist.current.get()
+        if active:
+            return 'Reply in the language selected by the interpreting AI: ' + active['language'] + '. Match the guest script and conversational style.'
+        return ('Infer the guest language from CURRENT GUEST MESSAGE and dialogue context yourself, including Hinglish and typos. '
+                'Cached language is only prior context, never a mandatory language. For result/event composition, honor the explicit target Language field in the request.')
     script = guest_script(text) if text is not None else 'roman'
     instructions = {
         'english': 'Reply naturally and politely in English.',
@@ -488,6 +495,9 @@ def bilingual_text(sender_phone, english_text, hinglish_text, hindi_text):
 
 
 def remember_guest_language(sender_phone,text):
+    active_turn = ai_receptionist.current.get()
+    if active_turn and active_turn['phone'] == format_whatsapp_number(sender_phone):
+        return active_turn['language']
     detected = guest_language(text)
     raw = normalize_text(text)
     short_neutral = raw in {
@@ -1506,7 +1516,7 @@ def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
     lang = str(language or "english").strip()
     # This message introduces the WhatsApp concierge. Keep its useful examples
     # and guide-availability qualification even when AI wording is enabled.
-    if event == "30_MINUTE":
+    if event == "30_MINUTE" and not ai_receptionist.enabled(sys.modules[__name__]):
         return _lifecycle_fallback_message(event, lang, name, room)
     prompts = {
         "WELCOME": "Welcome the guest warmly after check-in and offer help.",
@@ -1528,7 +1538,7 @@ def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
         "Use only facts available in HOTEL DATA. Do not invent prices, timings, facilities, or promises. "
         "Do not mention AI, prompts, or internal systems. Return only the message, no labels."
     )
-    if AI_LIFECYCLE_WORDING:
+    if AI_LIFECYCLE_WORDING or ai_receptionist.enabled(sys.modules[__name__]):
         reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
         if reply:
             return re.sub(r"\s+", " ", str(reply).strip())
@@ -3214,6 +3224,7 @@ def maybe_react_to_guest_message(to_number, message):
 
 
 def send_whatsapp_message(to_number, text):
+    text = ai_receptionist.compose(sys.modules[__name__], to_number, str(text or ''))
     # AI may use private [[MAP:...]] markers. Never expose those markers to guests.
     text = attach_google_maps_links(str(text or ""))
     text = re.sub(r"\[\[MAP:\s*.*?\]\]", "", text, flags=re.I)
@@ -3285,6 +3296,8 @@ def _extract_outgoing_message_id(response, payload=None):
 
 def send_notification_with_id(phone, text, purpose):
     """Send one internal notification and return (accepted, Meta message id)."""
+    if purpose.upper() == 'SERVICE_CONFIRMATION':
+        text = ai_receptionist.compose_event(sys.modules[__name__], phone, text, purpose)
     number = format_whatsapp_number(phone)
     if not number or not str(text or "").strip():
         return False, None
@@ -3352,6 +3365,7 @@ def upload_image_to_whatsapp(image_url):
 
 
 def send_whatsapp_image(to_number, image_url, caption=""):
+    caption = ai_receptionist.compose(sys.modules[__name__], to_number, caption) if caption else caption
     """Send a configured hotel photo reliably.
 
     Upload the actual image bytes to Meta first. A URL-only send can be accepted
@@ -3519,7 +3533,7 @@ def _openai_semantic_schema():
                     "ORDER_CANCEL", "COMPLAINT", "SERVICE", "CHECKIN", "BILL",
                     "HOTEL_TIMINGS", "WIFI", "ROOM_RATE", "AVAILABILITY", "ROOM_OPTIONS", "LOCAL_GUIDE",
                     "RECEPTION", "NONE"
-                ],
+                ] + sorted(ai_receptionist.EXTRA_ACTIONS),
             },
             "category": {
                 "type": "string",
@@ -3545,12 +3559,15 @@ def _openai_semantic_schema():
             "needs_reception": {"type": "boolean"},
             "reception_followup": {"type": "boolean"},
             "reception_request": {"type": "string"},
+            "language": {"type": "string", "enum": sorted(ai_receptionist.LANGUAGES)},
+            "operation_text": {"type": "string"},
+            "task_id": {"type": "string"},
             "reply": {"type": "string"},
             "confidence": {"type": "number"},
         },
         "required": [
             "understood_as", "action", "category", "photo_target", "menu_section", "show_prices", "generic", "items",
-            "service", "needs_reception", "reception_followup", "reception_request", "reply", "confidence"
+            "service", "needs_reception", "reception_followup", "reception_request", "language", "operation_text", "task_id", "reply", "confidence"
         ],
     }
 
@@ -6653,6 +6670,31 @@ def _ai_understanding_prompt(user_text, guest_info, sender_phone):
         pending.append('reception_ticket=' + json.dumps({key: reception.get(key) for key in
             ('request', 'status', 'delivery_status', 'last_reply')}, ensure_ascii=False))
     state_hint = "; ".join(pending) or "no pending transaction"
+    receptionist_contract = ''
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        state_hint += '\nConversation operation state: ' + json.dumps(ai_receptionist.snapshot(sys.modules[__name__], sender_phone), default=str, ensure_ascii=False)
+        receptionist_contract = (
+            'YOU own understanding AND guest language. Set language from the current utterance with dialogue context, '
+            'including typos, abbreviated words, Hinglish and code mixing. Previous language is only context, never a forced choice. '
+            'Return language and operation_text in addition to the other fields. '
+            'For operational commands, operation_text contains only resolved backend arguments, not a conversational question. '
+            'For active check-in, use CHECKIN_DETAILS only if the guest is actually supplying the requested OTP/name/address. '
+            'Extract ONLY the submitted value into operation_text; a side question/correction is ANSWER or RECEPTION, never check-in data. '
+            'An image submitted as ID during the ID step is CHECKIN_ID; no other image verifies identity. '
+            'CHECKIN_CANCEL stops only the pending self-check-in, never an active stay. RECEPTION_DECLINE declines proposed staff contact. '
+            'ORDER_CONFIRM is explicit confirmation of the current pending cart; ORDER_DECLINE declines that cart; '
+            'ORDER_CANCEL cancels an existing confirmed order. Do not confirm because of a casual okay or hypothetical. '
+            'A revised order is ORDER with the complete newly requested items and quantities and requires fresh confirmation. '
+            'DEMO_CHECKIN/DEMO_CHECKOUT are explicit simulation commands. DEMO_REMINDERS_ON/OFF require clear guest opt-in/out. '
+            'For SERVICE_FEEDBACK or COMPLAINT_FEEDBACK set operation_text to yes/no only when actually answering a pending completion question. '
+            'For service feedback with an explicit ticket reference, put the resolved S- ticket ID in task_id; never drop the reference. '
+            'For COMPLAINT set operation_text to the complete resolved complaint; for SERVICE use complete resolved task details. '
+            'For BILL set operation_text to full/food/room based on which verified bill was requested. '
+            'The backend will execute ONLY your chosen action and generate verified result data. '
+            'Information, humour, corrections, language changes and side questions use your own reply without any keyword router. '
+            'Never reveal another guest data, infer OTPs, mark payments paid, bypass check-in or promise completed actions. '
+            'Extra valid actions: ' + '|'.join(sorted(ai_receptionist.EXTRA_ACTIONS))
+        )
     demo_instructions = ""
     if CUSTOMER_DEMO_MODE and (CUSTOMER_CONFIG or {}).get("demo_semantic_first"):
         demo_instructions = (
@@ -6679,7 +6721,8 @@ Understand the current hotel guest message and return JSON only.
 CURRENT GUEST MESSAGE: {str(user_text).strip()}
 Guest: {guest_info or 'NEW CUSTOMER'}
 Pending: {state_hint}
-Reply language: {get_guest_response_language(sender_phone)}. {language_instruction(get_guest_response_language(sender_phone), user_text)}
+Previous reply language: {get_guest_response_language(sender_phone)}. Match the guest's actual current language in context.
+{receptionist_contract}
 {demo_instructions}
 Use recent role-separated history to resolve follow-ups. Current message wins.
 Read the whole latest message with recent chat context before choosing an action; never route on a keyword alone. Use context for typos, speech-to-text errors, abbreviations and Hinglish. Summarize the guest's intent in understood_as. If still unclear, ask one natural clarification. Backend actions happen only after this interpretation and validation; never claim success before confirmation.
@@ -6687,7 +6730,7 @@ For a hotel fact that is absent from HOTEL KNOWLEDGE, use RECEPTION with needs_r
 Choose intent from the whole utterance and recent dialogue, not merely because a food/drink word appears. A question asking whether something is available or can be provided (for example, a glass of milk for a child) is an AVAILABILITY question, not an order; if the hotel knowledge/menu does not confirm it, use RECEPTION with needs_reception=true and say you are checking. Use ORDER only when the guest clearly asks you to bring/send/place the food or drink order. A correction such as "I asked for milk, not a dish" refers to your previous misunderstanding: acknowledge it and answer/check that same question; do not treat it as changing, cancelling, or confirming a cart. Example: "Masala chai bhijwa do, sar me dard hai" => ORDER + KITCHEN, not RECEPTION. Use ORDER_SELECTION only when the guest is genuinely asking what food item they mean, not when they ask if it is available. Do not set needs_reception merely because of a personal reason; set it only when the fact is unknown or the guest separately asks for reception/medical help.
 For RECEPTION, put the complete resolved question in reception_request, in the guest's language. Resolve 'pooch ke batao' or 'check and tell me' to the actual topic from the pending ticket/recent conversation, never send those words alone to staff. Set reception_followup=true only when asking about the SAME pending question; changing milk to cow milk is a new specific question, while 'pooch ke batao' after cow milk is a follow-up. A new unrelated question is never a reception follow-up merely because it contains 'reception' or 'confirm'. Do not claim that a message has reached staff; Python checks delivery state.
 Return this shape; use empty strings/array when not applicable:
-{{"understood_as":"short plain-language meaning of the whole message in context","action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reception_followup":false,"reception_request":"","reply":"","confidence":0.0}}
+{{"understood_as":"short plain-language meaning of the whole message in context","action":"ANSWER|SHOW_PHOTO|SHOW_MENU|ORDER|ORDER_SELECTION|ORDER_CANCEL|COMPLAINT|SERVICE|CHECKIN|BILL|HOTEL_TIMINGS|WIFI|ROOM_RATE|AVAILABILITY|ROOM_OPTIONS|LOCAL_GUIDE|RECEPTION|NONE|{'|'.join(sorted(ai_receptionist.EXTRA_ACTIONS))}","category":"HOUSEKEEPING|MAINTENANCE|KITCHEN|ROOM_SERVICE|RECEPTION|NONE","photo_target":"","menu_section":"","show_prices":false,"generic":"","items":[{{"name":"","qty":1}}],"service":"","needs_reception":false,"reception_followup":false,"reception_request":"","language":"hinglish","operation_text":"","task_id":"","reply":"","confidence":0.0}}
 The reply must answer the actual question in the current language/script. Use NONE only for genuine ambiguity, never as a generic failure reply to an answerable question.
 """
 
@@ -6709,6 +6752,15 @@ def check_ai_readiness():
         reply = str((obj or {}).get("reply", "")).strip()
         ok = bool(obj and obj.get("action") in {"ANSWER", "WIFI", "HOTEL_TIMINGS"}
                   and _ai_content_is_usable(reply, "Groq"))
+        if ai_receptionist.enabled(sys.modules[__name__]):
+            ok = ok and obj.get('language') in ai_receptionist.LANGUAGES
+            # Read-only semantic probe; never call the action dispatcher here.
+            probe = _parse_ai_json(ask_groq_chat(
+                _ai_understanding_prompt('Cow milk milega?', None, None), structured=True)) or {}
+            probe_ok = (probe.get('action') in {'RECEPTION', 'AVAILABILITY', 'ANSWER'}
+                        and probe.get('language') == 'hinglish')
+            ok = ok and probe_ok
+            print(f"AI RECEPTIONIST READ-ONLY PROBE: action={probe.get('action')} language={probe.get('language')} valid={probe_ok}", flush=True)
         _record_ai_readiness("available" if ok else "unavailable", "groq")
         print(f"AI READINESS CHECK: provider=groq status={'available' if ok else 'unavailable'} reply={reply[:400]!r}", flush=True)
     except Exception as exc:
@@ -6727,8 +6779,15 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 if raw:
                     print(f"AI UNDERSTANDING INVALID JSON FROM {provider_name.upper()}", flush=True)
                 continue
+            if ai_receptionist.enabled(sys.modules[__name__]) and (
+                obj.get('language') not in ai_receptionist.LANGUAGES
+                or not isinstance(obj.get('operation_text'), str)
+            ):
+                print(f"AI RECEPTIONIST INVALID CONTRACT FROM {provider_name.upper()}", flush=True)
+                continue
             action = str(obj.get("action", "NONE")).strip().upper()
             valid_actions = {"ANSWER","SHOW_PHOTO","SHOW_MENU","ORDER","ORDER_SELECTION","ORDER_CANCEL","COMPLAINT","SERVICE","CHECKIN","BILL","HOTEL_TIMINGS","WIFI","ROOM_RATE","AVAILABILITY","ROOM_OPTIONS","LOCAL_GUIDE","RECEPTION","NONE"}
+            valid_actions |= ai_receptionist.EXTRA_ACTIONS
             if action not in valid_actions:
                 action = "NONE"
             category = str(obj.get("category", "NONE")).strip().upper()
@@ -6764,6 +6823,9 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "needs_reception": obj.get("needs_reception") is True,
                 "reception_followup": obj.get("reception_followup") is True,
                 "reception_request": str(obj.get("reception_request", "")).strip()[:1000],
+                "language": str(obj.get('language', '')).strip().lower(),
+                "operation_text": str(obj.get('operation_text', '')).strip()[:1000],
+                "task_id": str(obj.get('task_id', '')).strip().upper(),
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
             }
@@ -8354,7 +8416,7 @@ def process_and_reply(message, sender_phone, msg_type):
         return
     if handle_reception_operator_message(message, sender_phone, msg_type):
         return
-    if handle_monika_identity(message, sender_phone, msg_type):
+    if not ai_receptionist.enabled(sys.modules[__name__]) and handle_monika_identity(message, sender_phone, msg_type):
         return
 
     # A small WhatsApp reaction on clearly positive messages makes the bot feel
@@ -8486,7 +8548,7 @@ def handle_reception_request_followup(phone, user_text, semantic=None):
     return True
 
 
-def _process_and_reply(message, sender_phone, msg_type):
+def _process_and_reply(message, sender_phone, msg_type, _executor=False, _understanding=None):
     user_text = ""
 
     print(
@@ -8539,6 +8601,14 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # -------- image --------
     elif msg_type == "image":
+        if not _executor and ai_receptionist.enabled(sys.modules[__name__]):
+            caption = str((message.get('image') or {}).get('caption') or '')
+            text = 'Guest attached an image. ' + caption
+            capture = getattr(turn_capture, 'current', None)
+            if capture is not None:
+                capture['user'] = text
+            return ai_receptionist.handle(sys.modules[__name__], sender_phone, text,
+                None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone), message=message)
         with state_lock:
             session = checkin_sessions.get(sender_phone)
 
@@ -8575,7 +8645,14 @@ def _process_and_reply(message, sender_phone, msg_type):
         )
         return
 
-    # Remember language for both typed messages and voice transcriptions.
+    if not _executor and ai_receptionist.enabled(sys.modules[__name__]):
+        guest = None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone)
+        if not CUSTOMER_DEMO_MODE and (guest is None or time.time() - shared_store.get('last_synced', 0) > SHEET_SYNC_MIN_INTERVAL):
+            fetch_sheet_data_sync()
+            guest = get_guest_stay_status(sender_phone)
+        return ai_receptionist.handle(sys.modules[__name__], sender_phone, user_text, guest, message=message)
+
+    # Legacy backend adapter uses canonical arguments only in AI receptionist mode.
     remember_guest_language(sender_phone, user_text)
 
     import demo_food
@@ -8602,7 +8679,7 @@ def _process_and_reply(message, sender_phone, msg_type):
 
     # The model reads every guest turn with the hotel/stay context before any
     # conversational shortcut or backend action can answer it.
-    ai_understanding = understand_guest_request(user_text, guest_info, sender_phone)
+    ai_understanding = _understanding if _executor else understand_guest_request(user_text, guest_info, sender_phone)
     semantic_ai_unavailable = ai_understanding is None
 
     # Demo food is a guarded executor: it uses the AI's intent, while prices,
@@ -8611,10 +8688,10 @@ def _process_and_reply(message, sender_phone, msg_type):
         return
 
     # Operational hotels must have a verified menu before accepting an order.
-    if not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
+    if not _executor and not CUSTOMER_DEMO_MODE and _unconfigured_food_order_reply(sender_phone, user_text):
         return
 
-    if handle_service_guest_confirmation(sender_phone, user_text, message):
+    if not _executor and handle_service_guest_confirmation(sender_phone, user_text, message):
         return
 
     # A human guide is an availability/service enquiry, before fact, rate or
@@ -8637,7 +8714,7 @@ def _process_and_reply(message, sender_phone, msg_type):
         return
 
     # Proposed AI handoffs need explicit guest confirmation.
-    if _handle_reception_consent(sender_phone, user_text, guest_info):
+    if not _executor and _handle_reception_consent(sender_phone, user_text, guest_info):
         return
 
     # Group-size room questions need verified capacity, not a guessed category.
@@ -8680,7 +8757,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     if semantic_ai_unavailable and not _skip_semantic_ai and _reply_capability_question(sender_phone, user_text, guest_info):
         return
 
-    learned = _lookup_reception_knowledge(user_text)
+    learned = None if _executor else _lookup_reception_knowledge(user_text)
     if learned:
         learned_reply = ("Reception previously confirmed 😊\n\n" if get_guest_response_language(sender_phone) == "english"
                          else "Reception se pehle confirm hua tha 😊\n\n") + learned["answer"]
@@ -8761,7 +8838,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     # A guest may include a reason such as "sar me dard hai"; that context must not
     # turn "Masala chai bhijwa do" into a reception handoff.
     basket = find_menu_items(user_text)
-    if _explicit_food_order_request(user_text, basket):
+    if not _executor and _explicit_food_order_request(user_text, basket):
         if basket.get("items"):
             ai_understanding = {
                 "action": "ORDER", "intent": "ORDER", "category": "KITCHEN",
@@ -8781,7 +8858,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                 "generic": basket["generic"], "service": "", "needs_reception": False, "reply": ""
             }
     # A complete configured basket also overrides a generic/uncertain AI food route.
-    elif basket.get("complete") and (not ai_understanding or ai_understanding.get("action") in {"ORDER", "ORDER_SELECTION", "NONE"}):
+    elif not _executor and basket.get("complete") and (not ai_understanding or ai_understanding.get("action") in {"ORDER", "ORDER_SELECTION", "NONE"}):
         ai_understanding = {"action": "ORDER", "confidence": 1.0,
                             "items": [{"name": x["name"], "qty": x["qty"]} for x in basket["items"]]}
 
@@ -8816,7 +8893,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     # ========================================================
     # ACTIVE COMPLAINT FEEDBACK
     # ========================================================
-    if _handle_complaint_feedback(sender_phone, user_text):
+    if not _executor and _handle_complaint_feedback(sender_phone, user_text):
         return
 
     # ========================================================
@@ -8837,7 +8914,7 @@ def _process_and_reply(message, sender_phone, msg_type):
         "order rok", "dont send", "don't send", "no longer want",
         "change my mind", "change of mind"
     ]
-    cancellation_intent = bool(active and any(x in t for x in cancellation_phrases))
+    cancellation_intent = bool(not _executor and active and any(x in t for x in cancellation_phrases))
     if not cancellation_intent:
         # Let AI resolve less predictable change-of-mind language, with or without
         # an in-memory order record. This also lets the bot explain a >5-minute
@@ -8845,7 +8922,7 @@ def _process_and_reply(message, sender_phone, msg_type):
         cancel_ai = ai_understanding or {}
         cancellation_intent = cancel_ai.get("action", cancel_ai.get("intent")) == "ORDER_CANCEL" and cancel_ai.get("confidence", 0) >= 0.55
 
-    if (_order_pending_now or _dup_pending_now) and is_no(user_text):
+    if not _executor and (_order_pending_now or _dup_pending_now) and is_no(user_text):
         cancellation_intent = False
 
     if cancellation_intent:
@@ -8911,7 +8988,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     with state_lock:
         duplicate_pending = duplicate_order_sessions.get(sender_phone)
 
-    if duplicate_pending:
+    if duplicate_pending and (not _executor or t in {'confirm', 'cancel'}):
         if is_yes(user_text):
             if not is_inhouse:
                 with state_lock:
@@ -8948,7 +9025,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                     }
                 send_whatsapp_message(
                     sender_phone,
-                    f"Ji {guest_info['name']} ji, {order_text} ka second order bhi confirm ho gaya hai. Jald deliver hoga. 🙏"
+                    f"Ji {guest_info['name']} ji, {order_text} ka second order bhi confirm ho gaya hai. 🙏"
                 )
             else:
                 send_whatsapp_message(
@@ -9045,7 +9122,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             order_sessions.pop(sender_phone, None)
         pending_selection = None
 
-    if pending_selection and pending_selection.get("selection_pending"):
+    if pending_selection and pending_selection.get("selection_pending") and (not _executor or (ai_understanding or {}).get('action') == 'ORDER_SELECTION'):
         # A guest can change their mind before choosing a specific item.
         # Treat natural phrases such as "chai rehne do" as cancellation.
         pending_cancel = any(x in t for x in ["rehne do", "rehne", "nahi chahiye", "nahin chahiye", "mat bhejo", "chodo", "chhod do", "cancel"])
@@ -9084,6 +9161,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                     if recent:
                         lang = get_guest_response_language(sender_phone)
                         with state_lock:
+                            order_sessions.pop(sender_phone, None)
                             duplicate_order_sessions[sender_phone] = {
                                 "order": order_text,
                                 "total": amount,
@@ -9099,6 +9177,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                         return
 
                     with state_lock:
+                        duplicate_order_sessions.pop(sender_phone, None)
                         order_sessions[sender_phone] = {
                             "order": order_text,
                             "total": amount,
@@ -9123,7 +9202,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     with state_lock:
         pending_order = order_sessions.get(sender_phone)
 
-    if pending_order:
+    if pending_order and (not _executor or t in {'confirm', 'cancel'}):
         if is_yes(user_text):
             if not is_inhouse:
                 with state_lock:
@@ -9160,7 +9239,7 @@ def _process_and_reply(message, sender_phone, msg_type):
 
                 send_whatsapp_message(
                     sender_phone,
-                    f"Ji {guest_info['name']} ji, {order_text} ka order Room {guest_info['room']} ke liye note ho gaya hai. Jald deliver hoga."
+                    f"Ji {guest_info['name']} ji, {order_text} ka order Room {guest_info['room']} ke liye note ho gaya hai."
                 )
 
                 with state_lock:
@@ -9198,7 +9277,7 @@ def _process_and_reply(message, sender_phone, msg_type):
     with state_lock:
         checkin = checkin_sessions.get(sender_phone)
 
-    if checkin:
+    if checkin and not _executor:
         # Expire sessions after 30 minutes.
         if time.time() - checkin.get("created", time.time()) > 1800:
             with state_lock:
@@ -9346,6 +9425,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                     except Exception:
                         qty = 1
                     with state_lock:
+                        duplicate_order_sessions.pop(sender_phone, None)
                         order_sessions[sender_phone] = {
                             "selection_pending": True,
                             "generic": generic,
@@ -9400,6 +9480,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                 choices = ", ".join(choices_list)
                 qty = max(1, int(ai_understanding.get("items", [{}])[0].get("qty", 1))) if ai_understanding.get("items") else 1
                 with state_lock:
+                    duplicate_order_sessions.pop(sender_phone, None)
                     order_sessions[sender_phone] = {"selection_pending": True, "generic": generic, "qty": qty, "created": time.time()}
                 reply = f"Ji {guest_info['name']} ji, {generic} me se kaunsa chahiye: {choices}?"
                 send_whatsapp_message(sender_phone, reply)
@@ -9415,6 +9496,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                 if recent:
                     lang = get_guest_response_language(sender_phone)
                     with state_lock:
+                        order_sessions.pop(sender_phone, None)
                         duplicate_order_sessions[sender_phone] = {"order": order_text, "total": parsed["total"], "recent": recent, "created": time.time()}
                     reply = _duplicate_order_message(guest_info["name"], guest_info["room"], recent, lang)
                     send_whatsapp_message(sender_phone, reply)
@@ -9422,6 +9504,7 @@ def _process_and_reply(message, sender_phone, msg_type):
                     remember_conversation(sender_phone, "assistant", reply)
                     return
                 with state_lock:
+                    duplicate_order_sessions.pop(sender_phone, None)
                     order_sessions[sender_phone] = {"order": order_text, "total": parsed["total"], "created": time.time()}
                 show_price = explicitly_asks_price(user_text)
                 if show_price:
@@ -9880,6 +9963,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             qty_match = re.search(r"\b(\d+)\b", normalize_text(user_text))
             qty = int(qty_match.group(1)) if qty_match else 1
             with state_lock:
+                duplicate_order_sessions.pop(sender_phone, None)
                 order_sessions[sender_phone] = {
                     "selection_pending": True,
                     "generic": generic,
@@ -9907,6 +9991,7 @@ def _process_and_reply(message, sender_phone, msg_type):
         if recent:
             lang = get_guest_response_language(sender_phone)
             with state_lock:
+                order_sessions.pop(sender_phone, None)
                 duplicate_order_sessions[sender_phone] = {
                     "order": order_text,
                     "total": parsed["total"],
@@ -9922,6 +10007,7 @@ def _process_and_reply(message, sender_phone, msg_type):
             return
 
         with state_lock:
+            duplicate_order_sessions.pop(sender_phone, None)
             order_sessions[sender_phone] = {
                 "order": order_text,
                 "total": parsed["total"],

@@ -201,5 +201,6 @@
     "Keep WhatsApp replies short, natural and helpful in the guest's language.",
     "When a guest asks for hotel or room photos, send the configured real-property public photos only. Do not treat gallery/reception images as room categories."
   ],
-  "demo_mode": true
+  "demo_mode": true,
+  "ai_receptionist_flow": true
 }

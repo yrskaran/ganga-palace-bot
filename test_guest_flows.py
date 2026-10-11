@@ -21,6 +21,53 @@ STAFF = '919222222222'
 NOW = datetime(2026, 10, 3, 8, 0, 45, tzinfo=app.IST)
 
 class GuestFlows(unittest.TestCase):
+    def test_ai_order_confirmation_cannot_become_service_feedback(self):
+        app.order_sessions[GUEST] = {'order':'1 x Poha', 'total':70, 'created':__import__('time').time()}
+        append = self.mock('append_kitchen_order', return_value=True)
+        feedback = self.mock('handle_service_guest_confirmation', side_effect=AssertionError('wrong operation'))
+        self.mock('send_staff_alert', return_value=True)
+        app._process_and_reply({'text':{'body':'confirm'}}, GUEST, 'text',
+            _executor=True, _understanding={'action':'ORDER','confidence':0.95})
+        append.assert_called_once()
+        feedback.assert_not_called()
+
+    def test_ai_complaint_cannot_be_hijacked_by_duplicate_order(self):
+        app.duplicate_order_sessions[GUEST] = {'order':'1 x Poha', 'total':70, 'created':__import__('time').time()}
+        append = self.mock('_append_complaint', return_value={'id':'C-TEST','row_number':2,'category':'Maintenance'})
+        self.mock('_update_complaint', return_value=True)
+        self.mock('send_staff_alert', return_value=True)
+        app._process_and_reply({'text':{'body':'AC is not working'}}, GUEST, 'text',
+            _executor=True, _understanding={'action':'COMPLAINT','intent':'COMPLAINT','category':'MAINTENANCE','confidence':0.95})
+        append.assert_called_once()
+        self.assertIn(GUEST, app.duplicate_order_sessions)
+
+    def test_ai_revised_order_replaces_opposite_pending_cart(self):
+        import time
+        for recent in (None, {'order':'2 x New Poha','total':140,'minutes_ago':1}):
+            with self.subTest(duplicate=bool(recent)):
+                app.order_sessions[GUEST] = {'order':'1 x Old Chai','total':30,'created':time.time()}
+                app.duplicate_order_sessions[GUEST] = dict(app.order_sessions[GUEST])
+                self.mock('_ai_match_menu_items', return_value={'items':[{'name':'New Poha','qty':2,'amount':140}], 'total':140})
+                self.mock('_recent_matching_kitchen_order', return_value=recent)
+                append = self.mock('append_kitchen_order', return_value=True)
+                self.mock('send_staff_alert', return_value=True)
+                meaning = {'action':'ORDER','confidence':0.95,'items':[{'name':'New Poha','qty':2}]}
+                app._process_and_reply({'text':{'body':'2 New Poha'}}, GUEST, 'text', _executor=True, _understanding=meaning)
+                self.assertEqual(int(GUEST in app.order_sessions)+int(GUEST in app.duplicate_order_sessions), 1)
+                app._process_and_reply({'text':{'body':'confirm'}}, GUEST, 'text', _executor=True, _understanding={'action':'ORDER','confidence':0.95})
+                append.assert_called_once_with('203','Kitty','2 x New Poha',140)
+
+    def test_ai_confirmed_order_cancel_preserves_pending_cart(self):
+        import time
+        self.mock('active_orders', {GUEST:{'order':'1 x Old Chai','total':30,'time':time.time()}})
+        app.order_sessions[GUEST] = {'order':'2 x New Poha','total':140,'created':time.time()}
+        update = self.mock('update_kitchen_order_status', return_value=True)
+        self.mock('send_staff_alert', return_value=True)
+        app._process_and_reply({'text':{'body':'cancel'}}, GUEST, 'text', _executor=True,
+            _understanding={'action':'ORDER_CANCEL','confidence':0.95})
+        update.assert_called_once_with('203','1 x Old Chai','CANCELLED')
+        self.assertEqual(app.order_sessions[GUEST]['order'], '2 x New Poha')
+
     def test_reception_followup_uses_pending_topic_without_duplicate_alert(self):
         self.mock('understand_guest_request', return_value={
             'action': 'RECEPTION', 'confidence': 0.95, 'needs_reception': True,

@@ -89,8 +89,9 @@ class AdminTests(unittest.TestCase):
             clean.assert_called_once()
             ai.assert_not_called()
 
-    def test_monika_identity_without_ai(self):
-        with patch.object(app, 'send_whatsapp_message') as send, patch.object(app, 'get_guest_response_language', return_value='hinglish'), patch.object(app, 'understand_guest_request', side_effect=AssertionError('AI not needed')):
+    def test_legacy_monika_identity_without_ai(self):
+        # Compatibility executor stays available; the enabled AI gateway owns introductions.
+        with patch.object(app, 'CUSTOMER_CONFIG', {'ai_receptionist_flow': False}), patch.object(app, 'send_whatsapp_message') as send, patch.object(app, 'get_guest_response_language', return_value='hinglish'), patch.object(app, 'understand_guest_request', side_effect=AssertionError('AI not needed')):
             app.process_and_reply({'type':'text','text':{'body':'aapka naam kya hai'}}, '919111111111', 'text')
             self.assertIn('Monika', send.call_args.args[1])
 

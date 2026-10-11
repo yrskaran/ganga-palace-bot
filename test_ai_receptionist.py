@@ -45,6 +45,19 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertEqual(app.AI_READINESS['status'], 'available')
         app.send_whatsapp_message.assert_not_called()
 
+    def test_live_item_result_probe_actually_runs_composer_without_transport(self):
+        import json
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70}]
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita — ₹70. DEMO menu price hai."}', '{"supported":true}']
+        with patch.object(app, 'GROQ_API_KEY','test'), patch.object(app,'ask_groq_chat',
+            return_value=json.dumps(self.understanding(action='MENU_ITEM_INFO', operation_text='',
+                show_prices=True,items=[{'name':'Boondi Raita','qty':1}]))):
+            app.check_ai_readiness()
+        self.assertEqual(app.ask_ai_chat.call_count, 2)
+        self.assertEqual(app.AI_READINESS['status'], 'available')
+        app.send_whatsapp_message.assert_not_called()
+        self.assertIsNone(gateway.current.get())
+
     def test_composer_rejects_drafting_even_when_fact_checker_accepts(self):
         token = gateway.current.set({'phone':self.phone, 'text':'menu',
             'language':'hinglish', 'meaning':'asks menu'})

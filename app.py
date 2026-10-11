@@ -6785,7 +6785,7 @@ def check_ai_readiness():
             print(f"AI RECEPTIONIST READ-ONLY PROBE: action={obj.get('action')} language={obj.get('language')} valid={ok}", flush=True)
             if ok and item_probe:
                 source = f"{item_probe['name']} — ₹{item_probe['price']}\nDEMO menu price; no real kitchen availability confirmed."
-                token = ai_receptionist.current.set({'phone':'', 'text':query,
+                token = ai_receptionist.current.set({'phone':format_whatsapp_number(''), 'text':query,
                     'language':'hinglish','meaning':'Guest asks the configured item price','guest':None})
                 try:
                     final = ai_receptionist.compose(sys.modules[__name__], '', source)

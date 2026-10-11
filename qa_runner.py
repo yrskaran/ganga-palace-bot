@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 import ai_receptionist as ai
 import demo_food
 from qa_conversations import conversations
@@ -22,6 +23,8 @@ def batch_rows(obj, ids):
     if any(not isinstance(row, dict) for row in rows):
         return None
     keys = [row.get('id') for row in rows]
+    if any(not isinstance(key,str) for key in keys):
+        return None
     if len(set(keys)) != len(keys) or set(keys) != set(ids):
         return None
     return {row['id']: row for row in rows}
@@ -166,6 +169,35 @@ class Transport:
                     return rows,model
                 if attempt:
                     break
+        # Other already-configured providers get one bounded attempt; respect
+        # their application cooldowns and never retry exhausted credit accounts.
+        alternatives=[]
+        if getattr(self.bot,'COHERE_API_KEY','') and not self.bot._cohere_circuit_open():
+            alternatives.append(('cohere',self.bot.COHERE_MODEL,self.bot.COHERE_API_KEY,'https://api.cohere.ai/compatibility/v1/chat/completions'))
+        if getattr(self.bot,'OPENROUTER_API_KEY','') and not self.bot._openrouter_circuit_open():
+            models=self.bot._openrouter_model_candidates()
+            if models:
+                alternatives.append(('openrouter',models[0],self.bot.OPENROUTER_API_KEY,'https://openrouter.ai/api/v1/chat/completions'))
+        for provider,model,key,url in alternatives:
+            if provider in self.blocked:
+                continue
+            payload={'model':model,'messages':[{'role':'system','content':'Hotel receptionist diagnostic. Return JSON only. Cases independent.'},{'role':'user','content':prompt}],'temperature':0.1,'response_format':{'type':'json_object'},'max_tokens':2400}
+            try:
+                response=self.bot.requests.post(url,headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'},json=payload,timeout=55)
+                if response.status_code==200:
+                    body=response.json()
+                    rows=batch_rows(self.bot._parse_ai_json(body['choices'][0]['message'].get('content','')),ids)
+                    tokens=body.get('usage',{}).get('total_tokens',0)
+                    self.usage+=tokens
+                    print('HOTEL QA USAGE: '+json.dumps({'model':model,'provider':provider,'stage':stage,'tokens':tokens,'total':self.usage,'valid':bool(rows)}),flush=True)
+                    time.sleep(30)
+                    if rows:
+                        return rows,model
+                else:
+                    print('HOTEL QA PROVIDER ERROR: '+json.dumps({'model':model,'provider':provider,'stage':stage,'status':response.status_code}),flush=True)
+            except self.bot.requests.RequestException:
+                print('HOTEL QA PROVIDER ERROR: '+json.dumps({'provider':provider,'stage':stage,'type':'network'}),flush=True)
+            self.blocked.add(provider)
         return None,None
 
 
@@ -185,16 +217,36 @@ def recent(history):
     return list(reversed(result))
 
 
-def run(bot, run_id):
+def run(bot, run_id, resume=True):
     chats=[ChatState(c) for c in conversations()]
     config=bot.CUSTOMER_CONFIG
     transport=Transport(bot)
     policy=ai.interpretation_prompt(bot,'<provided separately in each case>',None,None,'<per-case verified session state>')
     facts={k:config.get(k) for k in ('hotel','rooms','room_rules','policies','faq','local_guide','maps')}
     rows=[]
+    seed_path=Path(__file__).with_name('qa_results')/'2026-10-12-actual.jsonl'
+    seeds={}
+    if resume and seed_path.exists():
+        for line in seed_path.read_text().splitlines():
+            row=json.loads(line)
+            seeds[row['id']]=row
     for turn_index in range(10):
         for offset in range(0,len(chats),4):
             group=chats[offset:offset+4]
+            remaining=[]
+            for chat in group:
+                key=f"{chat.chat['id']}-{turn_index+1:02}"
+                if key in seeds:
+                    row=seeds[key]
+                    if row.get('plan'):
+                        execution_result(chat,row['plan'],config,bot)
+                    chat.remember(row['question'],row.get('reply') or '[No model reply: provider failure]')
+                    rows.append(row)
+                else:
+                    remaining.append(chat)
+            group=remaining
+            if not group:
+                continue
             cases=[]
             for chat in group:
                 turn=chat.chat['turns'][turn_index]
@@ -225,7 +277,15 @@ def run(bot, run_id):
                 turn=chat.chat['turns'][turn_index]
                 plan=(plans or {}).get(case['id'])
                 reply=outputs.get(case['id'],{}).get('reply','')
-                errors=errors_for(turn,plan,config)
+                invalid_reply=not isinstance(reply,str)
+                if invalid_reply:
+                    reply=''
+                try:
+                    errors=errors_for(turn,plan,config)
+                except (TypeError,ValueError,KeyError,AttributeError):
+                    errors=['Malformed model interpretation fields']
+                if invalid_reply:
+                    errors.append('Non-string model reply')
                 if plan and plan.get("qa_execution_error"):
                     errors.append("Malformed action arguments")
                 if not reply:
@@ -257,10 +317,37 @@ def run(bot, run_id):
     return rows
 
 
+def normal_probes(bot,run_id):
+    """Reproduce four important batch findings through normal production AI calls."""
+    from guest_checks import render
+    cases=[
+        {'id':'PROBE-THALI','text':'Standard veg thali bhi hai?','actions':['MENU_ITEM_INFO'],'names':['Standard Veg Thali'],'prices':False},
+        {'id':'PROBE-QTY','text':'2 masala chai room mein bhej do','actions':['ORDER','ORDER_SELECTION'],'names':['Masala Chai'],'qty':2},
+        {'id':'PROBE-FAILURE','text':'Kal 2 logo ke liye kamra milega?','actions':['RECEPTION','AVAILABILITY'],'source':'Reception request for 2 guests tomorrow recorded locally, but WhatsApp delivery to reception failed. No staff availability confirmation received. No booking created.'},
+        {'id':'PROBE-ID','text':'Checkin kaise karna hai?','actions':['ANSWER','CHECKIN','RECEPTION']},
+    ]
+    for case in cases:
+        guest={'name':'QA Guest','room':'240','status':'CHECKED_IN','is_inhouse':True} if case['id']=='PROBE-QTY' else None
+        prompt=ai.interpretation_prompt(bot,case['text'],guest,None,'{}')
+        obj=bot._parse_ai_json(bot.ask_groq_chat(prompt,guest,structured=True,context_history=[]))
+        obj=ai.review_plan(bot,case['text'],obj,[],guest=guest,pending={})
+        errors=errors_for(case,obj,bot.CUSTOMER_CONFIG)
+        reply=''
+        if isinstance(obj,dict):
+            if case['id']=='PROBE-QTY':
+                chat=ChatState({'id':'P-QTY','guest':guest})
+                case['source']=execution_result(chat,obj,bot.CUSTOMER_CONFIG,bot)
+            reply=render(bot,case,obj)
+        print('HOTEL QA NORMAL PROBE: '+json.dumps({'id':case['id'],'run_id':run_id,'question':case['text'],'plan':obj,'reply':reply,'errors':errors,'source':case.get('source',''),'mode':'normal production interpreter, plan review and composer; isolated execution receipt'},ensure_ascii=False),flush=True)
+        time.sleep(45)
+
+
 def start(bot,run_id):
     def worker():
         time.sleep(45)
         try:
+            if os.getenv('AI_QA_PROBES','1')=='1':
+                normal_probes(bot,run_id)
             run(bot,run_id)
         except Exception as exc:
             print('HOTEL QA WORKER ERROR: '+type(exc).__name__,flush=True)

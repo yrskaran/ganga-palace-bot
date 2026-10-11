@@ -74,6 +74,8 @@ GEMINI_LOCK = threading.RLock()
 
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "").strip()
+GROQ_FALLBACK_CHAT_MODEL = os.getenv("GROQ_FALLBACK_CHAT_MODEL", "openai/gpt-oss-20b").strip()
+GROQ_MODEL_UNAVAILABLE_UNTIL = {}
 
 # Third AI provider: OpenRouter explicit free conversational models. It is optional;
 # when no key is configured, this provider is skipped without affecting the other two.
@@ -143,7 +145,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V76-FOCUSED-PLAN-REVIEW"
+APP_VERSION = "HOTEL-AI-V77-MODEL-QUOTA-FAILOVER"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -5090,12 +5092,23 @@ def _compact_ai_text(text, limit):
     return text[:limit].rstrip() + "\n[HOTEL DATA CONTEXT TRUNCATED FOR AI TOKEN SAFETY]"
 
 
-def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=False, context_history=None):
+def ask_groq_chat(user_text, guest_info=None, sender_phone=None, structured=False, context_history=None, _model=None, _allow_fallback=True):
     if _groq_circuit_open():
         return None
-    model = get_active_groq_model()
+    model = _model or get_active_groq_model()
     if not model:
         return None
+    def fallback():
+        alternate = GROQ_FALLBACK_CHAT_MODEL
+        if not _allow_fallback or not alternate or alternate == model:
+            return None
+        print(f"GROQ MODEL FAILOVER: {model} -> {alternate}", flush=True)
+        return ask_groq_chat(user_text, guest_info, sender_phone, structured,
+                             context_history, _model=alternate, _allow_fallback=False)
+    with GROQ_LOCK:
+        model_blocked = time.time() < GROQ_MODEL_UNAVAILABLE_UNTIL.get(model, 0)
+    if model_blocked:
+        return fallback()
 
     guest_message = _extract_semantic_guest_message(user_text)
     semantic_wrapper = guest_message != str(user_text or "").strip()
@@ -5252,6 +5265,11 @@ Hotel knowledge:
             else:
                 reason = "Groq rate limit reached"
             wait_seconds = _rate_limit_retry_seconds(res, default_wait)
+            if "TPD" in upper_body or "TOKENS PER DAY" in upper_body or "PER DAY" in upper_body:
+                with GROQ_LOCK:
+                    GROQ_MODEL_UNAVAILABLE_UNTIL[model] = time.time() + wait_seconds
+                print(f"GROQ MODEL CIRCUIT OPEN: {model} for ~{wait_seconds}s", flush=True)
+                return fallback()
             _groq_set_circuit_breaker(wait_seconds, reason)
             return None
 

@@ -4,6 +4,7 @@ The interpreter and result composer are real. Menu rendering uses production
 read-only functions; operational results are explicitly simulated fixtures.
 """
 import json
+import os
 import re
 import threading
 import time
@@ -74,7 +75,9 @@ def scenarios(demo=True):
               'source':'No saved pending cart exists. Menu information alone cannot be confirmed as an order. Ask for the intended order quantities and verify active stay before creating any order.'}),
             ('Mera poha wala order confirm hua tha na?', ['ANSWER','NONE'],
              {'pending':{'active_orders':{'order':'1 Poha','total':70}},
-              'source':'The existing 1 Poha order is saved, total ₹70. No new order was created. Kitchen delivery or payment is not verified.'})
+              'source':'The existing 1 Poha order is saved, total ₹70. No new order was created. Kitchen delivery or payment is not verified.'}),
+            ("What's my room number", ['ANSWER'], {'language':'english','requires_guest':True}),
+            ('Room number kya hai mera', ['ANSWER'], {'requires_guest':True})
         ])
     return [dict(id=f'{i:02}', text=text, actions=actions, **details)
             for i, (text, actions, details) in enumerate(cases, 1)]
@@ -166,10 +169,17 @@ def run(bot, run_id, ids=None, delay=75):
         if ids and case['id'] not in ids:
             continue
         started = time.monotonic()
-        prompt = ai.interpretation_prompt(bot, case['text'], None, None, json.dumps(case.get('pending', {})))
-        obj = bot._parse_ai_json(bot.ask_groq_chat(prompt, structured=True, context_history=case.get('history', [])))
-        obj = ai.review_plan(bot, case['text'], obj, case.get('history', []), pending=case.get('pending', {}))
+        guest = None
+        if case.get('requires_guest'):
+            guest = bot.get_guest_stay_status(os.getenv('AI_GUEST_CHECK_PHONE', ''))
+            if guest and guest.get('is_inhouse'):
+                case['source'] = f"The sender has a verified active stay in room {guest['room']}. This is their own room, not another guest's record."
+        prompt = ai.interpretation_prompt(bot, case['text'], guest, None, json.dumps(case.get('pending', {})))
+        obj = bot._parse_ai_json(bot.ask_groq_chat(prompt, guest, structured=True, context_history=case.get('history', [])))
+        obj = ai.review_plan(bot, case['text'], obj, case.get('history', []), guest=guest, pending=case.get('pending', {}))
         errors = errors_for(case, obj, bot.CUSTOMER_CONFIG)
+        if case.get('requires_guest') and not (guest and guest.get('is_inhouse')):
+            errors.append('No verified sender active stay in Sheet cache')
         reply = ''
         if isinstance(obj, dict):
             try:

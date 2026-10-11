@@ -48,7 +48,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
     def test_live_item_result_probe_actually_runs_composer_without_transport(self):
         import json
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Boondi Raita','price':70}]
-        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita — ₹70. DEMO menu price hai."}', '{"supported":true}']
+        app.ask_ai_chat.side_effect = ['{"reply":"Ji, Boondi Raita ki demo menu jaankari yeh rahi."}', '{"supported":true}']
         with patch.object(app, 'GROQ_API_KEY','test'), patch.object(app,'ask_groq_chat',
             return_value=json.dumps(self.understanding(action='MENU_ITEM_INFO', operation_text='',
                 show_prices=True,items=[{'name':'Boondi Raita','qty':1}]))):

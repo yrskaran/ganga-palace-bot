@@ -6788,10 +6788,12 @@ def check_ai_readiness():
                 token = ai_receptionist.current.set({'phone':format_whatsapp_number(''), 'text':query,
                     'language':'hinglish','meaning':'Guest asks the configured item price','guest':None})
                 try:
-                    final = ai_receptionist.compose(sys.modules[__name__], '', source)
+                    intro_result = ai_receptionist.item_info_introduction([item_probe['name']], True)
+                    cards = ai_receptionist.compose_cards(sys.modules[__name__], '', [source], intro_result)
+                    final = '\n\n'.join(cards)
                 finally:
                     ai_receptionist.current.reset(token)
-                result_ok = final != source
+                result_ok = not final.startswith(intro_result) and source in final
                 print(f"AI RECEPTIONIST RESULT PROBE: valid={result_ok} reply={final[:300]!r}", flush=True)
                 ok = ok and result_ok
 

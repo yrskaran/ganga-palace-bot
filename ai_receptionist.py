@@ -126,13 +126,26 @@ def _direct(bot, phone, text):
         turn['direct'] = False
 
 
-def send_menu(bot, phone, cards):
-    """AI writes one introduction; configured item/price cards stay verbatim."""
-    result = ('Requested DEMO menu is shown below. Demo only; no real kitchen dispatch.'
-              if bot.CUSTOMER_DEMO_MODE else 'Requested hotel menu is shown below.')
+def compose_cards(bot, phone, cards, introduction_result=None):
+    """Compose only the explanation; financial and menu rows remain exact."""
+    result = introduction_result or (
+        'Requested DEMO menu is shown below. Demo only; no real kitchen dispatch.'
+        if bot.CUSTOMER_DEMO_MODE else 'Requested hotel menu is shown below.')
     intro = compose(bot, phone, result)
-    for index, card in enumerate(cards):
-        _direct(bot, phone, (intro + '\n\n' if index == 0 else '') + card)
+    return [(intro + '\n\n' if index == 0 else '') + card
+            for index, card in enumerate(cards)]
+
+
+def send_menu(bot, phone, cards, introduction_result=None):
+    for card in compose_cards(bot, phone, cards, introduction_result):
+        _direct(bot, phone, card)
+
+
+def item_info_introduction(names, demo=False):
+    result = 'Requested menu item information is shown below: ' + ', '.join(names) + '.'
+    if demo:
+        result += ' DEMO menu only; no real kitchen availability confirmed.'
+    return result
 
 
 def _menu_item_info(bot, phone, result):
@@ -154,7 +167,8 @@ def _menu_item_info(bot, phone, result):
         return
     if bot.CUSTOMER_DEMO_MODE:
         lines.append('DEMO menu price; no real kitchen availability confirmed.')
-    bot.send_whatsapp_message(phone, '\n'.join(lines))
+    send_menu(bot, phone, ['\n'.join(lines)], introduction_result=item_info_introduction(
+        [menu[bot.normalize_text(item['name'])][0] for item in result['items']], bot.CUSTOMER_DEMO_MODE))
 
 
 def handle(bot, phone, text, guest, message=None, semantic=None):

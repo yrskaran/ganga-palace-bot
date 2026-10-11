@@ -35,6 +35,15 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         return dict({'action': 'ANSWER', 'reply': 'AI ne poori baat samjhi.',
                      'language': 'hinglish', 'confidence': 0.95}, **values)
 
+    def test_live_readiness_uses_one_read_only_contract_probe(self):
+        import json
+        with patch.object(app, 'GROQ_API_KEY', 'test'), patch.object(app, 'ask_groq_chat',
+            return_value=json.dumps(self.understanding(action='RECEPTION', operation_text=''))) as provider:
+            app.check_ai_readiness()
+        provider.assert_called_once()
+        self.assertEqual(app.AI_READINESS['status'], 'available')
+        app.send_whatsapp_message.assert_not_called()
+
     def test_enabled_router_bypasses_keyword_and_language_shortcuts(self):
         result = self.understanding()
         with patch.object(app, 'understand_guest_request', return_value=result) as brain, \

@@ -6746,21 +6746,20 @@ def check_ai_readiness():
         _record_ai_readiness("not_configured", "groq")
         return
     try:
-        prompt = _ai_understanding_prompt("What are the Wi-Fi, parking and check-out details?", None, None)
+        receptionist = ai_receptionist.enabled(sys.modules[__name__])
+        query = 'Cow milk milega?' if receptionist else 'What are the Wi-Fi, parking and check-out details?'
+        prompt = _ai_understanding_prompt(query, None, None)
         raw = ask_groq_chat(prompt, structured=True)
-        obj = _parse_ai_json(raw)
-        reply = str((obj or {}).get("reply", "")).strip()
-        ok = bool(obj and obj.get("action") in {"ANSWER", "WIFI", "HOTEL_TIMINGS"}
-                  and _ai_content_is_usable(reply, "Groq"))
-        if ai_receptionist.enabled(sys.modules[__name__]):
-            ok = ok and obj.get('language') in ai_receptionist.LANGUAGES
-            # Read-only semantic probe; never call the action dispatcher here.
-            probe = _parse_ai_json(ask_groq_chat(
-                _ai_understanding_prompt('Cow milk milega?', None, None), structured=True)) or {}
-            probe_ok = (probe.get('action') in {'RECEPTION', 'AVAILABILITY', 'ANSWER'}
-                        and probe.get('language') == 'hinglish')
-            ok = ok and probe_ok
-            print(f"AI RECEPTIONIST READ-ONLY PROBE: action={probe.get('action')} language={probe.get('language')} valid={probe_ok}", flush=True)
+        obj = _parse_ai_json(raw) or {}
+        reply = str(obj.get("reply", "")).strip()
+        expected = {'RECEPTION', 'AVAILABILITY', 'ANSWER'} if receptionist else {'ANSWER', 'WIFI', 'HOTEL_TIMINGS'}
+        ok = bool(obj.get('action') in expected and _ai_content_is_usable(reply, 'Groq'))
+        if receptionist:
+            # A single read-only probe checks the full contract without consuming
+            # two large interpreter prompts back-to-back under the TPM allowance.
+            ok = (ok and obj.get('language') == 'hinglish'
+                  and isinstance(obj.get('operation_text'), str))
+            print(f"AI RECEPTIONIST READ-ONLY PROBE: action={obj.get('action')} language={obj.get('language')} valid={ok}", flush=True)
         _record_ai_readiness("available" if ok else "unavailable", "groq")
         print(f"AI READINESS CHECK: provider=groq status={'available' if ok else 'unavailable'} reply={reply[:400]!r}", flush=True)
     except Exception as exc:

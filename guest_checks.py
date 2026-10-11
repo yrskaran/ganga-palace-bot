@@ -213,6 +213,9 @@ def run(bot, run_id, ids=None, delay=75):
 
 
 def start(bot, run_id, ids=None):
+    if str(run_id).startswith("qa200-"):
+        import qa_runner
+        return qa_runner.start(bot, run_id)
     def worker():
         # Startup readiness and guest traffic retain the provider budget first.
         time.sleep(45)

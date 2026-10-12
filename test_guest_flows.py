@@ -15,6 +15,7 @@ from reliability import Store
 ORIGINAL_APPEND=app._append_service_task_sheet
 ORIGINAL_UPDATE=app._update_service_task_sheet
 ORIGINAL_ENSURE=app._ensure_service_requests_sheet
+ORIGINAL_GET_GUEST_STAY_STATUS=app.get_guest_stay_status
 
 GUEST = '919555555555'
 STAFF = '919222222222'
@@ -200,13 +201,13 @@ class GuestFlows(unittest.TestCase):
             ['450','Suite','3300','New',GUEST,'CHECKED_IN',
              '03-Oct-2026 05:03 AM','']]
         with patch.object(app,'now_ist',return_value=NOW):
-            guest=app.get_guest_stay_status(GUEST)
+            guest=ORIGINAL_GET_GUEST_STAY_STATUS(GUEST)
             self.assertEqual(guest['room'],'450')
             self.assertEqual(guest['name'],'New')
             app.shared_store['rooms'].append(
                 ['451','Suite','3300','Duplicate',GUEST,'CHECKED_IN',
                  '03-Oct-2026 05:10 AM',''])
-            self.assertEqual(app.get_guest_stay_status(GUEST)['status'],'AMBIGUOUS')
+            self.assertEqual(ORIGINAL_GET_GUEST_STAY_STATUS(GUEST)['status'],'AMBIGUOUS')
 
     def test_lifecycle_reply_unwraps_json_but_never_sends_raw_json(self):
         self.mock('AI_LIFECYCLE_WORDING',True)

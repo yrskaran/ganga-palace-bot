@@ -170,8 +170,17 @@ def forward_unknown(bot, guest_phone, guest_text, clarification=""):
         print("RECEPTION LEARNING DISABLED: no configured reception phone", flush=True)
         return "failed"
 
-    # Use the already tested request-ID + WhatsApp quoted-reply mapping and
-    # existing persistent Reception_Requests worksheet. No room lookup.
+    # Refuse to send a mapped alert if its durable ticket ledger is inaccessible:
+    # otherwise an alert may arrive at reception but its reply would be lost
+    # after an ordinary Render restart.
+    try:
+        if not bot._ensure_reception_sheet("Reception_Requests", bot.RECEPTION_REQUEST_HEADERS):
+            return "failed"
+    except Exception as exc:
+        print("RECEPTION LEDGER UNAVAILABLE:", type(exc).__name__, flush=True)
+        return "failed"
+
+    # Use the existing WhatsApp quoted-reply mapping; no room/guest stay lookup.
     message = str(guest_text or "").strip()
     if clarification and clarification.casefold() != message.casefold():
         message += "\nReception clarification required: " + clarification[:350]
@@ -182,7 +191,17 @@ def forward_unknown(bot, guest_phone, guest_text, clarification=""):
     except Exception as exc:
         print("RECEPTION FORWARD ERROR:", type(exc).__name__, flush=True)
         return "failed"
-    return "sent" if accepted else "failed"
+    if not accepted:
+        return "failed"
+    with bot.state_lock:
+        ticket = dict(bot.reception_request_sessions.get(phone) or {})
+    if (ticket.get("source") != "ai_missing_hotel_knowledge" or
+            not ticket.get("request_id") or not ticket.get("alert_message_id") or
+            int(ticket.get("sheet_row") or 0) < 2):
+        # The alert was accepted, but durable reply tracking is uncertain.
+        print("RECEPTION ALERT ACCEPTED BUT NOT DURABLY TRACKED", flush=True)
+        return "untracked"
+    return "sent"
 
 
 def _plain_forward(bot, number, body):

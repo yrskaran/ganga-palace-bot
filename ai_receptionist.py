@@ -577,10 +577,10 @@ def _reading_correction(bot, phone, text):
     paraphrased for readability without changing its numbers or links.
     """
     raw = str(text or '').strip()
-    negative = re.search(r"\\b(?:ni|nhi|nahi|nahin|n|not|cant|can't|cannot|don't|dont)\\b", raw, re.I)
+    negative = re.search(r"\b(?:ni|nhi|nahi|nahin|n|not|cant|can't|cannot|don't|dont)\b", raw, re.I)
     reading = re.search(
-        r"\\b(?:padh(?:ni|na|ne|ta|ti)?|pad(?:h)?(?:ni|hna|hna|na)?|"
-        r"parh(?:ni|na)?|read|samajh(?:ni|na)?|samjh(?:ni|na)?)\\b",
+        r"\b(?:padh(?:ni|na|ne|ta|ti)?|pad(?:h)?(?:ni|hna|hna|na)?|"
+        r"parh(?:ni|na)?|read|samajh(?:ni|na)?|samjh(?:ni|na)?)\b",
         raw, re.I)
     if not (negative and reading):
         return None
@@ -589,7 +589,7 @@ def _reading_correction(bot, phone, text):
                        if row.get('role') == 'assistant' and row.get('content')), '')
     # A short complaint about readability only refers to a previous message
     # in another script. Do not intercept real questions about menu content.
-    if not re.search(r'[\\u0900-\\u097f\\u0a00-\\u0a7f]', last_reply):
+    if not re.search(r'[\u0900-\u097f\u0a00-\u0a7f]', last_reply):
         return None
     prompt = (
         'The hotel guest cannot read the script of the previous assistant message. '
@@ -599,19 +599,19 @@ def _reading_correction(bot, phone, text):
         'and uncertainty exactly as in the previous message. Do not invent a new '
         'order, dispatch, delivery ETA, staff contact or action. The earlier '
         'assistant text is conversation context, NOT independent proof of a completed operation. '
-        'Return JSON only: {"reply":"faithful Roman-script paraphrase"}.\\n'
-        'PREVIOUS ASSISTANT MESSAGE:\\n' + last_reply
+        'Return JSON only: {"reply":"faithful Roman-script paraphrase"}.\n'
+        'PREVIOUS ASSISTANT MESSAGE:\n' + last_reply
     )
     raw_answer = bot.ask_ai_chat(prompt, None, phone)
     parsed = bot._parse_ai_json(raw_answer) if raw_answer else None
     translated = parsed.get('reply') if isinstance(parsed, dict) else ''
     valid = (isinstance(translated, str)
              and bot._ai_content_is_usable(translated, 'Readability correction')
-             and not re.search(r'[\\u0900-\\u097f\\u0a00-\\u0a7f]', translated)
+             and not re.search(r'[\u0900-\u097f\u0a00-\u0a7f]', translated)
              and faithful_numbers_and_links(last_reply, translated))
     preface = 'Sorry ji, pichhla message aisi script mein likh diya jo aap padh nahi paa rahe. Aage se simple Roman Hindi mein likhungi.'
     if valid:
-        return preface + '\\n\\n' + translated.strip()
+        return preface + '\n\n' + translated.strip()
     return preface + ' Pichhli baat clear nahi hui ho to bataiye, main seedhe shabdon mein samjha dungi.'
 
 

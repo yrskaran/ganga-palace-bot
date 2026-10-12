@@ -72,7 +72,10 @@ def facts_for_conversation(bot, public_text, conversation_query="", max_bytes=93
     text = str(public_text or "").strip()
     section_matches = list(re.finditer(r"(?m)^(\d{1,2})\.\s+[A-Z].*$", text))
     if not section_matches:
-        return text  # Support flat fact snippets in other callers and tests.
+        # Existing callers can supply an unsectioned knowledge excerpt.
+        if len(text.encode("utf-8")) <= max_bytes:
+            return text
+        return bot._ai_knowledge_snapshot(max_bytes, conversation_query, raw_override=text)
     sections = {}
     for idx, match in enumerate(section_matches):
         end = section_matches[idx + 1].start() if idx + 1 < len(section_matches) else len(text)

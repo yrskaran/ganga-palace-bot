@@ -98,13 +98,10 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         'Interpret the whole guest turn as the virtual hotel receptionist; JSON only. '
         'Use role-separated history for pronouns, missing subjects, typos and corrections; current topic wins. '
         'AI understands and replies; Python validates and executes. State receipts alone prove saved actions. '
-        'Language comes from the CURRENT guest message and any explicit preference: English, simple Roman Hindi/Hinglish, '
-        'Devanagari Hindi, Punjabi (Roman or Gurmukhi), and other configured Indian languages are supported. '
-        'Do NOT claim that the assistant speaks only Hindi or English. A question like Punjabi bhi aati hai? is about '
-        'language capability, not a request to switch. A command like Punjabi vich gal karo changes language. '
-        'Keep Roman Hindi casual: common words such as baat, madad, batao, not stiff shuddh Hindi or '
-        'repeated sahayata/kripya. For Hinglish keep Latin letters. Follow the guest script and language preference. '
-        'Warm 1-3 sentences; no repeated greetings, reasoning or internal terminology. '
+        'Support Hindi, English, Punjabi (Roman and Gurmukhi) and the configured Indian languages. '
+        'Never claim only Hindi or English are supported. A Punjabi language question is not a switch. '
+        'When the guest asks for simple Hindi in Roman script, use casual Hinglish rather than stiff pure Hindi. '
+        'Follow the guest script and explicit preference, with warm 1-3 sentence replies, no repeated greetings. '
         'Use verified facts only; do not invent requirements, document policies, stock, timing, payment or delivery. '
         'Unknown hotel facts use RECEPTION, needs_reception=true, with the fully resolved question in reception_request. '
         'Same pending request uses reception_followup=true; a changed request is new. Never claim staff action before a receipt. '
@@ -180,12 +177,11 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         '"action":"MENU_ITEM_INFO|SHOW_MENU|RECEPTION|ANSWER","menu_section":"","items":[{"name":"exact configured name","qty":1}],'
         '"excluded_items":[],"show_prices":false,"needs_reception":false,"reception_request":"",'
         '"understood_as":"short corrected meaning","reply":"only for ANSWER"}. excluded_items is an array of exact configured name strings to omit, empty when none.\n'
-        'Every branch must return one configured language code: english for clear English, hinglish for Hindi in Latin letters, '
-        'hindi for Devanagari, punjabi for Punjabi (Roman or Gurmukhi), or another supported code if explicitly requested. '
-        'Do not label Roman Hindi as hindi or claim Punjabi is unsupported. If the guest asks whether you know Punjabi, '
-        'answer yes; it is not a switch instruction. Never force overly formal Hindi in casual Roman-script chat. '
-        'Do not let English item names or candidate wording change the current guest language. '
-        'Use only the chosen branch schema; enum values separated by | mean select ONE exact value.\n'
+        'Return a supported language code: english, hinglish for Roman Hindi, hindi for Devanagari, '
+        'punjabi for Roman Punjabi or Gurmukhi and others when chosen. '
+        'A guest asking whether Punjabi is supported deserves a truthful yes, not a claim of only Hindi and English. '
+        'Use casual language, not stiff formal Hindi. Do not let English menu names change a Hinglish reply. '
+        'Use only the chosen branch schema; enum examples separated by | mean ONE value.\n'
         f'Canonical inventory: {json.dumps(inventory, ensure_ascii=False)}\n'
         f'Verified hotel facts: {bot._ai_knowledge_snapshot(1600, text) if candidate.get("action") in info_actions and hasattr(bot, "_ai_knowledge_snapshot") else "Only explicitly supplied facts are verified."}\n'
         f'Verified session state: {json.dumps(pending if pending is not None else snapshot(bot, phone, text), ensure_ascii=False)}\n'
@@ -518,105 +514,54 @@ def _menu_item_info(bot, phone, result):
     bot.send_whatsapp_message(phone, prefix + '\n'.join(lines))
 
 
-def _language_conversation_reply(bot, phone, text):
-    """Ground language preferences/capabilities in the bot's actual supported set.
-
-    A question *about* Punjabi is not automatically an instruction to switch;
-    an explicit language preference is. Keep this boundary narrow so unrelated
-    hotel/service questions are still interpreted by the model.
-    """
+def _language_meta(bot, phone, text):
+    """Bounded conversation preference/capability check; no hotel operations."""
     raw = str(text or '').strip()
-    normal = raw.lower()
-    supported = {
-        'hindi': r'\bhindi\b|हिंदी|हिन्दी',
-        'punjabi': r'\bpunjabi\b|ਪੰਜਾਬੀ',
-        'english': r'\benglish\b',
-        'bengali': r'\bbengali\b|বাংলা',
-        'marathi': r'\bmarathi\b|मराठी',
-        'gujarati': r'\bgujarati\b|ગુજરાતી',
-        'tamil': r'\btamil\b|தமிழ்',
-        'telugu': r'\btelugu\b|తెలుగు',
-        'kannada': r'\bkannada\b|ಕನ್ನಡ',
-        'malayalam': r'\bmalayalam\b|മലയാളം',
-        'urdu': r'\burdu\b|اردو',
-        'rajasthani': r'\brajasthani\b|राजस्थानी',
-        'garhwali': r'\bgarhwali\b|गढ़वाली',
-        'kumaoni': r'\bkumaoni\b|कुमाऊनी',
-        'odia': r'\bodia\b|ओड़िया',
-    }
-    mentioned = [(name, match.start()) for name, pattern in supported.items()
-                 if name in LANGUAGES
-                 for match in [re.search(pattern, normal, re.I)] if match]
-    mentioned.sort(key=lambda pair: pair[1])
-    # Questions about the bot's language abilities, including "Punjabi bhi
-    # aati hai?", must answer truthfully without switching preference.
-    ability = bool(re.search(
-        r'\b(?:aati|aata|aandi|aundi|aavdi|samajh|speak|understand|languages?|bhasha|bol sakti|bol sakte)\b|'
-        r'आती है|ਬੋਲ|ਸਮਝ', normal, re.I))
-    question = bool(re.search(r'\?|\bkya\b|\bcan you\b|\bwhich\b|\bkitni\b|\bkaun', normal, re.I))
-    if (mentioned and ability and question) or (
-        not mentioned and question and re.search(r'\b(?:language|languages|bhasha|boli)\b',normal)
-        and re.search(r'\b(?:kaun|which|what|aati|speak|know)\b',normal)
-    ):
-        preferred = bot.get_guest_response_language(phone)
-        if mentioned and mentioned[0][0] == 'punjabi':
-            answer = ('Haan ji, Punjabi vich vi gall kar sakdi haan 😊 '
-                      'Tusi Punjabi vich likho, main usi vich jawab devangi.')
-        elif mentioned and mentioned[0][0] == 'hindi':
-            answer = ('Haan ji, simple Hindi mein bhi baat kar sakti hoon. '
-                      'Bilkul aaram se poochho 😊')
-        elif preferred == 'english' and re.search(r'\b(?:what|which|can you)\b',normal):
-            answer = ('Yes! I can chat in Hindi, English, Punjabi and several '
-                      'other Indian languages. Which would you prefer?')
-        else:
-            answer = ('Haan ji, Hindi, English, Punjabi aur kai aur Indian '
-                      'languages mein bhi baat kar sakti hoon. Jo easy lage usmein bolo 😊')
-        return (None, answer)
+    low = raw.lower()
+    names = [name for name in LANGUAGES if re.search(
+        r'(?<!\w)' + re.escape(name) + r'(?!\w)', low, re.I)]
+    names.sort(key=lambda name: low.find(name))
+    capability = bool(re.search(
+        r'\b(?:aati|aata|aundi|aandi|speak|understand|languages?|bhasha)\b',
+        low, re.I))
+    question = bool(re.search(r'\?|\bkya\b|\bcan you\b|\bwhich\b|\bwhat\b',low,re.I))
+    if capability and question and (names or 'language' in low):
+        if 'punjabi' in names:
+            return None, ('Haan ji, Punjabi vich vi gall kar sakdi haan 😊 '
+                          'Tusi Punjabi vich likho, main vi Punjabi vich jawab devangi.')
+        if 'hindi' in names:
+            return None, 'Haan ji, Hindi mein bhi aaram se baat kar sakti hoon 😊'
+        return None, ('Haan ji, Hindi, English, Punjabi aur kai aur Indian '
+                      'languages mein baat kar sakti hoon. Jo easy lage usmein bolo 😊')
 
-    # A language mention alone ("Punjabi bhi aati hai") is not a switch.
-    # Require a direct language/style instruction with an indicated target.
-    if not mentioned:
-        return None
-    target = mentioned[0][0]
-    # The requested language must be grammatically linked to a speaking
-    # instruction, not merely mentioned elsewhere in a hotel question.
-    match = re.search(supported[target], normal, re.I)
-    after = normal[match.end():].strip() if match else ''
-    before = normal[:match.start()].strip() if match else ''
-    language_link = bool(re.match(
-        r'^(?:mein|me|vich|in|में|ਵਿੱਚ)\b', after, re.I
-    ) and re.search(
-        r'\b(?:samjha|samjhao|samjhaiye|bol|bolo|baat|batao|bataiye|'
-        r'reply|respond|speak|talk|explain|likho|karo|karangi|gal|gall)\b'
-        r'|समझा|बोल|बात|ਗੱਲ', after[:100], re.I))
-    direct_speak = bool(re.match(
-        r'^(?:bolo|bol|baat|gall|gal|boliye|speak|talk|reply)\b|'
-        r'^ਬੋਲ|^ਗੱਲ|^बोल', after, re.I))
-    intro_speak = any(before.endswith(phrase) for phrase in (
-        'speak', 'talk', 'reply', 'respond', 'explain', 'say', 'baat karo',
-        'bol', 'bolo', 'speak in', 'reply in', 'baat karo in'
-    ))
-    if not (language_link or direct_speak or intro_speak):
-        return None
-    if target == 'hindi' and bot.guest_script(text) == 'roman':
-        target = 'hinglish'  # Everyday Hindi in the guest's own Roman script.
-    if target == 'hindi':
-        answer = 'Haan ji, ab se seedhi-saadi Hindi mein baat karungi. Batao, kya samajhna hai? 😊'
-    elif target == 'hinglish':
-        answer = ('Haan ji, ab simple Hindi mein hi samjhaungi, aise hi jaise '
-                  'aap likh rahe ho. English ki zarurat nahi 😊')
-    elif target == 'punjabi':
-        if bot.guest_script(text) == 'gurmukhi':
-            answer = 'ਹਾਂ ਜੀ, ਹੁਣ ਪੰਜਾਬੀ ਵਿੱਚ ਗੱਲ ਕਰਾਂਗੀ। ਦੱਸੋ, ਕੀ ਮਦਦ ਚਾਹੀਦੀ ਹੈ? 😊'
-        else:
-            answer = 'Haan ji, hun Punjabi vich gall karangi. Tusi aaram naal dasso 😊'
-    elif target == 'english':
-        answer = "Sure, I'll use simple English from now on. How can I help?"
-    else:
-        # Other configured languages are handled by the AI, guided by this
-        # explicit preference. Do not fabricate translated text.
-        answer = None
-    return (target, answer)
+    # A language name in a hotel question is NOT a language switch.
+    # The instruction must start near that language name.
+    for name in names:
+        pos = low.find(name)
+        suffix = low[pos+len(name):].lstrip()
+        if re.match(
+            r'(?:mein|me|vich|in)\s+(?:baat|bol|bolo|karo|samjha|samjhao|'
+            r'batao|likho|reply|talk|speak|gal|gall|explain)\b',
+            suffix, re.I
+        ) or re.match(
+            r'(?:bolo|bol|speak|reply|gal|gall|baat)\b', suffix, re.I
+        ):
+            chosen = 'hinglish' if name == 'hindi' and bot.guest_script(text) == 'roman' else name
+            if chosen == 'hinglish':
+                answer = ('Haan ji, ab simple Hindi mein baat karungi. '
+                          'English ki zarurat nahi, aaram se poochho 😊')
+            elif chosen == 'hindi':
+                answer = 'हाँ जी, अब आसान हिंदी में बात करूँगी। बताइए, क्या मदद चाहिए? 😊'
+            elif chosen == 'punjabi':
+                answer = ('ਹਾਂ ਜੀ, ਹੁਣ ਪੰਜਾਬੀ ਵਿੱਚ ਗੱਲ ਕਰਾਂਗੀ 😊'
+                          if bot.guest_script(text)=='gurmukhi'
+                          else 'Haan ji, hun Punjabi vich gall karangi 😊')
+            elif chosen == 'english':
+                answer = "Sure, I'll use simple English from now on."
+            else:
+                answer = None
+            return chosen, answer
+    return None
 
 
 def handle(bot, phone, text, guest, message=None, semantic=None):
@@ -655,557 +600,20 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                       needs_reception=True, reception_request=resolved,
                       reception_followup=False, operation_text=resolved, reply='', items=[])
         action = 'RECEPTION'
-    language_meta = _language_conversation_reply(bot, phone, text)
+    language_meta = _language_meta(bot, phone, text)
     if language_meta is not None:
-        requested_language, short_reply = language_meta
-        if requested_language:
-            language = requested_language
-        elif bot.get_guest_response_language(phone) in LANGUAGES:
-            # A language capability question must not overwrite a prior
-            # preference just because it mentions another language.
-            language = bot.get_guest_response_language(phone)
+        requested, prepared_reply = language_meta
+        if requested:
+            language = requested
+        else:
+            previous = bot.get_guest_response_language(phone)
+            if previous in LANGUAGES:
+                language = previous
     else:
-        # Short language-neutral follow-ups inherit an explicitly chosen
-        # regional language instead of reverting to the provider's English.
         previous = bot.get_guest_response_language(phone)
-        if (previous in {'punjabi', 'hindi', 'hinglish'}
-                and detected == 'english'
+        if (previous in {'punjabi', 'hindi', 'hinglish'} and detected == 'english'
                 and len(str(text).split()) <= 3
-                and not re.search(r'(?i)^\s*(?:what|which|where|why|how|can you|please explain)\b',text)):
-            language = previous
-    with bot.state_lock:
-        bot.guest_language_cache[phone] = language
-    turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
-            'language': language, 'meaning': result.get('understood_as', ''), 'direct': False}
-    token = current.set(turn)
-    try:
-        if language_meta is not None and language_meta[1]:
-            _direct(bot, phone, language_meta[1])
-            bot.remember_conversation(phone, 'user', text)
-            bot.remember_conversation(phone, 'assistant', language_meta[1])
-            return True
-        if action == 'NONE' or result.get('confidence', 0) < 0.65:
-            _direct(bot, phone, result.get('reply') or 'Could you clarify what you need?')
-            return True
-        if result.get('reception_followup'):
-            if bot.handle_reception_request_followup(phone, text, semantic=result):
-                return True
-        if action == 'RECEPTION_DECLINE':
-            with bot.state_lock:
-                bot.reception_consent_sessions.pop(phone, None)
-            bot.send_whatsapp_message(phone, 'No new reception message was sent. The proposed reception contact was declined.')
-        elif action == 'CHECKIN_CANCEL':
-            with bot.state_lock:
-                session = bot.checkin_sessions.get(phone)
-                if session and session.get('step') != 'STAFF_VERIFICATION':
-                    bot.checkin_sessions.pop(phone, None)
-                    outcome = 'Pending self check-in stopped. No active hotel stay or guest record was cancelled.'
-                else:
-                    outcome = ('Ji, koi self check-in chal nahi raha tha. Aap sirf process pooch rahe the; '
-                               'koi naya check-in ya reception request shuru nahi kiya.')
-            if language == 'hindi' and outcome.startswith('Ji,'):
-                outcome = 'जी, कोई सेल्फ चेक-इन शुरू नहीं हुआ था। आपने केवल प्रक्रिया पूछी थी।'
-            elif language == 'english' and outcome.startswith('Ji,'):
-                outcome = 'No self check-in was in progress. Your process enquiry did not start a check-in or contact reception.'
-            bot.send_whatsapp_message(phone, outcome)
-        elif action == 'AVAILABILITY':
-            bot.send_whatsapp_message(phone, 'Live room availability has not been verified. No new reception request or booking was made. Reception must confirm availability.')
-        elif action == 'RECEPTION' or result.get('needs_reception'):
-            bot.reply_to_reception_request(phone, guest,
-                result.get('reception_request') or result.get('operation_text') or text)
-        elif action == 'MENU_ITEM_INFO' or (action == 'SHOW_MENU' and result.get('items')):
-            _menu_item_info(bot, phone, result)
-        elif action == 'SHOW_MENU':
-            import demo_food
-            if not demo_food.handle(bot, phone, 'menu', semantic=result):
-                section = result.get('menu_section', 'FULL').upper()
-                if section == 'FULL':
-                    send_menu(bot, phone, bot._full_menu_presentation_messages(include_prices=result.get('show_prices', False), sender_phone=phone))
-                else:
-                    data = bot._menu_section_message(section, include_prices=result.get('show_prices', False), sender_phone=phone, include_cta=False)
-                    send_menu(bot, phone, [data or 'Configured menu section unavailable.'])
-        elif action == 'SHOW_PHOTO':
-            bot._handle_ai_photo_route(phone, guest, result, text)
-        elif action == 'ROOM_OPTIONS':
-            # Room comparisons already have an AI-written, independently reviewed
-            # answer. Verify it against complete static records before rendering;
-            # an information question must not be broadened by a category card.
-            facts = json.dumps({'hotel':(bot.CUSTOMER_CONFIG or {}).get('hotel',{}),
-                'room_categories':(bot.CUSTOMER_CONFIG or {}).get('rooms',[]),
-                'live_availability':'UNVERIFIED; categories/rates do not prove live stock'},ensure_ascii=False)
-            reply = result.get('reply')
-            if reply and supported_result(bot,facts,reply,language=language,guest_message=text):
-                _direct(bot,phone,reply)
-            elif reply:
-                bot.send_whatsapp_message(phone, 'The requested room detail is not verified in the hotel records. No room allocation, reservation or new staff request was made. Reception must confirm this detail.')
-            else:
-                bot._send_verified_room_categories(phone, '', show_prices=result.get('show_prices', False),category=result.get('generic') or None)
-        elif action == 'SERVICE':
-            bot._handle_ai_service_route(phone, guest, result,
-                result.get('operation_text') or text, bool(guest and guest.get('is_inhouse')))
-        elif action in {'DEMO_CHECKIN', 'DEMO_CHECKOUT', 'DEMO_REMINDERS_ON', 'DEMO_REMINDERS_OFF'}:
-            import demo_food
-            command = {'DEMO_CHECKIN': 'demo checkin', 'DEMO_CHECKOUT': 'demo checkout',
-                       'DEMO_REMINDERS_ON': 'demo reminders on', 'DEMO_REMINDERS_OFF': 'demo reminders off'}[action]
-            if not demo_food.handle(bot, phone, command):
-                bot.send_whatsapp_message(phone, 'This action is available only in the configured demo profile.')
-        elif action == 'CHECKIN':
-            if result.get('submission_intent') is not True:
-                bot.send_whatsapp_message(phone, 'Check-in was not started. No OTP or staff request was created. Please confirm whether you want to start check-in now.')
-            elif bot.CUSTOMER_DEMO_MODE:
-                import demo_food
-                demo_food.handle(bot, phone, 'check in')
-            else:
-                bot.start_checkin(phone)
-        elif action == 'CHECKIN_ID':
-            session = bot.checkin_sessions.get(phone) or {}
-            if session.get('step') == 'ID' and (message or {}).get('image') and not bot.CUSTOMER_DEMO_MODE:
-                bot.complete_checkin_with_id(phone, message)
-            else:
-                bot.send_whatsapp_message(phone, 'No active real check-in is waiting for an ID photo. No ID record was saved.')
-        elif action == 'CHECKIN_DETAILS':
-            _checkin_details(bot, phone, result.get('operation_text', ''))
-        elif action == 'BILL':
-            _bill(bot, phone, guest, result)
-        elif action == 'SERVICE_FEEDBACK':
-            value = result.get('operation_text', '').lower()
-            task_id = str(result.get('task_id', '')).upper()
-            if task_id and not re.fullmatch(r'S-[A-F0-9]{6}',task_id):
-                bot.send_whatsapp_message(phone, 'That service ID is not valid; no service record was changed. Please specify the pending request.')
-                return True
-            command = f'{task_id} {value}' if re.fullmatch(r'S-[A-F0-9]{6}', task_id) else value
-            if value not in {'yes', 'no'} or not bot.handle_service_guest_confirmation(phone, command, message):
-                bot.send_whatsapp_message(phone, 'No matching service completion is pending. Please specify which request you mean.')
-        elif action == 'COMPLAINT_FEEDBACK':
-            value = result.get('operation_text', '').lower()
-            if value not in {'yes', 'no'} or not bot._handle_complaint_feedback(phone, value, complaint_id=result.get('task_id') or None):
-                bot.send_whatsapp_message(phone, 'No matching complaint follow-up is pending.')
-        elif action in {'ORDER_CONFIRM','ORDER_DECLINE'} and not any(
-                isinstance(getattr(bot,name,{}).get(phone),dict)
-                and not getattr(bot,name,{}).get(phone,{}).get('selection_pending')
-                and (getattr(bot,name,{}).get(phone,{}).get('order') or getattr(bot,name,{}).get(phone,{}).get('items'))
-                for name in ('order_sessions','duplicate_order_sessions','demo_food_sessions')):
-            bot.send_whatsapp_message(phone, 'No saved pending cart is waiting for confirmation or decline. No new order was confirmed or cancelled. Ask for the intended items and quantities if the guest wants a new order.')
-        elif action in {'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'COMPLAINT'}:
-            _legacy_operation(bot, phone, result, message)
-        else:
-            # Information, corrections, greetings, typos and ordinary conversation
-            # never enter operational keyword parsers or pending transaction loops.
-            _direct(bot, phone, result.get('reply') or 'Could you clarify what you need?')
-        return True
-    finally:
-        current.reset(token)
-
-
-def _checkin_details(bot, phone, value):
-    with bot.state_lock:
-        session = bot.checkin_sessions.get(phone)
-        if not session or time.time() - session.get('created', 0) > 1800:
-            bot.send_whatsapp_message(phone, 'No active check-in session; no details were saved.')
-            return
-        step = session.get('step')
-        if step == 'OTP':
-            if value != session.get('otp'):
-                bot.send_whatsapp_message(phone, 'OTP does not match. Ask reception for the correct 4-digit OTP.')
-                return
-            session['step'] = 'NAME'
-            reply = 'OTP verified. Please send your full name to continue check-in.'
-        elif step == 'NAME' and len(value.strip()) >= 3:
-            session['name'], session['step'] = value.strip(), 'ADDRESS'
-            reply = 'Full name recorded. Please send your full address with city and state.'
-        elif step == 'ADDRESS' and len(value.strip()) >= 4:
-            session['address'], session['step'] = value.strip(), 'ID'
-            reply = 'Address recorded. Please send a clear government ID photo for reception verification; check-in is not yet complete.'
-        else:
-            reply = f'No details saved. Current check-in step: {step}. Ask only for the missing information.'
-    bot.send_whatsapp_message(phone, reply)
-
-
-def _bill(bot, phone, guest, result):
-    import demo_food
-    if demo_food.handle(bot, phone, 'bill', semantic=result):
-        return
-    if not guest or not guest.get('is_inhouse'):
-        bot.send_whatsapp_message(phone, 'No verified active stay exists for this sender. No bill can be shared.')
-    elif not bot.fetch_sheet_data_sync(force=True):
-        bot.send_whatsapp_message(phone, 'Current bill could not be verified; ask reception. Do not use a stale total.')
-    else:
-        fin = bot.get_guest_financials(guest['room'], phone)
-        scope = result.get('operation_text', 'full').lower()
-        formatter = {'food': bot.format_kitchen_bill_message, 'room': bot.format_room_rent_message}.get(scope, bot.format_bill_message)
-        bot.send_whatsapp_message(phone, formatter(fin, guest['room'], guest['name']))
-
-
-def _legacy_operation(bot, phone, result, message):
-    action = result['action']
-    selected = dict(result)
-    if action in {'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL'}:
-        command = 'confirm' if action == 'ORDER_CONFIRM' else 'cancel'
-        selected['action'] = 'ORDER_CANCEL' if action == 'ORDER_CANCEL' else 'ORDER'
-        selected['intent'] = selected['action']
-    elif action in {'ORDER', 'ORDER_SELECTION'}:
-        items = result.get('items') or []
-        if not items:
-            bot.send_whatsapp_message(phone, 'No verified order items supplied. No order created; ask which item and quantity.')
-            return
-        try:
-            command = ' + '.join(f"{bot.validated_quantity(item['qty'])} {item['name']}" for item in items)
-        except (KeyError, ValueError, TypeError):
-            bot.send_whatsapp_message(phone, 'Invalid order quantity. No order created.')
-            return
-    else:
-        command = result.get('operation_text', '').strip()
-        if not command:
-            bot.send_whatsapp_message(phone, 'Complaint details are missing. No complaint recorded.')
-            return
-    # Reuse existing check-in, deduplication, confirmation, Sheets and staff
-    # safeguards. Canonical arguments are produced from structured AI fields.
-    bot._process_and_reply({'text': {'body': command}}, phone, 'text',
-                           _executor=True, _understanding=selected)
-, before, re.I))
-    if not (language_link or direct_speak or intro_speak):
-        return None
-    if target == 'hindi' and bot.guest_script(text) == 'roman':
-        target = 'hinglish'  # Everyday Hindi in the guest's own Roman script.
-    if target == 'hindi':
-        answer = 'Haan ji, ab se seedhi-saadi Hindi mein baat karungi. Batao, kya samajhna hai? 😊'
-    elif target == 'hinglish':
-        answer = ('Haan ji, ab simple Hindi mein hi samjhaungi, aise hi jaise '
-                  'aap likh rahe ho. English ki zarurat nahi 😊')
-    elif target == 'punjabi':
-        if bot.guest_script(text) == 'gurmukhi':
-            answer = 'ਹਾਂ ਜੀ, ਹੁਣ ਪੰਜਾਬੀ ਵਿੱਚ ਗੱਲ ਕਰਾਂਗੀ। ਦੱਸੋ, ਕੀ ਮਦਦ ਚਾਹੀਦੀ ਹੈ? 😊'
-        else:
-            answer = 'Haan ji, hun Punjabi vich gall karangi. Tusi aaram naal dasso 😊'
-    elif target == 'english':
-        answer = "Sure, I'll use simple English from now on. How can I help?"
-    else:
-        # Other configured languages are handled by the AI, guided by this
-        # explicit preference. Do not fabricate translated text.
-        answer = None
-    return (target, answer)
-
-
-def handle(bot, phone, text, guest, message=None, semantic=None):
-    """One interpretation, one explicitly selected operation, grounded response."""
-    result = semantic if semantic is not None else bot.understand_guest_request(text, guest, phone)
-    if not isinstance(result, dict):
-        # AI unavailable: do not guess intent or run keyword-based actions.
-        bot.send_whatsapp_message(phone,
-            'Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein.')
-        return True
-    action = str(result.get('action', 'NONE')).upper()
-    language = result.get('language')
-    # The model can confuse English menu names for an English guest reply.
-    # A clear Roman-Hindi or Devanagari current message takes precedence.
-    detected = bot.guest_language(text)
-    if detected in {'hinglish', 'hindi'} and language != detected:
-        language = detected
-    if language not in LANGUAGES:
-        language = bot.get_guest_response_language(phone)
-    # AI interpretation precedes all actions. As a fail-closed safety check,
-    # a room-category list must not stand in for unverified bed/capacity facts.
-    if action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
-        r'\b(?:adults?|children|child|kids?|bacch[ae]|bachch[ae]|'
-        r'(?:double|single|twin|alag|separate|extra)\s+beds?|'
-        r'beds?\s+(?:arrangement|milenge|hoga|hain))\b',
-        text, re.I,
-    ):
-        rooms = [str(room.get('name', '')) for room in (bot.CUSTOMER_CONFIG or {}).get('rooms', [])
-                 if isinstance(room, dict) and room.get('name')]
-        recent = bot._ai_recent_history(phone)
-        selected = next((name for entry in reversed(recent[-6:]) for name in rooms
-                         if name.casefold() in str(entry.get('content', '')).casefold()), '')
-        resolved = (f'For {selected}: {text}' if selected and selected.casefold() not in text.casefold()
-                    else text)
-        result = dict(result, action='RECEPTION', category='RECEPTION',
-                      needs_reception=True, reception_request=resolved,
-                      reception_followup=False, operation_text=resolved, reply='', items=[])
-        action = 'RECEPTION'
-    language_meta = _language_conversation_reply(bot, phone, text)
-    if language_meta is not None:
-        requested_language, short_reply = language_meta
-        if requested_language:
-            language = requested_language
-        elif bot.get_guest_response_language(phone) in LANGUAGES:
-            # A language capability question must not overwrite a prior
-            # preference just because it mentions another language.
-            language = bot.get_guest_response_language(phone)
-    else:
-        # Short language-neutral follow-ups inherit an explicitly chosen
-        # regional language instead of reverting to the provider's English.
-        previous = bot.get_guest_response_language(phone)
-        if (previous in {'punjabi', 'hindi', 'hinglish'}
-                and detected == 'english'
-                and len(str(text).split()) <= 3
-                and not re.search(r'(?i)^\s*(?:what|which|where|why|how|can you|please explain)\b',text)):
-            language = previous
-    with bot.state_lock:
-        bot.guest_language_cache[phone] = language
-    turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
-            'language': language, 'meaning': result.get('understood_as', ''), 'direct': False}
-    token = current.set(turn)
-    try:
-        if language_meta is not None and language_meta[1]:
-            _direct(bot, phone, language_meta[1])
-            bot.remember_conversation(phone, 'user', text)
-            bot.remember_conversation(phone, 'assistant', language_meta[1])
-            return True
-        if action == 'NONE' or result.get('confidence', 0) < 0.65:
-            _direct(bot, phone, result.get('reply') or 'Could you clarify what you need?')
-            return True
-        if result.get('reception_followup'):
-            if bot.handle_reception_request_followup(phone, text, semantic=result):
-                return True
-        if action == 'RECEPTION_DECLINE':
-            with bot.state_lock:
-                bot.reception_consent_sessions.pop(phone, None)
-            bot.send_whatsapp_message(phone, 'No new reception message was sent. The proposed reception contact was declined.')
-        elif action == 'CHECKIN_CANCEL':
-            with bot.state_lock:
-                session = bot.checkin_sessions.get(phone)
-                if session and session.get('step') != 'STAFF_VERIFICATION':
-                    bot.checkin_sessions.pop(phone, None)
-                    outcome = 'Pending self check-in stopped. No active hotel stay or guest record was cancelled.'
-                else:
-                    outcome = ('Ji, koi self check-in chal nahi raha tha. Aap sirf process pooch rahe the; '
-                               'koi naya check-in ya reception request shuru nahi kiya.')
-            if language == 'hindi' and outcome.startswith('Ji,'):
-                outcome = 'जी, कोई सेल्फ चेक-इन शुरू नहीं हुआ था। आपने केवल प्रक्रिया पूछी थी।'
-            elif language == 'english' and outcome.startswith('Ji,'):
-                outcome = 'No self check-in was in progress. Your process enquiry did not start a check-in or contact reception.'
-            bot.send_whatsapp_message(phone, outcome)
-        elif action == 'AVAILABILITY':
-            bot.send_whatsapp_message(phone, 'Live room availability has not been verified. No new reception request or booking was made. Reception must confirm availability.')
-        elif action == 'RECEPTION' or result.get('needs_reception'):
-            bot.reply_to_reception_request(phone, guest,
-                result.get('reception_request') or result.get('operation_text') or text)
-        elif action == 'MENU_ITEM_INFO' or (action == 'SHOW_MENU' and result.get('items')):
-            _menu_item_info(bot, phone, result)
-        elif action == 'SHOW_MENU':
-            import demo_food
-            if not demo_food.handle(bot, phone, 'menu', semantic=result):
-                section = result.get('menu_section', 'FULL').upper()
-                if section == 'FULL':
-                    send_menu(bot, phone, bot._full_menu_presentation_messages(include_prices=result.get('show_prices', False), sender_phone=phone))
-                else:
-                    data = bot._menu_section_message(section, include_prices=result.get('show_prices', False), sender_phone=phone, include_cta=False)
-                    send_menu(bot, phone, [data or 'Configured menu section unavailable.'])
-        elif action == 'SHOW_PHOTO':
-            bot._handle_ai_photo_route(phone, guest, result, text)
-        elif action == 'ROOM_OPTIONS':
-            # Room comparisons already have an AI-written, independently reviewed
-            # answer. Verify it against complete static records before rendering;
-            # an information question must not be broadened by a category card.
-            facts = json.dumps({'hotel':(bot.CUSTOMER_CONFIG or {}).get('hotel',{}),
-                'room_categories':(bot.CUSTOMER_CONFIG or {}).get('rooms',[]),
-                'live_availability':'UNVERIFIED; categories/rates do not prove live stock'},ensure_ascii=False)
-            reply = result.get('reply')
-            if reply and supported_result(bot,facts,reply,language=language,guest_message=text):
-                _direct(bot,phone,reply)
-            elif reply:
-                bot.send_whatsapp_message(phone, 'The requested room detail is not verified in the hotel records. No room allocation, reservation or new staff request was made. Reception must confirm this detail.')
-            else:
-                bot._send_verified_room_categories(phone, '', show_prices=result.get('show_prices', False),category=result.get('generic') or None)
-        elif action == 'SERVICE':
-            bot._handle_ai_service_route(phone, guest, result,
-                result.get('operation_text') or text, bool(guest and guest.get('is_inhouse')))
-        elif action in {'DEMO_CHECKIN', 'DEMO_CHECKOUT', 'DEMO_REMINDERS_ON', 'DEMO_REMINDERS_OFF'}:
-            import demo_food
-            command = {'DEMO_CHECKIN': 'demo checkin', 'DEMO_CHECKOUT': 'demo checkout',
-                       'DEMO_REMINDERS_ON': 'demo reminders on', 'DEMO_REMINDERS_OFF': 'demo reminders off'}[action]
-            if not demo_food.handle(bot, phone, command):
-                bot.send_whatsapp_message(phone, 'This action is available only in the configured demo profile.')
-        elif action == 'CHECKIN':
-            if result.get('submission_intent') is not True:
-                bot.send_whatsapp_message(phone, 'Check-in was not started. No OTP or staff request was created. Please confirm whether you want to start check-in now.')
-            elif bot.CUSTOMER_DEMO_MODE:
-                import demo_food
-                demo_food.handle(bot, phone, 'check in')
-            else:
-                bot.start_checkin(phone)
-        elif action == 'CHECKIN_ID':
-            session = bot.checkin_sessions.get(phone) or {}
-            if session.get('step') == 'ID' and (message or {}).get('image') and not bot.CUSTOMER_DEMO_MODE:
-                bot.complete_checkin_with_id(phone, message)
-            else:
-                bot.send_whatsapp_message(phone, 'No active real check-in is waiting for an ID photo. No ID record was saved.')
-        elif action == 'CHECKIN_DETAILS':
-            _checkin_details(bot, phone, result.get('operation_text', ''))
-        elif action == 'BILL':
-            _bill(bot, phone, guest, result)
-        elif action == 'SERVICE_FEEDBACK':
-            value = result.get('operation_text', '').lower()
-            task_id = str(result.get('task_id', '')).upper()
-            if task_id and not re.fullmatch(r'S-[A-F0-9]{6}',task_id):
-                bot.send_whatsapp_message(phone, 'That service ID is not valid; no service record was changed. Please specify the pending request.')
-                return True
-            command = f'{task_id} {value}' if re.fullmatch(r'S-[A-F0-9]{6}', task_id) else value
-            if value not in {'yes', 'no'} or not bot.handle_service_guest_confirmation(phone, command, message):
-                bot.send_whatsapp_message(phone, 'No matching service completion is pending. Please specify which request you mean.')
-        elif action == 'COMPLAINT_FEEDBACK':
-            value = result.get('operation_text', '').lower()
-            if value not in {'yes', 'no'} or not bot._handle_complaint_feedback(phone, value, complaint_id=result.get('task_id') or None):
-                bot.send_whatsapp_message(phone, 'No matching complaint follow-up is pending.')
-        elif action in {'ORDER_CONFIRM','ORDER_DECLINE'} and not any(
-                isinstance(getattr(bot,name,{}).get(phone),dict)
-                and not getattr(bot,name,{}).get(phone,{}).get('selection_pending')
-                and (getattr(bot,name,{}).get(phone,{}).get('order') or getattr(bot,name,{}).get(phone,{}).get('items'))
-                for name in ('order_sessions','duplicate_order_sessions','demo_food_sessions')):
-            bot.send_whatsapp_message(phone, 'No saved pending cart is waiting for confirmation or decline. No new order was confirmed or cancelled. Ask for the intended items and quantities if the guest wants a new order.')
-        elif action in {'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'COMPLAINT'}:
-            _legacy_operation(bot, phone, result, message)
-        else:
-            # Information, corrections, greetings, typos and ordinary conversation
-            # never enter operational keyword parsers or pending transaction loops.
-            _direct(bot, phone, result.get('reply') or 'Could you clarify what you need?')
-        return True
-    finally:
-        current.reset(token)
-
-
-def _checkin_details(bot, phone, value):
-    with bot.state_lock:
-        session = bot.checkin_sessions.get(phone)
-        if not session or time.time() - session.get('created', 0) > 1800:
-            bot.send_whatsapp_message(phone, 'No active check-in session; no details were saved.')
-            return
-        step = session.get('step')
-        if step == 'OTP':
-            if value != session.get('otp'):
-                bot.send_whatsapp_message(phone, 'OTP does not match. Ask reception for the correct 4-digit OTP.')
-                return
-            session['step'] = 'NAME'
-            reply = 'OTP verified. Please send your full name to continue check-in.'
-        elif step == 'NAME' and len(value.strip()) >= 3:
-            session['name'], session['step'] = value.strip(), 'ADDRESS'
-            reply = 'Full name recorded. Please send your full address with city and state.'
-        elif step == 'ADDRESS' and len(value.strip()) >= 4:
-            session['address'], session['step'] = value.strip(), 'ID'
-            reply = 'Address recorded. Please send a clear government ID photo for reception verification; check-in is not yet complete.'
-        else:
-            reply = f'No details saved. Current check-in step: {step}. Ask only for the missing information.'
-    bot.send_whatsapp_message(phone, reply)
-
-
-def _bill(bot, phone, guest, result):
-    import demo_food
-    if demo_food.handle(bot, phone, 'bill', semantic=result):
-        return
-    if not guest or not guest.get('is_inhouse'):
-        bot.send_whatsapp_message(phone, 'No verified active stay exists for this sender. No bill can be shared.')
-    elif not bot.fetch_sheet_data_sync(force=True):
-        bot.send_whatsapp_message(phone, 'Current bill could not be verified; ask reception. Do not use a stale total.')
-    else:
-        fin = bot.get_guest_financials(guest['room'], phone)
-        scope = result.get('operation_text', 'full').lower()
-        formatter = {'food': bot.format_kitchen_bill_message, 'room': bot.format_room_rent_message}.get(scope, bot.format_bill_message)
-        bot.send_whatsapp_message(phone, formatter(fin, guest['room'], guest['name']))
-
-
-def _legacy_operation(bot, phone, result, message):
-    action = result['action']
-    selected = dict(result)
-    if action in {'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL'}:
-        command = 'confirm' if action == 'ORDER_CONFIRM' else 'cancel'
-        selected['action'] = 'ORDER_CANCEL' if action == 'ORDER_CANCEL' else 'ORDER'
-        selected['intent'] = selected['action']
-    elif action in {'ORDER', 'ORDER_SELECTION'}:
-        items = result.get('items') or []
-        if not items:
-            bot.send_whatsapp_message(phone, 'No verified order items supplied. No order created; ask which item and quantity.')
-            return
-        try:
-            command = ' + '.join(f"{bot.validated_quantity(item['qty'])} {item['name']}" for item in items)
-        except (KeyError, ValueError, TypeError):
-            bot.send_whatsapp_message(phone, 'Invalid order quantity. No order created.')
-            return
-    else:
-        command = result.get('operation_text', '').strip()
-        if not command:
-            bot.send_whatsapp_message(phone, 'Complaint details are missing. No complaint recorded.')
-            return
-    # Reuse existing check-in, deduplication, confirmation, Sheets and staff
-    # safeguards. Canonical arguments are produced from structured AI fields.
-    bot._process_and_reply({'text': {'body': command}}, phone, 'text',
-                           _executor=True, _understanding=selected)
-, before, re.I))
-    if not (language_link or direct_speak or intro_speak):
-        return None
-    if target == 'hindi' and bot.guest_script(text) == 'roman':
-        target = 'hinglish'  # Everyday Hindi in the guest's own Roman script.
-    if target == 'hindi':
-        answer = 'Haan ji, ab se seedhi-saadi Hindi mein baat karungi. Batao, kya samajhna hai? 😊'
-    elif target == 'hinglish':
-        answer = ('Haan ji, ab simple Hindi mein hi samjhaungi, aise hi jaise '
-                  'aap likh rahe ho. English ki zarurat nahi 😊')
-    elif target == 'punjabi':
-        if bot.guest_script(text) == 'gurmukhi':
-            answer = 'ਹਾਂ ਜੀ, ਹੁਣ ਪੰਜਾਬੀ ਵਿੱਚ ਗੱਲ ਕਰਾਂਗੀ। ਦੱਸੋ, ਕੀ ਮਦਦ ਚਾਹੀਦੀ ਹੈ? 😊'
-        else:
-            answer = 'Haan ji, hun Punjabi vich gall karangi. Tusi aaram naal dasso 😊'
-    elif target == 'english':
-        answer = "Sure, I'll use simple English from now on. How can I help?"
-    else:
-        # Other configured languages are handled by the AI, guided by this
-        # explicit preference. Do not fabricate translated text.
-        answer = None
-    return (target, answer)
-
-
-def handle(bot, phone, text, guest, message=None, semantic=None):
-    """One interpretation, one explicitly selected operation, grounded response."""
-    result = semantic if semantic is not None else bot.understand_guest_request(text, guest, phone)
-    if not isinstance(result, dict):
-        # AI unavailable: do not guess intent or run keyword-based actions.
-        bot.send_whatsapp_message(phone,
-            'Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein.')
-        return True
-    action = str(result.get('action', 'NONE')).upper()
-    language = result.get('language')
-    # The model can confuse English menu names for an English guest reply.
-    # A clear Roman-Hindi or Devanagari current message takes precedence.
-    detected = bot.guest_language(text)
-    if detected in {'hinglish', 'hindi'} and language != detected:
-        language = detected
-    if language not in LANGUAGES:
-        language = bot.get_guest_response_language(phone)
-    # AI interpretation precedes all actions. As a fail-closed safety check,
-    # a room-category list must not stand in for unverified bed/capacity facts.
-    if action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
-        r'\b(?:adults?|children|child|kids?|bacch[ae]|bachch[ae]|'
-        r'(?:double|single|twin|alag|separate|extra)\s+beds?|'
-        r'beds?\s+(?:arrangement|milenge|hoga|hain))\b',
-        text, re.I,
-    ):
-        rooms = [str(room.get('name', '')) for room in (bot.CUSTOMER_CONFIG or {}).get('rooms', [])
-                 if isinstance(room, dict) and room.get('name')]
-        recent = bot._ai_recent_history(phone)
-        selected = next((name for entry in reversed(recent[-6:]) for name in rooms
-                         if name.casefold() in str(entry.get('content', '')).casefold()), '')
-        resolved = (f'For {selected}: {text}' if selected and selected.casefold() not in text.casefold()
-                    else text)
-        result = dict(result, action='RECEPTION', category='RECEPTION',
-                      needs_reception=True, reception_request=resolved,
-                      reception_followup=False, operation_text=resolved, reply='', items=[])
-        action = 'RECEPTION'
-    language_meta = _language_conversation_reply(bot, phone, text)
-    if language_meta is not None:
-        requested_language, short_reply = language_meta
-        if requested_language:
-            language = requested_language
-        elif bot.get_guest_response_language(phone) in LANGUAGES:
-            # A language capability question must not overwrite a prior
-            # preference just because it mentions another language.
-            language = bot.get_guest_response_language(phone)
-    else:
-        # Short language-neutral follow-ups inherit an explicitly chosen
-        # regional language instead of reverting to the provider's English.
-        previous = bot.get_guest_response_language(phone)
-        if (previous in {'punjabi', 'hindi', 'hinglish'}
-                and detected == 'english'
-                and len(str(text).split()) <= 3
-                and not re.search(r'(?i)^\s*(?:what|which|where|why|how|can you|please explain)\b',text)):
+                and not re.search(r'(?i)^(?:what|which|why|where|how|can you) ', text)):
             language = previous
     with bot.state_lock:
         bot.guest_language_cache[phone] = language

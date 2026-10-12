@@ -580,6 +580,43 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         brain.assert_called_once()
         self.assertEqual(app.send_whatsapp_message.call_args.args[1], 'Main Monika hoon.')
 
+    def test_food_order_plus_when_will_it_arrive_keeps_eta_question(self):
+        self.assertTrue(gateway._asks_delivery_eta(
+            'Chole bhature di 1, mineral water 1, paneer paratha 1. Kab tak mil juga?'))
+        self.assertTrue(gateway._asks_delivery_eta('When will my food order arrive?'))
+        self.assertFalse(gateway._asks_delivery_eta('Breakfast menu dikhao'))
+        token=gateway.current.set({'phone': self.phone, 'text':
+            'Chole bhature di 1 mineral water 1 paneer paratha 1 kab tak mil juga',
+            'language':'hinglish','meaning':'order with ETA question',
+            'order_eta_pending':True,'order_eta_answered':False,'direct':False})
+        try:
+            app.ask_ai_chat.return_value = None
+            result=gateway.compose(app,self.phone,
+                'Room 450: 1 Chole Bhature, 1 Mineral Water, 1 Paneer Paratha. CONFIRM?')
+            self.assertIn('exact time',result)
+            self.assertIn('verify nahi hua',result)
+            self.assertIn('Room 450',result)
+            self.assertNotIn('20 minute',result)
+            # Multiple sends from one executor turn must not repeat ETA.
+            second=gateway.compose(app,self.phone,'Thank you, Hitesh ji.')
+            self.assertNotIn('exact time',second)
+        finally:
+            gateway.current.reset(token)
+
+    def test_order_turn_annotates_secondary_eta_without_changing_canonical_cart(self):
+        check={}
+        def executor(*args,**kwargs):
+            check.update(gateway.current.get())
+        with patch.object(app,'_process_and_reply',side_effect=executor):
+            gateway.handle(app,self.phone,
+                'Chole bhature di 1, mineral water 1, paneer paratha 1. Kab tak mil juga?',
+                None,semantic=self.understanding(action='ORDER',language='hinglish',
+                    items=[{'name':'Chole Bhature','qty':1},
+                           {'name':'Mineral Water','qty':1},
+                           {'name':'Paneer Paratha','qty':1}]))
+        self.assertTrue(check['order_eta_pending'])
+        self.assertFalse(check['order_eta_answered'])
+
     def test_composer_cannot_swap_menu_item_prices(self):
         source = 'Menu\nPoha Rs. 70\nChai Rs. 30'
         self.assertFalse(gateway.faithful_numbers_and_links(source, 'Menu\nPoha Rs. 30\nChai Rs. 70'))

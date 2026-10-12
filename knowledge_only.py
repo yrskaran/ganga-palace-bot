@@ -145,7 +145,7 @@ def process(bot, message, sender_phone, msg_type):
     """Call one plain language AI gateway; never invoke hotel operations."""
     message = message if isinstance(message, dict) else {}
     # Reception messages are never processed as new guest prompts.
-    if reception_learning.handle_operator_message(bot, message, sender_phone, msg_type):
+    if reception_learning.enabled(bot) and reception_learning.handle_operator_message(bot, message, sender_phone, msg_type):
         return True
     if msg_type == "image":
         return bot.send_whatsapp_message(
@@ -162,7 +162,7 @@ def process(bot, message, sender_phone, msg_type):
         )
 
     # A previously verified generic hotel fact should not be asked again.
-    known = reception_learning.cached_answer(bot, text)
+    known = reception_learning.cached_answer(bot, text) if reception_learning.enabled(bot) else None
     if known:
         sent = bot.send_whatsapp_message(sender_phone, known)
         if sent:
@@ -186,7 +186,8 @@ def process(bot, message, sender_phone, msg_type):
         reply = ("Abhi AI se sahi jawab nahi mil pa raha ji. "
                  "Is chat mein koi hotel request ya action nahi kiya gaya.")
 
-    reply, uncertainty = reception_learning.extract_handoff(reply)
+    reply, uncertainty = (reception_learning.extract_handoff(reply)
+                          if reception_learning.enabled(bot) else (reply, ""))
     if uncertainty:
         result = reception_learning.forward_unknown(bot, sender_phone, text, uncertainty)
         acknowledgement = {

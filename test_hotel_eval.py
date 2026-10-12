@@ -61,3 +61,16 @@ class ProductionEntryEvaluationTests(unittest.TestCase):
         self.assertIn('Wrong bill scope',hotel_eval.contract_errors({'actions':['BILL'],'scope':'food'},{'action':'BILL','operation_text':'full','language':'hinglish'},'Ji, bill hai.'))
         self.assertIn('Wrong photo target',hotel_eval.contract_errors({'actions':['SHOW_PHOTO'],'photo':'Family Suite'},{'action':'SHOW_PHOTO','photo_target':'Deluxe','language':'hinglish'},'Ji, photo hai.'))
         self.assertIn('Final reply does not match Hinglish script/wording',hotel_eval.contract_errors({'actions':['ANSWER']},{'action':'ANSWER','language':'hinglish'},'Your room number is 240.'))
+
+    def test_reviewed_room_comparison_is_not_replaced_by_full_category_card(self):
+        reply='Sabse sasta AC room Deluxe hai, starting rate ₹1,999 per night hai.'
+        answers=[{'action':'ROOM_OPTIONS','generic':'','reply':reply,'operation_text':'','show_prices':True,'language':'hinglish','confidence':.96},
+                 {'menu_related':False,'action':'ROOM_OPTIONS','generic':'','reply':reply,'show_prices':True,'language':'hinglish'},
+                 {'supported':True}]
+        def transport(url,**kwargs):
+            return Mock(status_code=200,json=Mock(return_value={'candidates':[{'content':{'parts':[{'text':json.dumps(answers.pop(0))}]},'finishReason':'STOP'}]}))
+        with patch.object(app,'GEMINI_API_KEY','test'):
+            row=hotel_eval.evaluate(app,hotel_eval.REPAIR_CASES[1],transport=transport)
+        self.assertFalse(row['errors'],row)
+        self.assertEqual(row['output'],reply)
+        self.assertEqual(len(row['model_calls']),3)

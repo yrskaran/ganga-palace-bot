@@ -169,7 +169,9 @@ def run(bot,run_id):
     if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='200':
         return run_conversations(bot,run_id,budget)
     rows=[]
+    selected={x.strip() for x in os.getenv('AI_PRODUCTION_CHECK_CASE_IDS','').split(',') if x.strip()}
     for case in (REPAIR_CASES if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='repairs' else CASES):
+        if selected and case['id'] not in selected: continue
         row=evaluate(bot,case,live=True,budget=budget);row.pop('next_state',None);rows.append(row)
         print('PRODUCTION EVAL ROW: '+json.dumps(dict(row,run_id=run_id),ensure_ascii=False),flush=True)
         if budget.stopped or len(budget.calls)>=budget.limit or not row['plan']:break

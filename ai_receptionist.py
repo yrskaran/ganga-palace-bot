@@ -548,7 +548,17 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         elif action == 'SHOW_PHOTO':
             bot._handle_ai_photo_route(phone, guest, result, result.get('photo_target', ''))
         elif action == 'ROOM_OPTIONS':
-            bot._send_verified_room_categories(phone, '', show_prices=result.get('show_prices', False),category=result.get('generic') or None)
+            # Room comparisons already have an AI-written, independently reviewed
+            # answer. Verify it against complete static records before rendering;
+            # an information question must not be broadened by a category card.
+            facts = json.dumps({'hotel':(bot.CUSTOMER_CONFIG or {}).get('hotel',{}),
+                'room_categories':(bot.CUSTOMER_CONFIG or {}).get('rooms',[]),
+                'live_availability':'UNVERIFIED; categories/rates do not prove live stock'},ensure_ascii=False)
+            reply = result.get('reply')
+            if reply and supported_result(bot,facts,reply,language=language,guest_message=text):
+                _direct(bot,phone,reply)
+            else:
+                bot._send_verified_room_categories(phone, '', show_prices=result.get('show_prices', False),category=result.get('generic') or None)
         elif action == 'SERVICE':
             bot._handle_ai_service_route(phone, guest, result,
                 result.get('operation_text') or text, bool(guest and guest.get('is_inhouse')))

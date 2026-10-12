@@ -50,9 +50,12 @@ class ModelBudget:
         self.last=time.monotonic()
         rec={'provider':'gemini','status':None};self.calls.append(rec)
         try:
+            kwargs['allow_redirects']=False
             res=self.transport(url,*args,**kwargs)
             rec['status']=res.status_code
             body=res.json()
+            candidate=(body.get('candidates') or [{}])[0]
+            rec['response_text']=''.join(str(p.get('text','')) for p in (candidate.get('content') or {}).get('parts',[]) if not p.get('thought'))[:2500]
             rec['usage']=body.get('usageMetadata',{})
             if res.status_code!=200:
                 self.stopped=True
@@ -145,8 +148,11 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
         errors.extend(guest_checks.errors_for(dict(case,text=case['question']),plan,config))
         for value in case.get('contains',[]):
             if value not in output: errors.append('Missing '+value)
+    call_records=copy.deepcopy(budget.calls[call_offset:])
+    if plan and not fallback:
+        for rec in call_records:rec.pop('response_text',None)
     return {'id':case['id'],'question':case['question'],'output':output,'plan':plan,'errors':errors,
-            'state_after':after,'memory':memory,'next_state':next_state,'trace':trace,'model_calls':copy.deepcopy(budget.calls[call_offset:]),'cumulative_calls':len(budget.calls),
+            'state_after':after,'memory':memory,'next_state':next_state,'trace':trace,'model_calls':call_records,'cumulative_calls':len(budget.calls),
             'provenance':'fresh_model' if live else 'offline_transport_double',
             'fresh_model_acceptance':bool(live and not errors),'external_io':'isolated; no real WhatsApp, Sheets, orders or payments',
             'revision':os.getenv('RENDER_GIT_COMMIT','local'),'model':bot.GEMINI_MODEL}
@@ -159,12 +165,12 @@ def call_api(prompt,options=None,context=None):
     return {'output':row['output'],'metadata':row}
 
 def run(bot,run_id):
-    limit=max(1,min(40,int(os.getenv('AI_PRODUCTION_CHECK_LIMIT','12'))))
+    limit=max(1,min(750,int(os.getenv('AI_PRODUCTION_CHECK_LIMIT','12'))))
     connection=bot.requests.get('https://generativelanguage.googleapis.com/v1beta/models',headers={'x-goog-api-key':bot.GEMINI_API_KEY},timeout=18)
     listed=connection.status_code==200 and any(m.get('name')=='models/'+bot.GEMINI_MODEL for m in connection.json().get('models',[]))
     print('PRODUCTION EVAL CONNECTION: '+json.dumps({'run_id':run_id,'status':connection.status_code,'model':bot.GEMINI_MODEL,'configured_model_listed':listed}),flush=True)
     if not listed: return []
-    budget=ModelBudget(bot.requests.post,limit=limit,interval=15)
+    budget=ModelBudget(bot.requests.post,limit=limit,interval=max(6,int(os.getenv('AI_PRODUCTION_CHECK_INTERVAL','15'))))
     print('PRODUCTION EVAL START: '+json.dumps({'run_id':run_id,'max_calls':limit,'mode':'synthetic guests; external mutations denied'}),flush=True)
     if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='200':
         return run_conversations(bot,run_id,budget)
@@ -190,8 +196,8 @@ def run_conversations(bot,run_id,budget):
             state=row.pop('next_state');history=row['memory']
             row['segment']=chat['segment'];rows.append(row)
             print('PRODUCTION EVAL ROW: '+json.dumps(dict(row,run_id=run_id),ensure_ascii=False),flush=True)
-            if not row['plan']:break
-        if budget.stopped or len(budget.calls)>=budget.limit or (rows and not rows[-1]['plan']):break
+            if not row['model_calls']:break
+        if budget.stopped or len(budget.calls)>=budget.limit or (rows and not rows[-1]['model_calls']):break
     print('PRODUCTION EVAL END: '+json.dumps({'run_id':run_id,'calls':len(budget.calls),'rows':len(rows),
         'fresh_acceptance':sum(r['fresh_model_acceptance'] for r in rows),'questions_in_suite':200,'not_run':200-len(rows)}),flush=True)
     return rows
@@ -203,6 +209,6 @@ def start(bot,run_id):
         if os.getenv('AI_PRODUCTION_CHECK_MODEL','').strip():
             env['GEMINI_MODEL']=os.getenv('AI_PRODUCTION_CHECK_MODEL').strip()
         code='import app, hotel_eval; hotel_eval.run(app, '+repr(run_id)+')'
-        try:subprocess.run([sys.executable,'-u','-c',code],env=env,timeout=60+35*max(1,min(40,int(env.get('AI_PRODUCTION_CHECK_LIMIT','12')))),check=False)
+        try:subprocess.run([sys.executable,'-u','-c',code],env=env,timeout=60+35*max(1,min(750,int(env.get('AI_PRODUCTION_CHECK_LIMIT','12')))),check=False)
         except subprocess.TimeoutExpired:print('PRODUCTION EVAL STOP: worker timeout',flush=True)
     threading.Thread(target=worker,daemon=True).start()

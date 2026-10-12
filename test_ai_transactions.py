@@ -72,3 +72,18 @@ class RoomSelectionTests(unittest.TestCase):
         result=ai.review_plan(app,'Towel bhi bhejo',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={'reception_request_sessions':{'request':'Milk','status':'pending'}})
         self.assertFalse(result['reception_followup'])
         self.assertEqual(result['reception_request'],'A new towel request')
+
+class PreconditionsAreNotUnderstandingFailures(unittest.TestCase):
+    def test_understood_confirmation_without_cart_cannot_enter_executor(self):
+        result={'action':'ORDER_CONFIRM','language':'hinglish','confidence':.95,'reply':'','operation_text':''}
+        with patch.object(app,'order_sessions',{}),patch.object(app,'duplicate_order_sessions',{}),patch.object(app,'demo_food_sessions',{}),patch.object(app,'send_whatsapp_message') as send,patch.object(app,'_process_and_reply') as execute:
+            ai.handle(app,'919555550001','Confirm to kar',None,semantic=result)
+        execute.assert_not_called()
+        self.assertIn('pending cart',send.call_args.args[1])
+    def test_ambiguous_feedback_reaches_identity_guard_without_mutation(self):
+        candidate={'action':'SERVICE_FEEDBACK','language':'hinglish'}
+        review={'operational':True,'action':'SERVICE_FEEDBACK','items':[],'category':'NONE','operation_text':'yes','task_id':'','language':'hinglish','confidence':.95,'reply':''}
+        state={'service_tasks':[{'request_id':'S-ABCDEF','status':'STAFF_COMPLETED'},{'request_id':'S-123ABC','status':'STAFF_COMPLETED'}]}
+        result=ai.review_plan(app,'Haan mil gaya',candidate,[],provider=Mock(return_value=json.dumps(review)),pending=state)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['task_id'],'')

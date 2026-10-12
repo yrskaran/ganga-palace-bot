@@ -224,10 +224,8 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
             eligible = [r for r in records if str(r.get('status','')).upper().replace(' ','_') in
                         ({'STAFF_COMPLETED','CONFIRMATION_FAILED'} if action=='SERVICE_FEEDBACK' else {'WAITING_FEEDBACK'})]
             matches = [r for r in eligible if str(r.get(id_key,'')).upper()==task_id] if task_id else eligible
-            if operation not in {'yes','no'} or len(matches)!=1: return None
-            task_id = str(matches[0].get(id_key,'')).upper()
-        if action=='ORDER_CONFIRM' and not any(state.get(key) for key in ('order_sessions','duplicate_order_sessions','demo_food_sessions')):
-            return None
+            if operation not in {'yes','no'}: return None
+            if len(matches)==1: task_id = str(matches[0].get(id_key,'')).upper()
         if action in {'SERVICE','COMPLAINT','RECEPTION'} and not operation.strip():
             return None
         if action=='RECEPTION' and items:
@@ -587,6 +585,9 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         elif action == 'SERVICE_FEEDBACK':
             value = result.get('operation_text', '').lower()
             task_id = str(result.get('task_id', '')).upper()
+            if task_id and not re.fullmatch(r'S-[A-F0-9]{6}',task_id):
+                bot.send_whatsapp_message(phone, 'That service ID is not valid; no service record was changed. Please specify the pending request.')
+                return True
             command = f'{task_id} {value}' if re.fullmatch(r'S-[A-F0-9]{6}', task_id) else value
             if value not in {'yes', 'no'} or not bot.handle_service_guest_confirmation(phone, command, message):
                 bot.send_whatsapp_message(phone, 'No matching service completion is pending. Please specify which request you mean.')
@@ -594,6 +595,12 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
             value = result.get('operation_text', '').lower()
             if value not in {'yes', 'no'} or not bot._handle_complaint_feedback(phone, value, complaint_id=result.get('task_id') or None):
                 bot.send_whatsapp_message(phone, 'No matching complaint follow-up is pending.')
+        elif action in {'ORDER_CONFIRM','ORDER_DECLINE'} and not any(
+                isinstance(getattr(bot,name,{}).get(phone),dict)
+                and not getattr(bot,name,{}).get(phone,{}).get('selection_pending')
+                and (getattr(bot,name,{}).get(phone,{}).get('order') or getattr(bot,name,{}).get(phone,{}).get('items'))
+                for name in ('order_sessions','duplicate_order_sessions','demo_food_sessions')):
+            bot.send_whatsapp_message(phone, 'No saved pending cart is waiting for confirmation or decline. No new order was confirmed or cancelled. Ask for the intended items and quantities if the guest wants a new order.')
         elif action in {'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'COMPLAINT'}:
             _legacy_operation(bot, phone, result, message)
         else:

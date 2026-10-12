@@ -143,7 +143,7 @@ def conversations():
         ('Bas theek hai bola tha, confirm nahi',info+['ORDER_DECLINE'],{'no_handoff':True}),
         ('Ek garlic naan kam karna hai',order+info),
         ('Nahi, saara pending cart hata do', ['ORDER_DECLINE','ORDER_CANCEL','ANSWER','NONE']),
-        ('Confirm to kar',info,{'no_handoff':True}),
+        ('Confirm to kar',info+['ORDER_CONFIRM'],{'no_handoff':True}),
         ('Ab sirf 2 butter naan ka fresh order banana',order,{'names':['Butter Naan'],'qty':2}),
         ('Haan isi ko confirm kar do', ['ORDER_CONFIRM']),
         ('Ye confirmed order cancel karwana hai', ['ORDER_CANCEL','RECEPTION']),

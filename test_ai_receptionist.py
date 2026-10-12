@@ -148,7 +148,8 @@ class ReceptionistBoundaryTests(unittest.TestCase):
                 'category':'KITCHEN','operation_text':'','reply':'','language':'hinglish','confidence':0.97}
         self.assertIsNone(gateway.review_plan(app,'2 chai bhejo',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={}))
         review.update(action='ORDER_CONFIRM',items=[])
-        self.assertIsNone(gateway.review_plan(app,'Haan confirm',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={}))
+        result=gateway.review_plan(app,'Haan confirm',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'ORDER_CONFIRM')  # Executor reports missing cart; understanding remains valid.
 
     def test_duplicate_cart_confirmation_survives_operational_review(self):
         import json

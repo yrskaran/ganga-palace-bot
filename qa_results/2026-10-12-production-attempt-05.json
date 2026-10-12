@@ -1,0 +1,196 @@
+{
+  "logs": [
+    {
+      "id": "18287c29-ef5c-4db0-9e09-34227fd71ffc",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-ms68r"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL CONNECTION: {\"run_id\": \"readiness-room-20261012-0940\", \"status\": 200, \"model\": \"gemini-3.5-flash-lite\", \"configured_model_listed\": true}",
+      "timestamp": "2026-10-12T09:37:35.242565757Z"
+    },
+    {
+      "id": "72d9e3d5-0998-4ab1-9e33-a22b73197509",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-ms68r"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL START: {\"run_id\": \"readiness-room-20261012-0940\", \"max_calls\": 4, \"mode\": \"synthetic guests; external mutations denied\"}",
+      "timestamp": "2026-10-12T09:37:35.242594988Z"
+    },
+    {
+      "id": "3ab6bbef-248e-4c5f-a731-4813a89cd0f1",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-ms68r"
+        },
+        {
+          "name": "level",
+          "value": "debug"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL ROW: {\"id\": \"room-selection\", \"question\": \"AC wala sabse sasta konsa hai?\", \"output\": \"Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai.\", \"plan\": {\"understood_as\": \"AC wala sabse sasta room kaun sa hai?\", \"action\": \"ROOM_OPTIONS\", \"intent\": \"ROOM_OPTIONS\", \"category\": \"NONE\", \"photo_target\": \"\", \"menu_section\": \"\", \"show_prices\": true, \"generic\": \"Deluxe\", \"items\": [], \"service\": \"\", \"needs_reception\": false, \"reception_followup\": false, \"reception_request\": \"\", \"language\": \"hinglish\", \"operation_text\": \"\", \"task_id\": \"\", \"reply\": \"Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai.\", \"confidence\": 1.0, \"submission_intent\": false}, \"errors\": [], \"state_after\": {}, \"memory\": [{\"role\": \"user\", \"content\": \"AC wala sabse sasta konsa hai?\"}, {\"role\": \"assistant\", \"content\": \"Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai.\"}], \"trace\": [], \"model_calls\": [{\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1943, \"candidatesTokenCount\": 186, \"totalTokenCount\": 2522, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1943}], \"thoughtsTokenCount\": 393, \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2552, \"candidatesTokenCount\": 92, \"totalTokenCount\": 3394, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2552}], \"thoughtsTokenCount\": 750, \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 833, \"candidatesTokenCount\": 10, \"totalTokenCount\": 843, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 833}], \"serviceTier\": \"standard\"}}], \"cumulative_calls\": 3, \"provenance\": \"fresh_model\", \"fresh_model_acceptance\": true, \"external_io\": \"isolated; no real WhatsApp, Sheets, orders or payments\", \"revision\": \"146cdd5a7bcca1d0c256210b2e29658e11577152\", \"model\": \"gemini-3.5-flash-lite\", \"run_id\": \"readiness-room-20261012-0940\"}",
+      "timestamp": "2026-10-12T09:38:06.237440294Z"
+    },
+    {
+      "id": "4bdc1143-6f85-449f-a4b9-a05ffe03f067",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-ms68r"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL END: {\"run_id\": \"readiness-room-20261012-0940\", \"calls\": 3, \"rows\": 1, \"fresh_acceptance\": 1}",
+      "timestamp": "2026-10-12T09:38:06.237553611Z"
+    }
+  ],
+  "rows": [
+    {
+      "id": "room-selection",
+      "question": "AC wala sabse sasta konsa hai?",
+      "output": "Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai.",
+      "plan": {
+        "understood_as": "AC wala sabse sasta room kaun sa hai?",
+        "action": "ROOM_OPTIONS",
+        "intent": "ROOM_OPTIONS",
+        "category": "NONE",
+        "photo_target": "",
+        "menu_section": "",
+        "show_prices": true,
+        "generic": "Deluxe",
+        "items": [],
+        "service": "",
+        "needs_reception": false,
+        "reception_followup": false,
+        "reception_request": "",
+        "language": "hinglish",
+        "operation_text": "",
+        "task_id": "",
+        "reply": "Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai.",
+        "confidence": 1,
+        "submission_intent": false
+      },
+      "errors": [],
+      "state_after": {},
+      "memory": [
+        {
+          "role": "user",
+          "content": "AC wala sabse sasta konsa hai?"
+        },
+        {
+          "role": "assistant",
+          "content": "Hamare sabhi rooms air-conditioned hain, aur sabse sasta room Deluxe hai jo ₹1999 per night se start hota hai."
+        }
+      ],
+      "trace": [],
+      "model_calls": [
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1943,
+            "candidatesTokenCount": 186,
+            "totalTokenCount": 2522,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1943
+              }
+            ],
+            "thoughtsTokenCount": 393,
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2552,
+            "candidatesTokenCount": 92,
+            "totalTokenCount": 3394,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2552
+              }
+            ],
+            "thoughtsTokenCount": 750,
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 833,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 843,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 833
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        }
+      ],
+      "cumulative_calls": 3,
+      "provenance": "fresh_model",
+      "fresh_model_acceptance": true,
+      "external_io": "isolated; no real WhatsApp, Sheets, orders or payments",
+      "revision": "146cdd5a7bcca1d0c256210b2e29658e11577152",
+      "model": "gemini-3.5-flash-lite",
+      "run_id": "readiness-room-20261012-0940"
+    }
+  ]
+}

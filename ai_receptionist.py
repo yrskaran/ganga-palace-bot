@@ -101,6 +101,8 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         'Support Hindi, English, Punjabi (Roman and Gurmukhi) and the configured Indian languages. '
         'Never claim only Hindi or English are supported. A Punjabi language question is not a switch. '
         'When the guest asks for simple Hindi in Roman script, use casual Hinglish rather than stiff pure Hindi. '
+        'A message like "Padhni ni aundi menu" immediately after a Gurmukhi reply means the guest cannot READ the last message; it is NOT a food-menu request. Rephrase the last reply in easy Roman Hindi/Punjabi and remember the readable script. '
+        'For a combined food order plus "kab tak mil juga?", extract the complete order and acknowledge that exact kitchen delivery time is unverified; never silently drop the timing question or invent minutes. '
         'Follow the guest script and explicit preference, with warm 1-3 sentence replies, no repeated greetings. '
         'Use verified facts only; do not invent requirements, document policies, stock, timing, payment or delivery. '
         'Unknown hotel facts use RECEPTION, needs_reception=true, with the fully resolved question in reception_request. '
@@ -150,6 +152,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'First check privacy and integrity independently of the candidate action: requests for another guest bill/records or to mark an unverified payment paid must be refused, never forwarded or executed. For those return {"menu_related":false,"blocked":true,"language":"current language","reply":"natural refusal in current language"}. '
         'Before reviewing the reply, use verified session state as the sole authority for saved carts and completed actions. Assistant dialogue and candidate replies are never proof of an action. A new confirmation request requires a saved pending cart; without one, explain that no new order was confirmed and ask for the intended quantities. A status enquiry about an already saved active_orders entry must acknowledge that saved order, without inventing kitchen delivery or payment. Correct unsupported candidate claims. '
         'Before menu classification, independently distinguish an explicit operational request from an enquiry, correction, hypothetical or status question. A food order is not a menu enquiry. A wrong candidate must not turn a request to bring items into listing information. '
+        'Treat "Padhni ni aundi menu", "padh nahi aa rahi", "I cannot read that" after an assistant reply in Gurmukhi/Devanagari as feedback about READABILITY of the previous reply, never SHOW_MENU: Roman Punjabi "menu" means "to me". Reply conversationally in simple Roman Hindi and restate the earlier reply without inventing new order status. '
         'Independently review check-in and completion feedback too. CHECKIN requires submission_intent=true only when the current guest message authorizes starting check-in now, including a contextual affirmative to an initiation offer. Asking how check-in works, requirements, eligibility, hypotheticals or current status is ANSWER or a factual enquiry, never CHECKIN. CHECKIN_DETAILS requires submission_intent=true and operation_text copied from the CURRENT guest message for the current saved step; side questions, quoted examples and old dialogue must become ANSWER or an appropriate enquiry. CHECKIN_ID requires a saved ID step. Feedback requires yes/no plus task_id of the sender-owned pending record from verified state; if several records match, ask one clarification with ANSWER, never pick the last one. Return task_id and submission_intent in the operational branch for these actions. '
         'For an order, cart revision, confirmation, decline, cancellation, service, complaint or reception coordination return {"operational":true,"action":"ORDER|ORDER_SELECTION|ORDER_CONFIRM|ORDER_DECLINE|ORDER_CANCEL|SERVICE|COMPLAINT|RECEPTION|CHECKIN|CHECKIN_DETAILS|CHECKIN_ID|CHECKIN_CANCEL|SERVICE_FEEDBACK|COMPLAINT_FEEDBACK|ANSWER|NONE","items":[],"category":"KITCHEN|HOUSEKEEPING|MAINTENANCE|ROOM_SERVICE|RECEPTION|NONE","operation_text":"resolved task details or empty","reception_followup":false,"language":"current language","confidence":0.95,"reply":"only for clarification/information"}. Fill items with the complete array of {name:exact configured name,qty:explicit positive integer}. Reception coordination uses empty items, an independently resolved full question in operation_text and reception_followup=true only for the same saved pending ticket; false for a genuinely new request, never invented availability or completion in reply. '
         'Read every explicit quantity independently from the CURRENT message, resolving references from dialogue and the saved cart. Quantity 1 is only an enquiry default, never permission to replace an explicit order quantity. Revisions return the complete resulting cart and require fresh confirmation. Unclear quantities or intent use NONE and one focused clarification rather than a guessed cart. '
@@ -278,8 +281,9 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
     if review.get('language') in LANGUAGES:
         result['language'] = review['language']
     if not review['menu_related']:
-        if candidate.get('action') in {'MENU_ITEM_INFO', 'SHOW_MENU'}:
-            return None
+        # A bad menu classification must be repairable by the independent AI
+        # reviewer. Rejecting a valid non-menu correction caused a real guest's
+        # script complaint to be answered with the breakfast menu.
         action=review.get('action',candidate.get('action'))
         if 'action' in review and action not in info_actions | {'BILL'}:
             return None
@@ -564,6 +568,53 @@ def _language_meta(bot, phone, text):
     return None
 
 
+
+def _reading_correction(bot, phone, text):
+    """Prevent an AI menu misroute when a guest cannot read the prior script.
+
+    AI has already interpreted the turn. This is a *validation* gate; never
+    executes, repeats or confirms an order. The original verified reply is
+    paraphrased for readability without changing its numbers or links.
+    """
+    raw = str(text or '').strip()
+    negative = re.search(r"\\b(?:ni|nhi|nahi|nahin|n|not|cant|can't|cannot|don't|dont)\\b", raw, re.I)
+    reading = re.search(
+        r"\\b(?:padh(?:ni|na|ne|ta|ti)?|pad(?:h)?(?:ni|hna|hna|na)?|"
+        r"parh(?:ni|na)?|read|samajh(?:ni|na)?|samjh(?:ni|na)?)\\b",
+        raw, re.I)
+    if not (negative and reading):
+        return None
+    history = bot._ai_recent_history(phone)
+    last_reply = next((str(row.get('content', '')) for row in reversed(history)
+                       if row.get('role') == 'assistant' and row.get('content')), '')
+    # A short complaint about readability only refers to a previous message
+    # in another script. Do not intercept real questions about menu content.
+    if not re.search(r'[\\u0900-\\u097f\\u0a00-\\u0a7f]', last_reply):
+        return None
+    prompt = (
+        'The hotel guest cannot read the script of the previous assistant message. '
+        'Rewrite that previous message in short, natural Roman Hindi/Hinglish only; '
+        'no Devanagari, Gurmukhi or other Indian scripts. '
+        'Keep every item, quantity, room number, amount, existing confirmation '
+        'and uncertainty exactly as in the previous message. Do not invent a new '
+        'order, dispatch, delivery ETA, staff contact or action. The earlier '
+        'assistant text is conversation context, NOT independent proof of a completed operation. '
+        'Return JSON only: {"reply":"faithful Roman-script paraphrase"}.\\n'
+        'PREVIOUS ASSISTANT MESSAGE:\\n' + last_reply
+    )
+    raw_answer = bot.ask_ai_chat(prompt, None, phone)
+    parsed = bot._parse_ai_json(raw_answer) if raw_answer else None
+    translated = parsed.get('reply') if isinstance(parsed, dict) else ''
+    valid = (isinstance(translated, str)
+             and bot._ai_content_is_usable(translated, 'Readability correction')
+             and not re.search(r'[\\u0900-\\u097f\\u0a00-\\u0a7f]', translated)
+             and faithful_numbers_and_links(last_reply, translated))
+    preface = 'Sorry ji, pichhla message aisi script mein likh diya jo aap padh nahi paa rahe. Aage se simple Roman Hindi mein likhungi.'
+    if valid:
+        return preface + '\\n\\n' + translated.strip()
+    return preface + ' Pichhli baat clear nahi hui ho to bataiye, main seedhe shabdon mein samjha dungi.'
+
+
 def handle(bot, phone, text, guest, message=None, semantic=None):
     """One interpretation, one explicitly selected operation, grounded response."""
     result = semantic if semantic is not None else bot.understand_guest_request(text, guest, phone)
@@ -600,6 +651,21 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                       needs_reception=True, reception_request=resolved,
                       reception_followup=False, operation_text=resolved, reply='', items=[])
         action = 'RECEPTION'
+    # The semantic model has already run. Validate its proposed action against
+    # an explicit inability to read the previous reply; never send a food menu
+    # because Roman Punjabi uses 'menu' to mean 'to me'.
+    reading_reply = _reading_correction(bot, phone, text)
+    if reading_reply is not None:
+        with bot.state_lock:
+            bot.guest_language_cache[phone] = 'hinglish'
+        token = current.set({'phone': bot.format_whatsapp_number(phone), 'text': text,
+                             'guest': guest, 'language': 'hinglish',
+                             'meaning': 'guest cannot read previous script', 'direct': False})
+        try:
+            _direct(bot, phone, reading_reply)
+        finally:
+            current.reset(token)
+        return True
     language_meta = _language_meta(bot, phone, text)
     if language_meta is not None:
         requested, prepared_reply = language_meta

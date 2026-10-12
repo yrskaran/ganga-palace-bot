@@ -363,7 +363,7 @@ def compose(bot, phone, backend_text):
     prompt = (
         'Write the final WhatsApp reply as the hotel virtual receptionist. '
         'This is a RESULT, not a new guest request. No actions may be requested here. '
-        'Match the language chosen by the interpreting AI. Be natural and specific, '
+        'Match the language chosen by the interpreting AI AND the script of the current guest message. If the guest writes in Roman letters, NEVER reply in Gurmukhi or Devanagari, even if Punjabi is selected. Reply in easy Roman Punjabi/Hinglish unless the guest explicitly requests native script. Be natural and specific, '
         'acknowledge corrections and answer the actual question directly without a greeting. '
         'Use only the verified backend result below. Do not turn accepted into delivered, '
         'pending into confirmed, a demo into a real order, or failed into successful. '

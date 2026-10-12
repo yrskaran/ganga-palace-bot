@@ -1836,7 +1836,10 @@ def find_on_duty_staff(room, role):
 
 RECEPTION_REQUEST_HEADERS = ["Request ID", "Created Epoch", "Guest Phone", "Guest Name", "Room", "Status", "Request", "Reception Phone", "Reception Name", "Source", "Alert Message ID", "Last Reply", "Responded Epoch", "Delivery Status"]
 RECEPTION_KNOWLEDGE_HEADERS = ["Question", "Question Key", "Verified Answer", "Verified At", "Expires Epoch", "Request ID"]
-RECEPTION_KNOWLEDGE_TTL_SECONDS = 30 * 24 * 60 * 60
+RECEPTION_KNOWLEDGE_TTL_SECONDS = (
+    max(30, min(365, int(os.getenv("RECEPTION_KNOWLEDGE_TTL_DAYS", "365"))))
+    if KNOWLEDGE_RECEPTION_LEARNING else 30
+) * 24 * 60 * 60
 reception_knowledge_cache = []
 reception_knowledge_loaded_at = 0.0
 

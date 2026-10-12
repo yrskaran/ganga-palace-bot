@@ -11,6 +11,20 @@ class GroqModelFallbackTests(unittest.TestCase):
         self.config=patch.object(app,'GROQ_FALLBACK_CHAT_MODEL','openai/gpt-oss-20b')
         self.config.start();self.addCleanup(self.config.stop)
 
+    def test_qwen_structured_output_budget_fits_output_minute_limit(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            'choices': [{'message': {'content': '{"reply":"Ji."}'}, 'finish_reason': 'stop'}],
+            'usage': {},
+        }
+        with patch.object(app, 'get_active_groq_model', return_value='qwen/qwen3.8-27b'), \
+             patch.object(app, '_groq_circuit_open', return_value=False), \
+             patch.object(app.requests, 'post', return_value=response) as post:
+            answer = app.ask_groq_chat('Hello', structured=True)
+        self.assertEqual(answer, '{"reply":"Ji."}')
+        self.assertLessEqual(post.call_args.kwargs['json']['max_completion_tokens'], 900)
+        self.assertEqual(post.call_count, 1)
+
     def test_daily_limit_uses_other_model_without_retrying_exhausted_model(self):
         limited=Mock(status_code=429,text='tokens per day (TPD) limit',headers={'retry-after':'600'})
         success=Mock(status_code=200)

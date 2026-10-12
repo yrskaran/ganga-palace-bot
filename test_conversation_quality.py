@@ -77,7 +77,7 @@ class GeneralReasoningChecks(unittest.TestCase):
                                        "finish_reason":"stop"}]})
         send=Mock(return_value=response)
         with patch.object(ai_context,"messages",return_value=msgs):
-            result=quality.reconsider(bot,"Tera naam pucha apna to pta hai",
+            result=quality.reconsider(bot,"Tera naam pucha apna to pta hai",self.phone,
                                       OLD_ANSWER,request_fn=send)
         self.assertEqual(result,"Mera naam Monika hai ji.")
         self.assertEqual(send.call_count,1)
@@ -95,7 +95,7 @@ class GeneralReasoningChecks(unittest.TestCase):
         request=Mock(return_value=SimpleNamespace(status_code=429))
         with patch.object(ai_context,"messages",return_value=[
                 {"role":"system","content":"Facts"}, {"role":"user","content":"Correction"}]):
-            result=quality.reconsider(bot,"Tera naam pucha apna to pata hai",
+            result=quality.reconsider(bot,"Tera naam pucha apna to pata hai",self.phone,
                                       OLD_ANSWER,request_fn=request)
         self.assertEqual(result,OLD_ANSWER)
         request.assert_called_once()
@@ -105,7 +105,7 @@ class GeneralReasoningChecks(unittest.TestCase):
             get_conversation_history=lambda phone:history("Room rate kya hai?", OLD_ANSWER))
         unused=Mock(side_effect=AssertionError("A second call must never run"))
         answer="Deluxe Non AC Rs. 1000 per night hai ji."
-        self.assertEqual(quality.reconsider(bot,"Aur butter roti?",answer,unused),answer)
+        self.assertEqual(quality.reconsider(bot,"Aur butter roti?",self.phone,answer,unused),answer)
         unused.assert_not_called()
 
     def test_guest_correction_instruction_available_to_all_model_gateways(self):

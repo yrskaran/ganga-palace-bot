@@ -3,6 +3,18 @@ import json
 
 def messages(bot, text, guest=None, phone=None, history=None, role='system', budget=12400):
     active=bot.ai_receptionist.current.get()
+    if active and active.get('contract_request'):
+        # Workflow text is an instruction envelope, not the guest's sentence.
+        # Its embedded original message/dialogue owns language and meaning.
+        stay={k:guest.get(k) for k in ('name','room','is_inhouse','status')} if guest else None
+        return [{'role':role,'content':
+            f'You are the hotel receptionist for {bot.get_hotel_name()}. '
+            'Follow the supplied workflow contract exactly. Its original guest message and dialogue '
+            'determine meaning and language; the English workflow instructions are not guest speech. '
+            'Use verified facts only. Dialogue never proves saved actions. Return final JSON only, '
+            'without thinking, analysis or drafts.\n'+bot.ai_time_context()+
+            '\nVerified sender stay: '+json.dumps(stay,ensure_ascii=False)},
+            {'role':'user','content':str(text or '')}]
     history=history if history is not None else bot._ai_recent_history(phone)
     query=' '.join(str(m.get('content','')) for m in history[-4:])+' '+bot._extract_semantic_guest_message(text)
     system=(f'You are the virtual WhatsApp receptionist for {bot.get_hotel_name()}. '

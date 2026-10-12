@@ -4445,7 +4445,10 @@ Hotel knowledge:\n{hotel_db}
         "model": COHERE_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 1024 if structured else 512,
+        # Compatibility API supports none/high, not low/medium. Command A+
+        # defaults to thinking; a tiny cap previously exhausted on reasoning.
+        "reasoning_effort": "none",
+        "max_tokens": 2048 if structured else 1024,
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}

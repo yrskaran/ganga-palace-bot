@@ -118,7 +118,7 @@ def facts(bot, text):
 def request_json(bot, prompt, guest, validator=None):
     # Flexible JSON envelope, not the old single-action schema. Structured mode
     # also reserves the larger output budget and skips malformed provider output.
-    token=gateway.current.set({'plan_review':True,'language':'english'})
+    token=gateway.current.set({'plan_review':True,'contract_request':True,'language':'english'})
     try:
         return bot.ask_ai_chat(prompt,guest,None,structured=True,json_validator=validator)
     finally:

@@ -7,6 +7,27 @@ import app
 import ai_receptionist
 
 class ProductionContextTests(unittest.TestCase):
+    def test_workflow_contract_does_not_reclassify_english_prompt_as_guest_language(self):
+        import ai_context
+        token=ai_receptionist.current.set({'contract_request':True,'plan_review':True})
+        try:
+            messages=ai_context.messages(app,'CURRENT MESSAGE: Padhni ni aundi menu; script=roman',
+                {'room':'450','is_inhouse':True},history=[])
+        finally: ai_receptionist.current.reset(token)
+        self.assertNotIn('Infer the guest language from the CURRENT sentence',messages[0]['content'])
+        self.assertIn('contract',messages[0]['content'].lower())
+        self.assertIn('450',messages[0]['content'])
+
+    def test_cohere_contract_reserves_final_output_without_thinking(self):
+        response=Mock(status_code=200,json=Mock(return_value={
+            'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
+        with patch.object(app,'COHERE_API_KEY','test'),patch.object(app,'COHERE_MODEL','command-a-plus-05-2026'), \
+                patch.object(app,'_cohere_circuit_open',return_value=False),patch.object(app.requests,'post',return_value=response) as post:
+            self.assertEqual(app.ask_cohere_chat('Return JSON only',structured=True),'{"supported":true}')
+        payload=post.call_args.kwargs['json']
+        self.assertEqual(payload.get('reasoning_effort'),'none')
+        self.assertGreaterEqual(payload['max_tokens'],2048)
+
     def test_full_profile_preserves_followup_at_groq_transport(self):
         phone='919555550001'
         history=[{'role':'user','content':'Standard veg thali bhi hai?'},

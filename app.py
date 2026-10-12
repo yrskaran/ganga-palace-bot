@@ -111,6 +111,11 @@ CEREBRAS_PAYMENT_COOLDOWN = max(3600, int(os.getenv("CEREBRAS_PAYMENT_COOLDOWN",
 # Command A+ supports multilingual chat and structured JSON responses.
 COHERE_API_KEY = os.getenv("COHERE_API_KEY", "").strip()
 COHERE_MODEL = os.getenv("COHERE_MODEL", "command-a-plus-05-2026").strip()
+# Cohere compatibility API accepts high/none only. High is for conversational
+# understanding, not permission to execute hotel operations.
+COHERE_CONVERSATION_REASONING = os.getenv("COHERE_CONVERSATION_REASONING", "high").strip().lower()
+if COHERE_CONVERSATION_REASONING not in {"none", "high"}:
+    COHERE_CONVERSATION_REASONING = "high"
 COHERE_UNAVAILABLE_UNTIL = 0.0
 COHERE_UNAVAILABLE_REASON = ""
 COHERE_LOCK = threading.RLock()
@@ -4511,8 +4516,8 @@ Hotel knowledge:\n{hotel_db}
         "temperature": 0.2,
         # Compatibility API supports none/high, not low/medium. Command A+
         # defaults to thinking; a tiny cap previously exhausted on reasoning.
-        "reasoning_effort": "none",
-        "max_tokens": 2048 if structured else 1024,
+        "reasoning_effort": "none" if structured else COHERE_CONVERSATION_REASONING,
+        "max_tokens": 2048 if structured else (2400 if COHERE_CONVERSATION_REASONING == "high" else 1024),
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}
@@ -5416,16 +5421,16 @@ Hotel knowledge:
     # GPT-OSS defaults to medium reasoning on Groq; low is enough for receptionist
     # semantic routing and consumes fewer reasoning tokens. Qwen 3.8 can disable it.
     if "qwen3.8-27b" in lower_model:
-        payload["reasoning_effort"] = "none"
+        payload["reasoning_effort"] = "none" if structured else "low"
         # The on-demand Qwen tier enforces an output-tokens-per-minute
         # ceiling of 1,000. Asking for 1,024 is guaranteed to fail with 429,
         # even when no tokens have been consumed this minute.
         payload["max_completion_tokens"] = min(payload["max_completion_tokens"], 800)
     elif "gpt-oss" in lower_model:
-        payload["reasoning_effort"] = "low"
+        payload["reasoning_effort"] = "low" if structured else "medium"
         payload["include_reasoning"] = False
         # Reserve room for private reasoning plus the complete JSON envelope.
-        payload["max_completion_tokens"] = 1536 if structured else 768
+        payload["max_completion_tokens"] = 1536 if structured else 1536
 
     if structured:
         # JSON mode is intentionally used instead of a large strict schema here.

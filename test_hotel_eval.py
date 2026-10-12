@@ -7,6 +7,17 @@ import app
 import hotel_eval
 
 class ProductionEntryEvaluationTests(unittest.TestCase):
+    def test_media_wire_response_is_retained_as_guest_output(self):
+        plan={'action':'SHOW_PHOTO','photo_target':'Family Suite','language':'hinglish','confidence':.95}
+        def process(*args):
+            app.understand_guest_request('Uski photo bhejna',None,hotel_eval.PHONE)
+            app.whatsapp_request({'to':hotel_eval.PHONE,'type':'image','image':{'link':'https://example.test/family.jpg','caption':'Family Suite'}})
+        with patch.object(app,'understand_guest_request',return_value=plan),patch.object(app,'process_and_reply',side_effect=process),patch.object(app,'get_room_photo_categories',return_value=[('Family Suite','https://example.test/family.jpg')]):
+            row=hotel_eval.evaluate(app,{'id':'photo','question':'Uski photo bhejna','actions':['SHOW_PHOTO'],'photo':'Family Suite'})
+        self.assertNotIn('No guest output',row['errors'])
+        self.assertNotIn('Final reply does not match Hinglish script/wording',row['errors'])
+        self.assertEqual(row['guest_payloads'][0]['image']['link'],'https://example.test/family.jpg')
+
     def test_actual_entry_review_compose_and_wire_memory(self):
         answers=[{'action':'MENU_ITEM_INFO','items':[{'name':'Standard Veg Thali','qty':1}],'language':'hinglish','operation_text':'','confidence':.96},
             {'menu_related':True,'language':'hinglish','request_kind':'price','action':'MENU_ITEM_INFO','menu_section':'','items':[{'name':'Standard Veg Thali','qty':1}],'excluded_items':[],'show_prices':True,'needs_reception':False,'reception_request':'','reply':''},

@@ -61,18 +61,19 @@ class ModelBudget:
                 self.stopped=True
                 rec['error']=str((body.get('error') or {}).get('message',''))[:400]
             return res
-        except Exception:
+        except Exception as exc:
+            rec['error_type']=type(exc).__name__
             self.stopped=True
             raise
 
-def contract_errors(case,plan,output):
+def contract_errors(case,plan,output,media_only=False):
     import re
     plan=plan or {};errors=[]
     language=case.get('language','hinglish' if 'actions' in case else None)
     if language and plan.get('language')!=language:errors.append('Wrong guest language')
-    if language=='hinglish' and (re.search(r'[\u0900-\u097F]',output) or not re.search(r'\b(ji|hai|hain|ki|ke|ka|mein|me|aur|mil|aap|chahiye|hoon|liye|nahi)\b',output,re.I)):
+    if not media_only and language=='hinglish' and (re.search(r'[\u0900-\u097F]',output) or not re.search(r'\b(ji|hai|hain|ki|ke|ka|mein|me|aur|mil|aap|chahiye|hoon|liye|nahi)\b',output,re.I)):
         errors.append('Final reply does not match Hinglish script/wording')
-    if language=='hindi' and not re.search(r'[\u0900-\u097F]',output):errors.append('Final reply does not match Hindi script')
+    if not media_only and language=='hindi' and not re.search(r'[\u0900-\u097F]',output):errors.append('Final reply does not match Hindi script')
     if case.get('scope') and plan.get('operation_text')!=case['scope']:errors.append('Wrong bill scope')
     if case.get('photo') and case['photo'].casefold() not in str(plan.get('photo_target','')).casefold():errors.append('Wrong photo target')
     if case.get('no_unrequested_price') and plan.get('show_prices'):errors.append('Unrequested price breakdown')
@@ -128,12 +129,22 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
             memory=copy.deepcopy(bot.conversation_memory.get(PHONE,[]))
             next_state={name:copy.deepcopy(getattr(bot,name)) for name in SESSION_NAMES}
     finally:ai.evaluation.reset(token)
-    output='\n'.join(p.get('text',{}).get('body','') for p in wire if p.get('to')==PHONE and p.get('type')=='text')
+    guest_payloads=[p for p in wire if p.get('to')==PHONE and p.get('type') in {'text','image','video','document','audio'}]
+    text_payloads=[p for p in guest_payloads if p.get('type')=='text']
+    media=[p for p in guest_payloads if p.get('type')!='text']
+    output='\n'.join(p.get('text',{}).get('body','') if p.get('type')=='text' else p.get(p['type'],{}).get('caption','') for p in guest_payloads)
     plan=next((p for p in plans if p),None)
     errors=[]
     if not plan:errors.append('No completed interpreter/review plan')
-    if not output:errors.append('No guest output')
-    errors.extend(contract_errors(case,plan,output))
+    if not output and not media:errors.append('No guest output')
+    errors.extend(contract_errors(case,plan,output,media_only=bool(media and not text_payloads)))
+    if case.get('photo') and media:
+        configured=dict(bot.get_room_photo_categories())
+        expected=next((url for name,url in configured.items() if name.casefold()==case['photo'].casefold()),None)
+        if not expected or not any(p.get('image',{}).get('link')==expected for p in media):
+            errors.append('Captured media does not match requested configured photo')
+    if case.get('no_checkin_start') and after.get('checkin_sessions'):
+        errors.append('Process enquiry started check-in')
     if case.get('expected_action') and (plan or {}).get('action')!=case['expected_action']:errors.append('Wrong action')
     if case.get('forbidden_action') and (plan or {}).get('action')==case['forbidden_action']:errors.append('Forbidden action')
     for forbidden in case.get('forbidden',[]):
@@ -151,7 +162,7 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
     call_records=copy.deepcopy(budget.calls[call_offset:])
     if plan and not fallback:
         for rec in call_records:rec.pop('response_text',None)
-    return {'id':case['id'],'question':case['question'],'output':output,'plan':plan,'errors':errors,
+    return {'id':case['id'],'question':case['question'],'output':output,'guest_payloads':guest_payloads,'plan':plan,'errors':errors,
             'state_after':after,'memory':memory,'next_state':next_state,'trace':trace,'model_calls':call_records,'cumulative_calls':len(budget.calls),
             'provenance':'fresh_model' if live else 'offline_transport_double',
             'fresh_model_acceptance':bool(live and not errors),'external_io':'isolated; no real WhatsApp, Sheets, orders or payments',
@@ -187,7 +198,8 @@ def run(bot,run_id):
 def run_conversations(bot,run_id,budget):
     from qa_conversations import conversations
     rows=[]
-    for chat in conversations():
+    start_chat=max(1,min(20,int(os.getenv('AI_PRODUCTION_CHECK_START_CHAT','1'))))
+    for chat in conversations()[start_chat-1:]:
         history=[]; state={}
         for index,turn in enumerate(chat['turns'],1):
             if budget.stopped or len(budget.calls)>=budget.limit: break
@@ -199,7 +211,8 @@ def run_conversations(bot,run_id,budget):
             if not row['model_calls']:break
         if budget.stopped or len(budget.calls)>=budget.limit or (rows and not rows[-1]['model_calls']):break
     print('PRODUCTION EVAL END: '+json.dumps({'run_id':run_id,'calls':len(budget.calls),'rows':len(rows),
-        'fresh_acceptance':sum(r['fresh_model_acceptance'] for r in rows),'questions_in_suite':200,'not_run':200-len(rows)}),flush=True)
+        'fresh_acceptance':sum(r['fresh_model_acceptance'] for r in rows),'questions_in_suite':200,
+        'start_chat':start_chat,'selected_questions':10*(21-start_chat),'not_run_in_selection':10*(21-start_chat)-len(rows)}),flush=True)
     return rows
 
 def start(bot,run_id):

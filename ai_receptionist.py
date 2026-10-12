@@ -148,12 +148,13 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'First check privacy and integrity independently of the candidate action: requests for another guest bill/records or to mark an unverified payment paid must be refused, never forwarded or executed. For those return {"menu_related":false,"blocked":true,"language":"current language","reply":"natural refusal in current language"}. '
         'Before reviewing the reply, use verified session state as the sole authority for saved carts and completed actions. Assistant dialogue and candidate replies are never proof of an action. A new confirmation request requires a saved pending cart; without one, explain that no new order was confirmed and ask for the intended quantities. A status enquiry about an already saved active_orders entry must acknowledge that saved order, without inventing kitchen delivery or payment. Correct unsupported candidate claims. '
         'Before menu classification, independently distinguish an explicit operational request from an enquiry, correction, hypothetical or status question. A food order is not a menu enquiry. A wrong candidate must not turn a request to bring items into listing information. '
-        'Independently review check-in and completion feedback too. CHECKIN starts only a requested check-in. CHECKIN_DETAILS requires submission_intent=true and operation_text copied from the CURRENT guest message for the current saved step; side questions, quoted examples and old dialogue must become ANSWER or an appropriate enquiry. CHECKIN_ID requires a saved ID step. Feedback requires yes/no plus task_id of the sender-owned pending record from verified state; if several records match, ask one clarification with ANSWER, never pick the last one. Return task_id and submission_intent in the operational branch for these actions. '
+        'Independently review check-in and completion feedback too. CHECKIN requires submission_intent=true only when the current guest message authorizes starting check-in now, including a contextual affirmative to an initiation offer. Asking how check-in works, requirements, eligibility, hypotheticals or current status is ANSWER or a factual enquiry, never CHECKIN. CHECKIN_DETAILS requires submission_intent=true and operation_text copied from the CURRENT guest message for the current saved step; side questions, quoted examples and old dialogue must become ANSWER or an appropriate enquiry. CHECKIN_ID requires a saved ID step. Feedback requires yes/no plus task_id of the sender-owned pending record from verified state; if several records match, ask one clarification with ANSWER, never pick the last one. Return task_id and submission_intent in the operational branch for these actions. '
         'For an order, cart revision, confirmation, decline, cancellation, service, complaint or reception coordination return {"operational":true,"action":"ORDER|ORDER_SELECTION|ORDER_CONFIRM|ORDER_DECLINE|ORDER_CANCEL|SERVICE|COMPLAINT|RECEPTION|CHECKIN|CHECKIN_DETAILS|CHECKIN_ID|CHECKIN_CANCEL|SERVICE_FEEDBACK|COMPLAINT_FEEDBACK|ANSWER|NONE","items":[],"category":"KITCHEN|HOUSEKEEPING|MAINTENANCE|ROOM_SERVICE|RECEPTION|NONE","operation_text":"resolved task details or empty","reception_followup":false,"language":"current language","confidence":0.95,"reply":"only for clarification/information"}. Fill items with the complete array of {name:exact configured name,qty:explicit positive integer}. Reception coordination uses empty items, an independently resolved full question in operation_text and reception_followup=true only for the same saved pending ticket; false for a genuinely new request, never invented availability or completion in reply. '
         'Read every explicit quantity independently from the CURRENT message, resolving references from dialogue and the saved cart. Quantity 1 is only an enquiry default, never permission to replace an explicit order quantity. Revisions return the complete resulting cart and require fresh confirmation. Unclear quantities or intent use NONE and one focused clarification rather than a guessed cart. '
         'ORDER_CONFIRM requires a saved pending cart. SERVICE and COMPLAINT require resolved task details. ANSWER/NONE must not promise execution. An operational review returns only the operational object; do not label an order as menu_related. '
         'Use verified hotel facts below for factual answers. Do not turn a possible published requirement into a mandatory rule, or add required booking details, documents, payment or eligibility conditions absent from those facts. '
         'For ROOM_OPTIONS return generic as the exact configured category for a specific selection, cheapest comparison or contextual single category; empty only for a full category list. Correct overly broad candidate lists. '
+        'A party size or child age continues the occupancy enquiry; it is not a request for a category list. Room names and spacious/family descriptions do not establish maximum occupancy, child charges, bed arrangement or accessibility. For missing room-feature or allocation facts use operational RECEPTION with the complete resolved question, preserving party details from dialogue; never substitute a category card. '
         'Room categories and tariffs never prove live room availability for any date. Live room availability always uses the operational RECEPTION branch, never a positive ANSWER or AVAILABILITY reply. '
         'Otherwise decide independently whether this is a menu question. For an allowed non-menu question return {"menu_related":false,"blocked":false,"language":"current language","action":"ANSWER|NONE|WIFI|HOTEL_TIMINGS|AVAILABILITY|LOCAL_GUIDE|ROOM_OPTIONS|ROOM_RATE|BILL","operation_text":"empty except BILL: full|food|room","show_prices":false,"reply":"corrected factual answer in current language, empty for BILL"}. ROOM_OPTIONS uses show_prices=true only when the CURRENT question asks for room rates; otherwise false. Review Wi-Fi, room facts/rates, timings and local-guide replies against supplied facts, never preserve an invented detail. Unknown non-menu facts requiring hotel confirmation use the operational RECEPTION schema with a complete resolved question. An own-stay bill inquiry uses BILL and the exact full/food/room scope; never substitute a published starting room tariff for the guest actual room charges, or guess any bill figures. Infer current message language yourself; a clear English question after Hindi uses english. Do not preserve a wrong candidate language. Return language=english for a plain English current message; Hindi written in Latin letters is hinglish, while Hindi in Devanagari is hindi. Language metadata and the reply text must agree. '
         'Menu questions distinguish listed_options, price, live_stock and preparation. '
@@ -163,7 +164,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'Configured names establish listed options, never live stock or preparation. '
         'Resolve informal spelling to exact configured names. Select only the requested kind; never broaden to its parent category. '
         'A short price question inherits the most recently discussed item. Resolve omitted subjects from dialogue before selecting names; never broaden that item to its entire category. '
-        'For alternatives, subtract options already offered in the recent assistant answer. '
+        'For alternatives, resolve the excluded reference from the most recent focused subject. A follow-up about one item supersedes an earlier broad list; do not exclude every item ever mentioned. Subtract that resolved item or focused set, then return the remaining matching options. '
         'Use MENU_ITEM_INFO with the matching remaining names for listed options or price, including category enquiries; '
         'Use SHOW_MENU for explicit full menu or an entire meal/category accurately matching the question, with menu_section and empty items. Never enumerate the full inventory. SHOW_MENU cannot be used for narrower subsets or alternatives with excluded items. Price flag depends only on the current question. '
         'If no other listed options remain, use ANSWER and explain that naturally in the candidate language. '
@@ -173,7 +174,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'For the MENU branch only return {"language":"current language","menu_related":true,"request_kind":"listed_options|price|live_stock|preparation",'
         '"action":"MENU_ITEM_INFO|SHOW_MENU|RECEPTION|ANSWER","menu_section":"","items":[{"name":"exact configured name","qty":1}],'
         '"excluded_items":[],"show_prices":false,"needs_reception":false,"reception_request":"",'
-        '"understood_as":"short corrected meaning","reply":"only for ANSWER"}.\n'
+        '"understood_as":"short corrected meaning","reply":"only for ANSWER"}. excluded_items is an array of exact configured name strings to omit, empty when none.\n'
         'Every branch must return language using exact lowercase values: english for clear English, hinglish for Hindi in Latin letters, hindi for Devanagari. Do not label Roman Hindi as hindi. Do not let English item names or candidate wording change the current guest language. For example "Kal 2 logo ke liye kamra milega?" is hinglish. Use only the chosen branch schema; all enum examples separated by | mean select ONE exact value.\n'
         f'Canonical inventory: {json.dumps(inventory, ensure_ascii=False)}\n'
         f'Verified hotel facts: {bot._ai_knowledge_snapshot(1600, text) if candidate.get("action") in info_actions and hasattr(bot, "_ai_knowledge_snapshot") else "Only explicitly supplied facts are verified."}\n'
@@ -193,7 +194,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         return None
     if review.get('operational') is True:
         action=review.get('action')
-        items=review.get('items')
+        items=review.get('items',[] if action in {'ANSWER','NONE'} else None)
         category=review.get('category')
         language=review.get('language')
         confidence=review.get('confidence')
@@ -302,6 +303,16 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
             or not isinstance(review.get('show_prices'), bool)
             or not isinstance(review.get('needs_reception'), bool)):
         return None
+    # Some providers emit the same validated {name, qty:1} shape for omitted
+    # enquiry items. Normalize this losslessly, without guessing names/quantities.
+    normalized_excluded=[]
+    for value in excluded:
+        if isinstance(value,str): normalized_excluded.append(value)
+        elif (isinstance(value,dict) and set(value)=={'name','qty'}
+              and isinstance(value['name'],str) and type(value['qty']) is int and value['qty']==1):
+            normalized_excluded.append(value['name'])
+        else: return None
+    excluded=normalized_excluded
     if any(not isinstance(row, dict) or row.get('name') not in inventory
            or type(row.get('qty')) is not int or row['qty'] != 1 for row in items):
         return None
@@ -555,6 +566,8 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
             reply = result.get('reply')
             if reply and supported_result(bot,facts,reply,language=language,guest_message=text):
                 _direct(bot,phone,reply)
+            elif reply:
+                bot.send_whatsapp_message(phone, 'The requested room detail is not verified in the hotel records. No room allocation, reservation or new staff request was made. Reception must confirm this detail.')
             else:
                 bot._send_verified_room_categories(phone, '', show_prices=result.get('show_prices', False),category=result.get('generic') or None)
         elif action == 'SERVICE':
@@ -567,7 +580,9 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
             if not demo_food.handle(bot, phone, command):
                 bot.send_whatsapp_message(phone, 'This action is available only in the configured demo profile.')
         elif action == 'CHECKIN':
-            if bot.CUSTOMER_DEMO_MODE:
+            if result.get('submission_intent') is not True:
+                bot.send_whatsapp_message(phone, 'Check-in was not started. No OTP or staff request was created. Please confirm whether you want to start check-in now.')
+            elif bot.CUSTOMER_DEMO_MODE:
                 import demo_food
                 demo_food.handle(bot, phone, 'check in')
             else:

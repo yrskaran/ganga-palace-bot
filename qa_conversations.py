@@ -41,7 +41,7 @@ def conversations():
         ('Ab hotel bahar se kaisa hai wo photo bhejo', ['SHOW_PHOTO'],{'photo':'Exterior'}),
     ],guest=False)
     add('Check-in documents and steps',[
-        ('Checkin kaise karna hai?', ['CHECKIN','ANSWER','RECEPTION']),
+        ('Checkin kaise karna hai?', ['ANSWER','RECEPTION'], {'no_checkin_start':True}),
         ("I'd kaun kaun si chalegi?",reception),
         ('Driving licence chalega kya?',reception),
         ('Bacche ki ID bhi lagegi?',reception),

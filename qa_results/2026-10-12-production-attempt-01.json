@@ -1,0 +1,139 @@
+{
+  "logs": [
+    {
+      "id": "a6675e51-b736-4e88-bae9-f8b88b01f234",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-sscfc"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL START: {\"run_id\": \"readiness-20261012-0707\", \"max_calls\": 12, \"mode\": \"synthetic guests; external mutations denied\"}",
+      "timestamp": "2026-10-12T07:07:05.715777761Z"
+    },
+    {
+      "id": "47683c02-b513-4545-ae40-7a1b4bc56d0b",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-sscfc"
+        },
+        {
+          "name": "level",
+          "value": "debug"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL ROW: {\"id\": \"followup-price\", \"question\": \"Kitne ki hai?\", \"output\": \"Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein.\", \"plan\": null, \"errors\": [\"No completed interpreter/review plan\", \"Wrong guest language\", \"Final reply does not match Hinglish script/wording\", \"Wrong action\", \"Missing Standard Veg Thali\", \"Missing 200\"], \"state_after\": {}, \"memory\": [{\"role\": \"user\", \"content\": \"Standard veg thali bhi hai?\"}, {\"role\": \"assistant\", \"content\": \"Standard Veg Thali menu mein hai.\"}, {\"role\": \"user\", \"content\": \"Kitne ki hai?\"}, {\"role\": \"assistant\", \"content\": \"Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein.\"}], \"trace\": [], \"model_calls\": [{\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1773, \"candidatesTokenCount\": 197, \"totalTokenCount\": 1970, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1773}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 503, \"usage\": {}, \"error\": \"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.\"}], \"provenance\": \"fresh_model\", \"fresh_model_acceptance\": false, \"external_io\": \"isolated; no real WhatsApp, Sheets, orders or payments\", \"revision\": \"02a65d3a41f4aa0947ca338619dae040f069d3e9\", \"model\": \"gemini-3.8-flash\", \"run_id\": \"readiness-20261012-0707\"}",
+      "timestamp": "2026-10-12T07:07:25.199873309Z"
+    },
+    {
+      "id": "9eb5aa15-4610-467a-a726-7ad124e2a6e9",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-sscfc"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL END: {\"run_id\": \"readiness-20261012-0707\", \"calls\": 2, \"rows\": 1, \"fresh_acceptance\": 0}",
+      "timestamp": "2026-10-12T07:07:25.19989305Z"
+    }
+  ],
+  "rows": [
+    {
+      "id": "followup-price",
+      "question": "Kitne ki hai?",
+      "output": "Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein.",
+      "plan": null,
+      "errors": [
+        "No completed interpreter/review plan",
+        "Wrong guest language",
+        "Final reply does not match Hinglish script/wording",
+        "Wrong action",
+        "Missing Standard Veg Thali",
+        "Missing 200"
+      ],
+      "state_after": {},
+      "memory": [
+        {
+          "role": "user",
+          "content": "Standard veg thali bhi hai?"
+        },
+        {
+          "role": "assistant",
+          "content": "Standard Veg Thali menu mein hai."
+        },
+        {
+          "role": "user",
+          "content": "Kitne ki hai?"
+        },
+        {
+          "role": "assistant",
+          "content": "Abhi AI se aapki baat samajh nahi pa rahi hoon. Koi naya action nahi liya; please thodi der baad try karein ya reception se baat karein."
+        }
+      ],
+      "trace": [],
+      "model_calls": [
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1773,
+            "candidatesTokenCount": 197,
+            "totalTokenCount": 1970,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1773
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 503,
+          "usage": {},
+          "error": "This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later."
+        }
+      ],
+      "provenance": "fresh_model",
+      "fresh_model_acceptance": false,
+      "external_io": "isolated; no real WhatsApp, Sheets, orders or payments",
+      "revision": "02a65d3a41f4aa0947ca338619dae040f069d3e9",
+      "model": "gemini-3.8-flash",
+      "run_id": "readiness-20261012-0707"
+    }
+  ]
+}

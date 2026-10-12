@@ -44,3 +44,12 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual(contracts,['json_schema','json_object'])
         self.assertEqual(plan['action'],'MENU_ITEM_INFO')
         self.assertTrue(plan['show_prices'])
+
+    def test_verified_sender_stay_reaches_review_without_private_fields(self):
+        token=ai_receptionist.current.set({'plan_review':True})
+        try:
+            messages=app._openai_messages('Review JSON',{'name':'Synthetic','room':'240','is_inhouse':True,'id_link':'SECRET'},'919555550001',True)
+        finally:ai_receptionist.current.reset(token)
+        system=messages[0]['content']
+        self.assertIn('240',system)
+        self.assertNotIn('SECRET',system)

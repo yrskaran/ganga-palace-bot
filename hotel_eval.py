@@ -19,6 +19,9 @@ CASES=[
      'language':'hinglish','expected_action':'MENU_ITEM_INFO','required':['Standard Veg Thali','200']},
     {'id':'tea-options','question':'Chai me kya kya option hai',
      'language':'hinglish','expected_action':'MENU_ITEM_INFO','required':['Cutting Chai','Masala Chai']},
+    {'id':'own-room','question':"What's my room number?",'language':'english',
+     'guest':{'name':'Synthetic Guest','room':'240','status':'CHECKED_IN','is_inhouse':True},
+     'expected_action':'ANSWER','required':['240']},
     {'id':'checkin-side-question','question':'Room ka rate kya hai?',
      'pending':{'checkin_sessions':{'step':'NAME','created':0}},
      'forbidden_action':'CHECKIN_DETAILS','unchanged_step':'NAME'},
@@ -128,8 +131,13 @@ def call_api(prompt,options=None,context=None):
     return {'output':row['output'],'metadata':row}
 
 def run(bot,run_id):
-    budget=ModelBudget(bot.requests.post,limit=12,interval=15)
-    print('PRODUCTION EVAL START: '+json.dumps({'run_id':run_id,'max_calls':12,'mode':'synthetic guests; external mutations denied'}),flush=True)
+    limit=max(1,min(12,int(os.getenv('AI_PRODUCTION_CHECK_LIMIT','12'))))
+    connection=bot.requests.get('https://generativelanguage.googleapis.com/v1beta/models',headers={'x-goog-api-key':bot.GEMINI_API_KEY},timeout=18)
+    listed=connection.status_code==200 and any(m.get('name')=='models/'+bot.GEMINI_MODEL for m in connection.json().get('models',[]))
+    print('PRODUCTION EVAL CONNECTION: '+json.dumps({'run_id':run_id,'status':connection.status_code,'model':bot.GEMINI_MODEL,'configured_model_listed':listed}),flush=True)
+    if not listed: return []
+    budget=ModelBudget(bot.requests.post,limit=limit,interval=15)
+    print('PRODUCTION EVAL START: '+json.dumps({'run_id':run_id,'max_calls':limit,'mode':'synthetic guests; external mutations denied'}),flush=True)
     rows=[]
     for case in CASES:
         row=evaluate(bot,case,live=True,budget=budget);rows.append(row)
@@ -142,6 +150,8 @@ def start(bot,run_id):
     import subprocess,sys,threading
     def worker():
         env=dict(os.environ,BOT_AUTOSTART='0',AI_PROVIDER_ORDER='gemini',AI_PRODUCTION_CHECK_RUN='')
+        if os.getenv('AI_PRODUCTION_CHECK_MODEL','').strip():
+            env['GEMINI_MODEL']=os.getenv('AI_PRODUCTION_CHECK_MODEL').strip()
         code='import app, hotel_eval; hotel_eval.run(app, '+repr(run_id)+')'
         try:subprocess.run([sys.executable,'-u','-c',code],env=env,timeout=220,check=False)
         except subprocess.TimeoutExpired:print('PRODUCTION EVAL STOP: worker timeout',flush=True)

@@ -206,6 +206,16 @@ class ReceptionistBoundaryTests(unittest.TestCase):
                 'needs_reception':False,'request_kind':'listed_options'}))
             self.assertIsNone(gateway.review_plan(app, 'Chai?', self.understanding(action='SHOW_MENU'), [], provider=provider))
 
+    def test_excluded_item_objects_are_losslessly_normalized(self):
+        import json
+        app.CUSTOMER_CONFIG['menu']=[{'name':'Standard Veg Thali'},{'name':'Special Deluxe Ganga Thali'}]
+        review={'menu_related':True,'action':'MENU_ITEM_INFO','language':'hinglish','request_kind':'listed_options','items':[{'name':'Special Deluxe Ganga Thali','qty':1}],'excluded_items':[{'name':'Standard Veg Thali','qty':1}],'show_prices':False,'needs_reception':False}
+        result=gateway.review_plan(app,'Aur koi thali bhi hai?',self.understanding(action='SHOW_MENU'),[],provider=Mock(return_value=json.dumps(review)))
+        self.assertIsNotNone(result)
+        self.assertEqual(result['items'],review['items'])
+        review['excluded_items'][0]['qty']=4
+        self.assertIsNone(gateway.review_plan(app,'Aur koi thali bhi hai?',self.understanding(action='SHOW_MENU'),[],provider=Mock(return_value=json.dumps(review))))
+
     def test_plan_review_preserves_full_menu_and_rejects_preparation_listing(self):
         import json
         full = {'menu_related':True,'action':'SHOW_MENU','menu_section':'FULL','items':[],

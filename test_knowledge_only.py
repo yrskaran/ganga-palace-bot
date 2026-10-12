@@ -72,7 +72,8 @@ class KnowledgeOnlyModeTests(unittest.TestCase):
             get_conversation_history=Mock(return_value=history),
             _ai_knowledge_snapshot=Mock(side_effect=AssertionError("Full hotel file should fit"))
         )
-        messages = ai_context.messages(bot, "Kitne ki hai?", phone=self.phone)
+        with patch.object(ai_context.knowledge_only, "read_hotel_file", return_value=("HOTEL DATA: Test Palace\\nStandard Veg Thali: Rs. 200", "Test Palace")):
+            messages = ai_context.messages(bot, "Kitne ki hai?", phone=self.phone)
         self.assertEqual(messages[-1], {"role": "user", "content": "Kitne ki hai?"})
         self.assertIn("Standard Veg Thali: Rs. 200", messages[0]["content"])
         self.assertIn("all actions are DISABLED", messages[0]["content"])
@@ -87,10 +88,22 @@ class KnowledgeOnlyModeTests(unittest.TestCase):
             get_conversation_history=lambda _: [],
             _ai_knowledge_snapshot=Mock(return_value="WiFi: free; check-out: 11 AM")
         )
-        result = ai_context.messages(bot, "WiFi aur checkout?")
+        with patch.object(ai_context.knowledge_only, "read_hotel_file", return_value=("X" * 15000, "Test Palace")):
+            result = ai_context.messages(bot, "WiFi aur checkout?")
         self.assertIn("WiFi: free", result[0]["content"])
         self.assertNotIn("X" * 100, result[0]["content"])
         self.assertEqual(bot._ai_knowledge_snapshot.call_args.args[0], 9300)
+        self.assertEqual(bot._ai_knowledge_snapshot.call_args.kwargs["raw_override"], "X" * 15000)
+
+    def test_uses_real_hotel_data_not_conflicting_customer_profile(self):
+        with patch.object(app, "KNOWLEDGE_ONLY_MODE", True):
+            text, name = app.knowledge_only.read_hotel_file(app)
+            self.assertEqual(name, "Hotel Ganga View")
+            self.assertIn("Distance to Har Ki Pauri", text)
+            self.assertNotIn("Hotel Shreya Galaxy", text)
+            prompt = ai_context.messages(app, "Har Ki Pauri kitni door hai?", phone=self.phone)
+            self.assertIn("Hotel Ganga View", prompt[0]["content"])
+            self.assertNotIn("Hotel Shreya Galaxy", prompt[0]["content"])
 
     def test_admin_mutations_paused_but_health_available(self):
         with patch.object(app, "KNOWLEDGE_ONLY_MODE", True):

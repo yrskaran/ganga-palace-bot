@@ -113,6 +113,14 @@ class KnowledgeOnlyModeTests(unittest.TestCase):
             self.assertEqual(health.status_code, 200)
             self.assertEqual(health.get_json()["mode"], "knowledge-only")
 
+    def test_delivery_statuses_do_not_mutate_operational_sheets(self):
+        with patch.object(app, "KNOWLEDGE_ONLY_MODE", True), \
+             patch.object(app, "durable_store", None), \
+             patch.object(app, "_update_reception_alert_delivery", side_effect=AssertionError("Reception sheet update")), \
+             patch.object(app, "_update_service_alert_delivery", side_effect=AssertionError("Service sheet update")), \
+             patch.object(app, "_update_lifecycle_delivery", side_effect=AssertionError("Lifecycle sheet update")):
+            app.record_delivery_statuses([{"id": "wamid-test", "status": "delivered", "errors": []}])
+
     def test_startup_skips_sheets_and_all_scheduled_tasks(self):
         with patch.object(app, "KNOWLEDGE_ONLY_MODE", True), \
              patch.object(app, "startup_started", False), \

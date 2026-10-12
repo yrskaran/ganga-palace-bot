@@ -11788,6 +11788,8 @@ def health():
         "status": "active",
         "version": APP_VERSION,
         "mode": "knowledge-only" if KNOWLEDGE_ONLY_MODE else "operations",
+        "reception_learning": bool(KNOWLEDGE_ONLY_MODE and KNOWLEDGE_RECEPTION_LEARNING),
+        "reception_recipient_configured": bool(format_whatsapp_number(RECEPTION_PHONE)),
         "conversation_engine": "disabled" if KNOWLEDGE_ONLY_MODE else ("tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action"),
         "hotel": knowledge_only.read_hotel_file(sys.modules[__name__])[1] if KNOWLEDGE_ONLY_MODE else get_hotel_name(),
         "knowledge_source": "hotel_data.txt" if KNOWLEDGE_ONLY_MODE else ("customer_config.json" if CUSTOMER_CONFIG else "hotel_data.txt"),
@@ -12011,6 +12013,8 @@ def startup():
         # Webhook inbox/outbox for text replies only. Never start sheet sync,
         # guest lifecycle, payment alerts, service auto-resolve or owner reports.
         print("KNOWLEDGE ONLY MODE: hotel_data.txt only; all hotel operations and scheduled jobs paused", flush=True)
+        print("RECEPTION FACT HANDOFF: enabled=" + str(KNOWLEDGE_RECEPTION_LEARNING)
+              + " configured_reception=" + str(bool(format_whatsapp_number(RECEPTION_PHONE))), flush=True)
         for target, name in ((durable_runtime.inbox_loop, "durable-inbox"),
                              (durable_runtime.loop, "durable-outbox")):
             threading.Thread(target=target, args=(sys.modules[__name__],), daemon=True, name=name).start()

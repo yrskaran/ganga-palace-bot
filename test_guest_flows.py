@@ -661,6 +661,62 @@ class GuestFlows(unittest.TestCase):
         self.assertEqual(task['status'],'REOPENED')
         app._reroute_service_task.assert_called_once_with(task)
 
+    def test_failed_feedback_save_preserves_pending_and_reports_failure(self):
+        for answer in ('haan', 'nahi'):
+            with self.subTest(answer=answer):
+                task = self.task()
+                app._mark_service_staff_done(task)
+                self.sheet.return_value = False
+                self.sent.reset_mock()
+                app._reroute_service_task.reset_mock()
+                self.assertTrue(app.handle_service_guest_confirmation(GUEST, answer))
+                self.assertEqual(task['status'], 'CONFIRMATION_FAILED')
+                self.assertEqual(app.service_guest_pending[GUEST], task['request_id'])
+                self.assertFalse(task.get('closed_at'))
+                self.assertIn('save nahi', self.sent.call_args.args[1])
+                app._reroute_service_task.assert_not_called()
+                self.sheet.return_value = True
+
+    def test_cache_refresh_cannot_auto_close_unsaved_guest_feedback(self):
+        task = self.task()
+        app._mark_service_staff_done(task)
+        app.shared_store['service_request_headers'] = app.SERVICE_REQUEST_HEADERS
+        app.shared_store['service_request_rows'] = [app._service_task_row(task)]
+        self.sheet.return_value = False
+        app.handle_service_guest_confirmation(GUEST, 'nahi')
+        app._rebuild_service_task_cache()
+        with patch.object(app, 'now_ist', return_value=NOW + timedelta(minutes=21)):
+            app.process_service_auto_resolve()
+        self.assertEqual(app.service_tasks_by_id[task['request_id']]['status'], 'CONFIRMATION_FAILED')
+        self.assertEqual(app.service_guest_pending[GUEST], task['request_id'])
+
+    def test_guest_feedback_retry_saves_before_rerouting(self):
+        task = self.task()
+        app._mark_service_staff_done(task)
+        self.sheet.return_value = False
+        app.handle_service_guest_confirmation(GUEST, 'nahi')
+        self.sheet.return_value = True
+        app.handle_service_guest_confirmation(GUEST, 'nahi')
+        self.assertEqual(task['status'], 'REOPENED')
+        self.assertNotIn('_feedback_save_failed', task)
+        self.assertNotIn(GUEST, app.service_guest_pending)
+        app._reroute_service_task.assert_called_once_with(task)
+
+    def test_cache_refresh_during_save_retains_successful_feedback(self):
+        task = self.task()
+        app._mark_service_staff_done(task)
+        app.shared_store['service_request_headers'] = app.SERVICE_REQUEST_HEADERS
+        app.shared_store['service_request_rows'] = [app._service_task_row(task)]
+        def refresh_then_save(proposed):
+            app._rebuild_service_task_cache()
+            return True
+        self.sheet.side_effect = refresh_then_save
+        app.handle_service_guest_confirmation(GUEST, 'haan')
+        saved = app.service_tasks_by_id[task['request_id']]
+        self.assertEqual(saved['status'], 'COMPLETED')
+        self.assertNotIn('_feedback_save_failed', saved)
+        self.assertEqual(app.service_tasks_by_alert[saved['alert_message_id']]['status'], 'COMPLETED')
+
     def test_exact_twenty_minute_timeout_and_no_extra_message(self):
         task=self.task(); app._mark_service_staff_done(task)
         done=app._parse_sheet_datetime(task['staff_done_at'])

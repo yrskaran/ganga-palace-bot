@@ -271,3 +271,49 @@ class PlanContractFailoverTests(unittest.TestCase):
                 json_validator=lambda value:engine.validate_plan(app,value) is not None)
         self.assertEqual(json.loads(reply)['script'],'roman')
         good.assert_called_once()
+
+class SemanticFallbackRepairTests(unittest.TestCase):
+    def test_natural_price_wording_keeps_item_price_binding(self):
+        self.assertTrue(engine.protected_reply(['Masala Chai — ₹30'],'','Ji, Masala Chai ka rate ₹30 hai.'))
+        self.assertFalse(engine.protected_reply(['A — ₹150\nB — ₹200'],'','A ka rate ₹200 hai, B ka ₹150.'))
+
+    def test_service_items_are_not_validated_as_food_inventory(self):
+        bot=SimpleNamespace(CUSTOMER_CONFIG={'menu':[{'name':'Masala Chai'}]})
+        value={'understood_as':'towel plus AC','language':'hinglish','script':'roman','questions':[],
+            'operations':[{'action':'SERVICE','category':'HOUSEKEEPING','items':[{'name':'Towel','qty':1}],
+            'operation_text':'Ek towel bhejo','confidence':.95}]}
+        result=engine.validate_plan(bot,value)
+        self.assertIsNotNone(result)
+        self.assertEqual(result['operations'][0]['items'],[])
+
+    def test_final_reply_contract_validator_is_passed_into_provider_selection(self):
+        import os
+        os.environ['BOT_AUTOSTART']='0'
+        import app
+        from unittest.mock import patch
+        value={'understood_as':'price question','language':'hinglish','script':'roman','questions':['Price?'],'operations':[]}
+        with patch.object(app,'ask_ai_chat',return_value='{}') as ask,patch.object(app,'_ai_knowledge_snapshot',return_value=''):
+            engine.finalize(app,'919555555555','Price?',None,value,[])
+        self.assertTrue(callable(ask.call_args.kwargs.get('json_validator')))
+
+class RealGatewayReplyFallbackTests(EngineFlowTests):
+    def test_bad_finals_reach_cohere_without_replaying_order(self):
+        value=self.plan();op=value['operations'][0];attempts=[]
+        def executor(*args,**kwargs):
+            attempts.append(1)
+            self.app.send_whatsapp_message(self.phone,'Room 450: 1 x Chole Bhature. Confirmation required.')
+        final='Room 450: 1 x Chole Bhature. Confirm kar deo; delivery time abhi confirm nahi hai.'
+        bad={'reply':'Your order was delivered.','answered_questions':[0]}
+        gemini=Mock(side_effect=[json.dumps(value),json.dumps(self.review(op)),json.dumps(bad),json.dumps({'supported':True})])
+        groq=Mock(return_value=json.dumps(bad))
+        cohere=Mock(return_value=json.dumps({'reply':final,'answered_questions':[0]}))
+        with self.patch.object(self.app,'_ai_provider_functions',return_value=[('gemini',gemini),('groq',groq),('cohere',cohere)]),self.patch.object(self.app,'_process_and_reply',side_effect=executor):
+            engine.handle(self.app,self.phone,'Chole bhature di 1, kab tak milega?',self.guest)
+        self.assertEqual(attempts,[1])
+        self.assertEqual(self.sent[0]['text']['body'],final)
+        self.assertEqual(cohere.call_count,1)
+
+class FinancialProtectionRepairTests(unittest.TestCase):
+    def test_markdown_bill_rows_cannot_swap_amounts(self):
+        self.assertFalse(engine.protected_reply(['*Room Rent:* Rs. 500\n*Food Total:* Rs. 150'],'',
+            '*Room Rent:* Rs. 150\n*Food Total:* Rs. 500'))

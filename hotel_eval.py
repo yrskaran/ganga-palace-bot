@@ -37,18 +37,30 @@ REPAIR_CASES=[
 
 class BlockedIO(RuntimeError): pass
 
+def inference_provider(url):
+    parsed=urlparse(url)
+    if parsed.hostname=='generativelanguage.googleapis.com' and parsed.path.endswith(':generateContent'):
+        return 'gemini'
+    if parsed.hostname=='api.groq.com' and parsed.path=='/openai/v1/chat/completions':
+        return 'groq'
+    if parsed.hostname=='api.cohere.ai' and parsed.path=='/compatibility/v1/chat/completions':
+        return 'cohere'
+    return None
+
 class ModelBudget:
-    def __init__(self, transport, limit=12, interval=15):
+    def __init__(self, transport, limit=12, interval=15, allow_fallback=False):
         self.transport=transport; self.limit=limit; self.interval=interval
         self.calls=[]; self.last=0; self.stopped=False
+        self.allow_fallback=allow_fallback
     def post(self,url,*args,**kwargs):
-        if urlparse(url).hostname!='generativelanguage.googleapis.com':
+        provider=inference_provider(url)
+        if provider is None or (provider!='gemini' and not self.allow_fallback):
             raise BlockedIO('External mutation denied')
         if self.stopped or len(self.calls)>=self.limit:
             raise BlockedIO('Model budget stopped')
         time.sleep(max(0,self.interval-(time.monotonic()-self.last)))
         self.last=time.monotonic()
-        rec={'provider':'gemini','status':None};self.calls.append(rec)
+        rec={'provider':provider,'status':None};self.calls.append(rec)
         try:
             kwargs['allow_redirects']=False
             res=self.transport(url,*args,**kwargs)
@@ -57,13 +69,17 @@ class ModelBudget:
             candidate=(body.get('candidates') or [{}])[0]
             rec['response_text']=''.join(str(p.get('text','')) for p in (candidate.get('content') or {}).get('parts',[]) if not p.get('thought'))[:2500]
             rec['usage']=body.get('usageMetadata',{})
+            if provider!='gemini':
+                choice=(body.get('choices') or [{}])[0]
+                rec['response_text']=str((choice.get('message') or {}).get('content') or '')[:2500]
+                rec['usage']=body.get('usage',{})
             if res.status_code!=200:
-                self.stopped=True
+                self.stopped=not self.allow_fallback
                 rec['error']=str((body.get('error') or {}).get('message',''))[:400]
             return res
         except Exception as exc:
             rec['error_type']=type(exc).__name__
-            self.stopped=True
+            self.stopped=not self.allow_fallback
             raise
 
 def contract_errors(case,plan,output,media_only=False):
@@ -82,6 +98,7 @@ def contract_errors(case,plan,output,media_only=False):
 def evaluate(bot,case,transport=None,live=False,budget=None):
     """Run actual interpreter/review/dispatch/composer and wire-message memory."""
     import ai_receptionist as ai
+    chain=os.getenv('AI_PRODUCTION_CHECK_PROVIDER_MODE')=='chain'
     plans=[];wire=[];trace=[]
     call_offset=len(budget.calls) if budget is not None else 0
     real_session_request=bot.requests.sessions.Session.request
@@ -93,7 +110,7 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
         return Mock(status_code=200,json=Mock(return_value={'messages':[{'id':'eval-isolated'}]}))
     def denied(*args,**kwargs): raise BlockedIO('External I/O denied')
     def guarded_session(session,method,url,*args,**kwargs):
-        if live and method.upper()=='POST' and urlparse(url).hostname=='generativelanguage.googleapis.com':
+        if live and method.upper()=='POST' and (inference_provider(url)=='gemini' or (chain and inference_provider(url))):
             return real_session_request(session,method,url,*args,**kwargs)
         raise BlockedIO('External network operation denied')
     guest=case.get('guest')
@@ -116,14 +133,15 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
             for name,value in case.get('raw_state',{}).items():
                 if name in SESSION_NAMES: values[name]=copy.deepcopy(value)
             for name,value in values.items():stack.enter_context(patch.object(bot,name,value))
-            if budget is None: budget=ModelBudget(transport or bot.requests.post,limit=12,interval=15 if live else 0)
+            if budget is None: budget=ModelBudget(transport or bot.requests.post,limit=12,interval=15 if live else 0,allow_fallback=chain)
             stack.enter_context(patch.object(bot.requests,'post',budget.post))
             stack.enter_context(patch.object(bot.requests,'get',denied))
-            # SDK transports must also be denied; configured provider is Gemini only.
+            # Only inference POSTs are permitted; WhatsApp and Sheets remain isolated.
             stack.enter_context(patch.object(bot.requests.sessions.Session,'request',guarded_session))
-            stack.enter_context(patch.object(bot,'_ai_provider_functions',return_value=[('gemini',bot.ask_gemini_chat)]))
-            stack.enter_context(patch.object(bot,'AI_PROVIDER_ORDER',('gemini',)))
-            stack.enter_context(patch.object(bot,'_gemini_circuit_open',return_value=False))
+            if not chain:
+                stack.enter_context(patch.object(bot,'_ai_provider_functions',return_value=[('gemini',bot.ask_gemini_chat)]))
+                stack.enter_context(patch.object(bot,'AI_PROVIDER_ORDER',('gemini',)))
+                stack.enter_context(patch.object(bot,'_gemini_circuit_open',return_value=False))
             bot.process_and_reply({'id':'eval-'+case['id'],'type':'text','text':{'body':case['question']}},PHONE,'text')
             after=copy.deepcopy(ai.snapshot(bot,PHONE))
             memory=copy.deepcopy(bot.conversation_memory.get(PHONE,[]))
@@ -184,11 +202,13 @@ def call_api(prompt,options=None,context=None):
 
 def run(bot,run_id):
     limit=max(1,min(750,int(os.getenv('AI_PRODUCTION_CHECK_LIMIT','12'))))
-    connection=bot.requests.get('https://generativelanguage.googleapis.com/v1beta/models',headers={'x-goog-api-key':bot.GEMINI_API_KEY},timeout=18)
-    listed=connection.status_code==200 and any(m.get('name')=='models/'+bot.GEMINI_MODEL for m in connection.json().get('models',[]))
-    print('PRODUCTION EVAL CONNECTION: '+json.dumps({'run_id':run_id,'status':connection.status_code,'model':bot.GEMINI_MODEL,'configured_model_listed':listed}),flush=True)
-    if not listed: return []
-    budget=ModelBudget(bot.requests.post,limit=limit,interval=max(6,int(os.getenv('AI_PRODUCTION_CHECK_INTERVAL','15'))))
+    chain=os.getenv('AI_PRODUCTION_CHECK_PROVIDER_MODE')=='chain'
+    if not chain:
+        connection=bot.requests.get('https://generativelanguage.googleapis.com/v1beta/models',headers={'x-goog-api-key':bot.GEMINI_API_KEY},timeout=18)
+        listed=connection.status_code==200 and any(m.get('name')=='models/'+bot.GEMINI_MODEL for m in connection.json().get('models',[]))
+        print('PRODUCTION EVAL CONNECTION: '+json.dumps({'run_id':run_id,'status':connection.status_code,'model':bot.GEMINI_MODEL,'configured_model_listed':listed}),flush=True)
+        if not listed: return []
+    budget=ModelBudget(bot.requests.post,limit=limit,interval=max(6,int(os.getenv('AI_PRODUCTION_CHECK_INTERVAL','15'))),allow_fallback=chain)
     print('PRODUCTION EVAL START: '+json.dumps({'run_id':run_id,'max_calls':limit,'mode':'synthetic guests; external mutations denied'}),flush=True)
     if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='200':
         return run_conversations(bot,run_id,budget)
@@ -229,7 +249,9 @@ def run_conversations(bot,run_id,budget):
 def start(bot,run_id):
     import subprocess,sys,threading
     def worker():
-        env=dict(os.environ,BOT_AUTOSTART='0',AI_PROVIDER_ORDER='gemini',AI_PRODUCTION_CHECK_RUN='')
+        env=dict(os.environ,BOT_AUTOSTART='0',AI_PRODUCTION_CHECK_RUN='')
+        if env.get('AI_PRODUCTION_CHECK_PROVIDER_MODE')!='chain':
+            env['AI_PROVIDER_ORDER']='gemini'
         if os.getenv('AI_PRODUCTION_CHECK_MODEL','').strip():
             env['GEMINI_MODEL']=os.getenv('AI_PRODUCTION_CHECK_MODEL').strip()
         code='import app, hotel_eval; hotel_eval.run(app, '+repr(run_id)+')'

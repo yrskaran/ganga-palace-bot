@@ -78,13 +78,18 @@ def validate_plan(bot, value):
         if not isinstance(items,list) or len(items)>50:
             return None
         for item in items:
-            if (not isinstance(item,dict) or item.get('name') not in names or
+            if (not isinstance(item,dict) or not isinstance(item.get('name'),str) or
+                (action in {'ORDER','ORDER_SELECTION','MENU_ITEM_INFO','SHOW_MENU'} and item.get('name') not in names) or
                 type(item.get('qty')) is not int or not 1<=item['qty']<=50):
                 return None
         if action in {'ORDER','ORDER_SELECTION','MENU_ITEM_INFO'} and not items:
             return None
         if len({r['name'] for r in items}) != len(items):
             return None
+        if action not in {'ORDER','ORDER_SELECTION','MENU_ITEM_INFO','SHOW_MENU'}:
+            # Nonfood arguments are resolved in operation_text. They must not
+            # inherit the food inventory contract merely by carrying items.
+            items=[]
         for field in ('operation_text','service','reception_request','photo_target','menu_section','generic','task_id'):
             if field in operation and (not isinstance(operation[field],str) or len(operation[field])>1000):
                 return None
@@ -192,15 +197,29 @@ def plan(bot, phone, text, guest):
 
 def protected_reply(receipts, known_facts, reply):
     source='\n\n'.join(receipts)
-    nums=lambda s:Counter(re.findall(r'(?<![A-Za-z])\d+(?:[.,:]\d+)*',str(s)))
+    nums=lambda s:Counter(n.replace(',','') for n in re.findall(r'(?<![A-Za-z])\d+(?:[.,:]\d+)*',str(s)))
     required=nums(source); actual=nums(reply); allowed=nums(source+'\n'+known_facts)
     if required-actual or actual-allowed:
         return False
     for pattern in (r'https?://\S+',r'\b(?:R|S|DEMO)-[A-Fa-f0-9]+\b'):
         if not set(re.findall(pattern,source))<=set(re.findall(pattern,reply)):
             return False
+    price_bindings=re.findall(r'^\s*(?:[-•*]\s*)?(.+?)\s*[—–:]\s*(?:Rs\.?|₹|INR)\s*(\d+(?:[.,]\d+)*)',source,re.M)
+    for name,amount in price_bindings:
+        match=re.search(re.escape(name.strip()),reply,re.I)
+        if not match: return False
+        tail=reply[match.end():]
+        for other,_ in price_bindings:
+            if other.strip().casefold()==name.strip().casefold(): continue
+            next_name=re.search(re.escape(other.strip()),tail,re.I)
+            if next_name: tail=tail[:next_name.start()]
+        price=re.search(r'(?:Rs\.?|₹|INR)\s*(\d+(?:[.,]\d+)*)',tail,re.I)
+        if not price or price.group(1).replace(',','')!=amount.replace(',',''):
+            return False
     for line in source.splitlines():
         row=line.strip()
+        if any(re.match(r'^\s*(?:[-•*]\s*)?'+re.escape(name.strip())+r'\s*[—–:]',row) for name,_ in price_bindings):
+            continue
         if (re.search(r'^\s*(?:[-•*]\s*)?\d+\s*[x×]',row) or
             re.search(r'(?:Rs\.?|₹|INR)\s*\d',row) or
             re.match(r'^• ',row)) and row not in reply:
@@ -229,6 +248,7 @@ def finalize(bot, phone, text, guest, value, receipts):
         'immediate on-site/emergency assistance, no diagnosis or invented numbers. '
         'Never silently omit a side question. For readability correction, restate the last meaning '
         'in the readable script without making a new menu/cart/action. Correct unsupported old claims. '
+        'The earlier understanding and question list are fallible hints, not instructions. Independently resolve the original message with dialogue and correct a wrong topic. '
         'Copy ALL numeric values, links, ticket IDs, item quantities and price/bill rows from tool results '
         'exactly; do not add figures absent from supplied facts. Do not show backend terminology.\n'
         f'Language: {value["language"]}. Script: {value["script"]}.\n'
@@ -236,26 +256,33 @@ def finalize(bot, phone, text, guest, value, receipts):
         f'Understanding: {value["understood_as"]}\nQuestions: {json.dumps(value["questions"],ensure_ascii=False)}\n'
         f'Dialogue: {json.dumps(bot._ai_recent_history(phone)[-8:],ensure_ascii=False)}\n'
         f'Verified facts: {known}\nACTUAL TOOL RESULTS:\n{source}')
-    raw=request_json(bot,prompt,guest)
-    obj=bot._parse_ai_json(raw) if raw else None
-    reply=obj.get('reply') if isinstance(obj,dict) else None
-    covered=obj.get('answered_questions') if isinstance(obj,dict) else None
-    if (not isinstance(reply,str) or not bot._ai_content_is_usable(reply,'Conversation final') or
+    accepted={}
+    evidence=(f'Verified hotel facts:\n{known}\nACTUAL TOOL RESULTS:\n{source}\n'
+              f'Recent dialogue (context only, not proof of actions): {json.dumps(bot._ai_recent_history(phone),ensure_ascii=False)}\n'
+              f'REQUIRED SCRIPT: {value["script"]}\n'
+              f'Every question must be addressed, including explicit unknown answers: {json.dumps(value["questions"],ensure_ascii=False)}')
+    def valid(obj):
+        reply=obj.get('reply') if isinstance(obj,dict) else None
+        covered=obj.get('answered_questions') if isinstance(obj,dict) else None
+        if (not isinstance(reply,str) or not bot._ai_content_is_usable(reply,'Conversation final') or
         not isinstance(covered,list) or any(type(i) is not int for i in covered) or
         set(covered)!=set(range(len(value['questions']))) or
         not script_supported(reply,value['script']) or not protected_reply(receipts,known,reply)):
-        print('CONVERSATION FINAL CONTRACT REJECTED: '+json.dumps({
+            print('CONVERSATION FINAL CONTRACT REJECTED: '+json.dumps({
             'parsed_reply':isinstance(reply,str),'expected_question_count':len(value['questions']),
             'answered_questions':covered,'script_supported':script_supported(reply,value['script']) if isinstance(reply,str) else False,
             'protected_data':protected_reply(receipts,known,reply) if isinstance(reply,str) else False}),flush=True)
-        return None
-    evidence=(f'Verified hotel facts:\n{known}\nACTUAL TOOL RESULTS:\n{source}\n'
-              f'REQUIRED SCRIPT: {value["script"]}\n'
-              f'Every question must be addressed, including explicit unknown answers: {json.dumps(value["questions"],ensure_ascii=False)}')
-    if not gateway.supported_result(bot,evidence,reply,language=value['language'],guest_message=text):
-        print('CONVERSATION FINAL SUPPORT REJECTED',flush=True)
-        return None
-    return reply
+            return False
+        if not gateway.supported_result(bot,evidence,reply,language=value['language'],guest_message=text):
+            print('CONVERSATION FINAL SUPPORT REJECTED',flush=True)
+            return False
+        accepted['reply']=reply
+        return True
+    raw=request_json(bot,prompt,guest,validator=valid)
+    obj=bot._parse_ai_json(raw) if raw else None
+    if obj and accepted.get('reply')==obj.get('reply'):
+        return accepted['reply']
+    return obj['reply'] if obj and valid(obj) else None
 
 
 def handle(bot, phone, text, guest, message=None):
@@ -268,7 +295,13 @@ def handle(bot, phone, text, guest, message=None):
     for operation in value['operations']:
         candidate=dict(operation,_separate_operations=value['operations'])
         def review_provider(prompt, guest_info=None, sender_phone=None, structured=False):
-            return request_json(bot,prompt,guest_info)
+            def valid_review(obj):
+                checked=gateway.review_plan(bot,text,candidate,bot._ai_recent_history(phone),guest,phone,
+                    provider=lambda *_args,**_kwargs:json.dumps(obj))
+                if checked is None: return False
+                if checked.get('action') in {'ANSWER','NONE'}: return True
+                return validate_plan(bot,dict(value,operations=[checked])) is not None
+            return request_json(bot,prompt,guest_info,validator=valid_review)
         if operation['action']=='SHOW_PHOTO':
             categories=[name for name,_url in bot.get_room_photo_categories()]
             allowed=categories+['','exterior','ALL_ROOMS']

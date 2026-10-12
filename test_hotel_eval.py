@@ -106,3 +106,19 @@ class ToolEngineProductionEntryTests(unittest.TestCase):
         self.assertEqual(len(row['model_calls']),3)
         self.assertEqual(row['plan']['operations'],[])
         self.assertFalse(row['fresh_model_acceptance'])
+
+class ProviderChainEvaluationTests(unittest.TestCase):
+    def test_quota_failure_does_not_stop_next_provider_in_chain_mode(self):
+        fail=Mock(status_code=429,json=Mock(return_value={'error':{'message':'quota'}}))
+        good=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"reply":"Ji"}'}}]}))
+        budget=hotel_eval.ModelBudget(Mock(side_effect=[fail,good]),limit=3,interval=0,allow_fallback=True)
+        budget.post('https://generativelanguage.googleapis.com/v1beta/models/x:generateContent')
+        budget.post('https://api.groq.com/openai/v1/chat/completions')
+        self.assertEqual([c['provider'] for c in budget.calls],['gemini','groq'])
+        self.assertFalse(budget.stopped)
+
+    def test_chain_mode_still_blocks_external_operational_posts(self):
+        budget=hotel_eval.ModelBudget(Mock(),interval=0,allow_fallback=True)
+        for url in ['https://graph.facebook.com/v26/messages','https://api.cohere.ai/other-endpoint','https://api.groq.com/account/settings']:
+            with self.assertRaises(hotel_eval.BlockedIO):budget.post(url)
+        self.assertEqual(budget.calls,[])

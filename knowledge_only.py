@@ -52,6 +52,10 @@ def public_knowledge(raw):
         if heading.startswith("# Replace these") or heading.startswith("# Do not change"):
             continue
         output.append(line)
+    # Lightweight callers/tests may provide just a flat hotel fact snippet,
+    # without the numbered sections found in production hotel_data.txt.
+    if not re.search(r"(?m)^\\d{1,2}\\.\\s+[A-Z]", str(raw or "")):
+        return str(raw or "").strip()
     return "\n".join(output).strip()
 
 

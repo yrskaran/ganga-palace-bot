@@ -76,9 +76,9 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertNotIn('Only English',reply)
 
     def test_regular_hotel_question_never_faked_as_language_switch(self):
-        self.assertIsNone(gateway._language_conversation_reply(app,self.phone,
+        self.assertIsNone(gateway._language_meta(app,self.phone,
             'Room ka rate aur photo batao'))
-        self.assertIsNone(gateway._language_conversation_reply(app,self.phone,
+        self.assertIsNone(gateway._language_meta(app,self.phone,
             'Punjabi guest ka bill batao'))
 
     def test_failed_qa_hinglish_menu_question_keeps_script_and_verified_item(self):

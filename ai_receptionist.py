@@ -360,6 +360,15 @@ def compose(bot, phone, backend_text):
     turn = current.get()
     if not turn or turn['phone'] != bot.format_whatsapp_number(phone) or turn.get('direct'):
         return backend_text
+    # A compound guest turn may request a food order AND ask when it will
+    # arrive. The legacy order executor receives canonical items only, so this
+    # verified absence of ETA must survive into the AI-authored guest reply.
+    if turn.get('order_eta_pending') and not turn.get('order_eta_answered'):
+        if not re.search(r'\bETA\b|delivery.{0,30}(?:time|samay).{0,45}(?:confirm|verify|pata)', str(backend_text), re.I):
+            backend_text = str(backend_text).rstrip() + (
+                '\nDelivery ka exact time abhi verify nahi hua hai; '
+                'kitchen/reception se confirm karna hoga. Main time guess nahi karungi.')
+        turn['order_eta_answered'] = True
     prompt = (
         'Write the final WhatsApp reply as the hotel virtual receptionist. '
         'This is a RESULT, not a new guest request. No actions may be requested here. '
@@ -569,6 +578,18 @@ def _language_meta(bot, phone, text):
 
 
 
+
+def _asks_delivery_eta(text):
+    """Recognize a secondary timing clause; not a hotel operation or ETA guess."""
+    raw = str(text or '')
+    question = re.search(r"\b(?:kab|kad|when|how long|kitni der|kini der|kina chir)\b|कब|कितनी देर",raw,re.I)
+    arrival = re.search(
+        r"\b(?:mil|milega|miluga|milu|aayega|aaega|aauga|aau|aana|"
+        r"deliver|delivery|arrive|arrival|reach|ready|order|khana|food)\b|मिलेगा|आएगा|डिलीवरी",
+        raw,re.I)
+    return bool(question and arrival)
+
+
 def _reading_correction(bot, phone, text):
     """Prevent an AI menu misroute when a guest cannot read the prior script.
 
@@ -684,7 +705,9 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
     with bot.state_lock:
         bot.guest_language_cache[phone] = language
     turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
-            'language': language, 'meaning': result.get('understood_as', ''), 'direct': False}
+            'language': language, 'meaning': result.get('understood_as', ''), 'direct': False,
+            'order_eta_pending': action in {'ORDER', 'ORDER_SELECTION'} and _asks_delivery_eta(text),
+            'order_eta_answered': False}
     token = current.set(turn)
     try:
         if language_meta is not None and language_meta[1]:

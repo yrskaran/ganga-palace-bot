@@ -194,11 +194,15 @@ def run(bot,run_id):
         return run_conversations(bot,run_id,budget)
     rows=[]
     selected={x.strip() for x in os.getenv('AI_PRODUCTION_CHECK_CASE_IDS','').split(',') if x.strip()}
-    for case in (REPAIR_CASES if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='repairs' else CASES):
+    if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='segments':
+        from segment_eval_cases import CASES as suite
+    else:
+        suite=REPAIR_CASES if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='repairs' else CASES
+    for case in suite:
         if selected and case['id'] not in selected: continue
         row=evaluate(bot,case,live=True,budget=budget);row.pop('next_state',None);rows.append(row)
         print('PRODUCTION EVAL ROW: '+json.dumps(dict(row,run_id=run_id),ensure_ascii=False),flush=True)
-        if budget.stopped or len(budget.calls)>=budget.limit or not row['plan']:break
+        if budget.stopped or len(budget.calls)>=budget.limit :break
     print('PRODUCTION EVAL END: '+json.dumps({'run_id':run_id,'calls':len(budget.calls),'rows':len(rows),'fresh_acceptance':sum(r['fresh_model_acceptance'] for r in rows)}),flush=True)
     return rows
 

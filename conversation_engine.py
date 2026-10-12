@@ -244,11 +244,16 @@ def finalize(bot, phone, text, guest, value, receipts):
         not isinstance(covered,list) or any(type(i) is not int for i in covered) or
         set(covered)!=set(range(len(value['questions']))) or
         not script_supported(reply,value['script']) or not protected_reply(receipts,known,reply)):
+        print('CONVERSATION FINAL CONTRACT REJECTED: '+json.dumps({
+            'parsed_reply':isinstance(reply,str),'expected_question_count':len(value['questions']),
+            'answered_questions':covered,'script_supported':script_supported(reply,value['script']) if isinstance(reply,str) else False,
+            'protected_data':protected_reply(receipts,known,reply) if isinstance(reply,str) else False}),flush=True)
         return None
     evidence=(f'Verified hotel facts:\n{known}\nACTUAL TOOL RESULTS:\n{source}\n'
               f'REQUIRED SCRIPT: {value["script"]}\n'
               f'Every question must be addressed, including explicit unknown answers: {json.dumps(value["questions"],ensure_ascii=False)}')
     if not gateway.supported_result(bot,evidence,reply,language=value['language'],guest_message=text):
+        print('CONVERSATION FINAL SUPPORT REJECTED',flush=True)
         return None
     return reply
 

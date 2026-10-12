@@ -1514,6 +1514,28 @@ def _lifecycle_fallback_message(event, language, name, room):
     return messages.get(event, f"{address}kuch bhi chahiye ho toh yahin message kar dijiye.")
 
 
+def _lifecycle_plaintext_reply(raw):
+    """Unwrap model JSON, but never forward a JSON/code envelope to WhatsApp."""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    envelope = re.sub(r"^\`\`\`(?:json)?\s*|\s*\`\`\`$", "", text, flags=re.I | re.S).strip()
+    if re.match(r"(?is)^json\s*[{[]", envelope):
+        envelope = re.sub(r"(?is)^json\s*", "", envelope).strip()
+    if envelope.startswith("{"):
+        obj = _parse_ai_json(envelope)
+        if not isinstance(obj, dict):
+            return ""
+        text = str(obj.get("message") or obj.get("reply") or "").strip()
+    elif envelope.startswith("[") or re.match(r"(?i)^json\s+", text):
+        return ""
+    elif envelope != text:
+        text = envelope
+    if not text or re.search(r"(?i)\brecipient_phone\b|^\s*[{[]", text):
+        return ""
+    return _ai_content_is_usable(text, "Lifecycle")
+
+
 def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
     """Generate a short proactive guest message from the AI + hotel_data.txt.
 
@@ -1547,8 +1569,9 @@ def get_ai_lifecycle_message(event, language, name, room, guest_info=None):
     )
     if AI_LIFECYCLE_WORDING or ai_receptionist.enabled(sys.modules[__name__]):
         reply = ask_ai_chat(prompt, guest_info or {"name": name, "room": room}, None)
-        if reply:
-            return re.sub(r"\s+", " ", str(reply).strip())
+        safe_reply = _lifecycle_plaintext_reply(reply)
+        if safe_reply:
+            return re.sub(r"\s+", " ", safe_reply)
     return _lifecycle_fallback_message(event, lang, name, room)
 
 
@@ -2237,28 +2260,16 @@ def _resolve_staff_recipient(room, role, fallback_phone=None):
 
 
 def create_service_task(sender_phone, guest_info, role, service, details):
+    """Record service request before dispatch, even if staffing/delivery fails.
+
+    The Sheet is the durable audit trail. No task is reported as tracked when
+    saving fails; no alert is sent without a retrievable request row.
+    """
     room = clean_room((guest_info or {}).get("room", ""))
     operator = _resolve_staff_recipient(room, role, STAFF_PHONE)
-    if not operator:
-        print(f"SERVICE TASK: no recipient role={role} room={room}", flush=True)
-        return None
-
     request_id = _service_task_id()
     guest_phone = format_whatsapp_number(sender_phone) or str(sender_phone)
     created = now_ist().strftime("%d-%b-%Y %I:%M %p")
-    message = (
-        f"STAFF SERVICE REQUEST [{request_id}]\n"
-        f"Room: {room or '?'} ({(guest_info or {}).get('name','Guest')})\n"
-        f"Service: {service}\nDetails: {str(details or '').strip()[:1000]}\n"
-        f"Guest: +{guest_phone}\n\n"
-        "Task complete hone par ISI message par Reply karke 'done' likhein. "
-        f"Fallback: {request_id} done"
-    )
-    ok, remote_id = send_notification_with_id(operator["phone"], message, "STAFF")
-    if not ok:
-        print(f"SERVICE TASK SEND FAILED: id={request_id}", flush=True)
-        return None
-
     task = {
         "request_id": request_id,
         "created_at": created,
@@ -2268,28 +2279,51 @@ def create_service_task(sender_phone, guest_info, role, service, details):
         "role": role,
         "service": str(service or "General Assistance"),
         "details": str(details or "").strip()[:1000],
-        "assigned_staff": operator.get("name", ""),
-        "staff_phone": operator.get("phone", ""),
-        "status": "OPEN",
+        "assigned_staff": operator.get("name", "") if operator else "",
+        "staff_phone": operator.get("phone", "") if operator else "",
+        "status": "PENDING_DISPATCH" if operator else "UNASSIGNED",
         "staff_done_at": "",
         "guest_confirmed_at": "",
         "auto_resolved_at": "",
         "closed_at": "",
-        "alert_message_id": remote_id or "",
+        "alert_message_id": "",
         "last_update": created,
     }
+    if not _append_service_task_sheet(task):
+        print(f"SERVICE TASK NOT SAVED: id={request_id}", flush=True)
+        return None
+
     with state_lock:
         service_tasks_by_id[request_id] = task
-        if remote_id:
-            service_tasks_by_alert[remote_id] = task
         service_sessions[guest_phone] = {"request_id": request_id, "created": time.time()}
-    _append_service_task_sheet(task)
+
+    if not operator:
+        print(f"SERVICE TASK UNASSIGNED: id={request_id} room={room} role={role}", flush=True)
+        return task
+
+    message = (
+        f"STAFF SERVICE REQUEST [{request_id}]\n"
+        f"Room: {room or '?'} ({(guest_info or {}).get('name','Guest')})\n"
+        f"Service: {service}\nDetails: {str(details or '').strip()[:1000]}\n"
+        f"Guest: +{guest_phone}\n\n"
+        "Task complete hone par ISI message par Reply karke 'done' likhein. "
+        f"Fallback: {request_id} done"
+    )
+    ok, remote_id = send_notification_with_id(operator["phone"], message, "STAFF")
+    task["status"] = "OPEN" if ok and remote_id else "ALERT_FAILED"
+    task["alert_message_id"] = remote_id if ok and remote_id else ""
+    task["last_update"] = now_ist().strftime("%d-%b-%Y %I:%M %p")
+    if task["alert_message_id"]:
+        with state_lock:
+            service_tasks_by_alert[task["alert_message_id"]] = task
+    if not _update_service_task_sheet(task):
+        print(f"SERVICE TASK DISPATCH STATUS NOT SAVED: id={request_id}", flush=True)
     print(
-        f"SERVICE TASK CREATED: id={request_id} room={room} role={role} staff={operator.get('name')}",
+        f"SERVICE TASK CREATED: id={request_id} room={room} role={role} "
+        f"staff={operator.get('name')} status={task['status']}",
         flush=True,
     )
     return task
-
 
 def _service_done_intent(text):
     t = normalize_text(text)
@@ -2831,47 +2865,43 @@ def room_value(row, columns, field, default=""):
 
 
 def get_guest_stay_status(sender_phone):
-    phone = clean_phone(sender_phone)
+    """Verify the single current active stay by phone and checkout timestamp.
 
+    Refuse ambiguous duplicate check-ins, including external Sheets API edits
+    that might bypass spreadsheet data validation.
+    """
+    phone = clean_phone(sender_phone)
     with state_lock:
         rows = list(shared_store.get('rooms', []))
-        headers = [str(x).strip().upper() for x in shared_store.get('room_headers', [])]
-
+        headers = [str(x).strip() for x in shared_store.get('room_headers', [])]
     columns = room_columns(headers)
-    room_col, name_col, phone_col, rate_col, status_col = (
-        columns[k] for k in ("room", "name", "phone", "rate", "status"))
-
-    # Check the newest matching guest record first. This is important when the
-    # same WhatsApp number has older OUT records and a newer IN record.
-    for row in reversed(rows):
-        if not phone or phone_col < 0 or phone_col >= len(row):
+    if not phone or columns['phone'] < 0 or columns['status'] < 0:
+        return None
+    eligible = _eligible_lifecycle_stay_keys(rows, headers, now_ist())
+    active = []
+    checked_out = []
+    for row in rows:
+        if clean_phone(room_value(row, columns, 'phone')) != phone:
             continue
-
         room = clean_room(room_value(row, columns, 'room'))
-        name = str(room_value(row, columns, 'name', 'Guest')).strip()
-        row_phone = clean_phone(row[phone_col])
+        name = str(room_value(row, columns, 'name', 'Guest')).strip() or 'Guest'
         status = _classify_guest_status(room_value(row, columns, 'status'))
-
-        if phone == row_phone:
-            if status == 'CHECKED_IN' and room:
-                return {
-                    'is_inhouse': True,
-                    'status': 'CHECKED_IN',
-                    'room': room,
-                    'name': name or 'Guest',
-                    'price': safe_int(room_value(row, columns, 'rate'), 0),
-                }
-
-            if status == 'CHECKED_OUT':
-                return {
-                    'is_inhouse': False,
-                    'status': 'CHECKED_OUT',
-                    'room': room,
-                    'name': name or 'Guest',
-                }
-
+        if status == 'CHECKED_IN' and (phone, room) in eligible:
+            active.append((row, room, name))
+        elif status == 'CHECKED_OUT':
+            checked_out.append((row, room, name))
+    if len(active) > 1:
+        print('GUEST STAY CONFLICT: multiple active rooms for one phone; actions denied', flush=True)
+        return {'is_inhouse': False, 'status': 'AMBIGUOUS'}
+    if active:
+        row, room, name = active[0]
+        return {'is_inhouse': True, 'status': 'CHECKED_IN', 'room': room,
+                'name': name, 'price': safe_int(room_value(row, columns, 'rate'), 0)}
+    if checked_out:
+        row, room, name = checked_out[-1]
+        return {'is_inhouse': False, 'status': 'CHECKED_OUT',
+                'room': room, 'name': name}
     return None
-
 
 def room_is_available(room_number):
     target = clean_room(room_number)
@@ -8513,10 +8543,16 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
     }
     role = mapping.get(str(result.get("category", "")).upper(), "Housekeeping" if "house" in normalize_text(service) else "Maintenance" if "maint" in normalize_text(service) or "ac" in normalize_text(service) or "tv" in normalize_text(service) else "Reception")
     task = create_service_task(sender_phone, guest_info, role, service, user_text)
-    if task:
+    if task and task.get("status") == "OPEN":
         send_whatsapp_message(
             sender_phone,
-            f"Ji {guest_info.get('name','Guest')} ji, request note kar li hai. Assigned staff ko inform kar diya gaya hai. 🙏"
+            f"Ji, aapki {service} request {task['request_id']} record ho gayi hai. Staff ko alert submit kiya hai; delivery confirmation abhi pending hai."
+        )
+    elif task:
+        send_whatsapp_message(
+            sender_phone,
+            f"Ji, aapki {service} request {task['request_id']} Sheet mein save hai, "
+            "lekin staff ko message deliver hone ki confirmation nahi hai. Front desk se seedhe baat karein."
         )
     else:
         send_whatsapp_message(
@@ -10071,17 +10107,15 @@ def _process_and_reply(message, sender_phone, msg_type, _executor=False, _unders
             )
             return
 
-        staff_notified = send_staff_alert(
-            room=guest_info['room'],
-            role="Housekeeping" if svc != "Room Service Assistance" else "Room Service",
-            message=(
-                f"स्टाफ अलर्ट\nRoom: {guest_info['room']}\nGuest: {guest_info['name']}\n"
-                f"Task: {svc}\nDetails: {user_text}\nPhone: +{sender_phone}"
-            ),
-            fallback_phone=STAFF_PHONE,
+        task = create_service_task(
+            sender_phone, guest_info,
+            "Housekeeping" if svc != "Room Service Assistance" else "Room Service",
+            svc, user_text,
         )
-        if staff_notified:
-            reply = f"Ji {guest_info['name']} ji, {svc} request note kar li hai aur staff ko inform kar diya hai. 🙏"
+        if task and task.get("status") == "OPEN":
+            reply = f"Ji, request {task['request_id']} save hai. Staff alert submit ho gaya; delivery abhi confirm nahi hui."
+        elif task:
+            reply = f"Ji, request {task['request_id']} Sheet mein save hai, lekin staff notification confirm nahi hua. Reception se baat karein."
         else:
             reply = bilingual_text(
                 sender_phone,

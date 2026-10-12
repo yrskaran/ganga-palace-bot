@@ -15,6 +15,7 @@ from reliability import Store
 ORIGINAL_APPEND=app._append_service_task_sheet
 ORIGINAL_UPDATE=app._update_service_task_sheet
 ORIGINAL_ENSURE=app._ensure_service_requests_sheet
+ORIGINAL_GET_GUEST_STAY_STATUS=app.get_guest_stay_status
 
 GUEST = '919555555555'
 STAFF = '919222222222'
@@ -139,6 +140,84 @@ class GuestFlows(unittest.TestCase):
         task['request_id'] = rid
         app.service_tasks_by_id[rid] = task
         return task
+
+    def test_staff_assignment_accepts_multiple_room_numbers_and_ranges(self):
+        self.assertTrue(app._room_in_assignment('103', '101,103,105'))
+        self.assertTrue(app._room_in_assignment('105', '101-110'))
+        self.assertTrue(app._room_in_assignment('240', 'All'))
+        self.assertFalse(app._room_in_assignment('201', '101,103,105'))
+
+    def test_service_request_saved_even_when_staff_unassigned(self):
+        self.mock('_resolve_staff_recipient', return_value=None)
+        append=self.mock('_append_service_task_sheet', return_value=True)
+        task=app.create_service_task(GUEST, {'room':'203','name':'Kitty'},
+                                     'Housekeeping','Extra towel','Please send a towel')
+        self.assertEqual(task['status'],'UNASSIGNED')
+        self.assertIn(task['request_id'],app.service_tasks_by_id)
+        append.assert_called_once()
+        self.notify.assert_not_called()
+
+    def test_service_request_saved_and_dispatched_with_ticket(self):
+        self.mock('_resolve_staff_recipient', return_value={
+            'name':'Ravi','phone':STAFF,'role':'Housekeeping'})
+        append=self.mock('_append_service_task_sheet', return_value=True)
+        updated=self.mock('_update_service_task_sheet', return_value=True)
+        task=app.create_service_task(GUEST, {'room':'203','name':'Kitty'},
+                                     'Housekeeping','Extra towel','Please send a towel')
+        self.assertEqual(task['status'],'OPEN')
+        self.assertEqual(task['alert_message_id'],'remote-1')
+        self.assertIn('STAFF SERVICE REQUEST',self.notify.call_args.args[1])
+        append.assert_called_once()
+        updated.assert_called_once()
+
+    def test_failed_staff_alert_keeps_saved_ticket_without_false_claim(self):
+        self.mock('_resolve_staff_recipient', return_value={
+            'name':'Ravi','phone':STAFF,'role':'Housekeeping'})
+        self.mock('_append_service_task_sheet', return_value=True)
+        self.mock('_update_service_task_sheet', return_value=True)
+        self.notify.return_value=(False,None)
+        task=app.create_service_task(GUEST, {'room':'203','name':'Kitty'},
+                                     'Housekeeping','Extra towel','Please send a towel')
+        self.assertEqual(task['status'],'ALERT_FAILED')
+        self.assertEqual(task['alert_message_id'],'')
+        self.assertIn(task['request_id'],app.service_tasks_by_id)
+
+    def test_service_request_not_dispatched_when_sheet_save_fails(self):
+        self.mock('_append_service_task_sheet', return_value=False)
+        task=app.create_service_task(GUEST, {'room':'203','name':'Kitty'},
+                                     'Housekeeping','Extra towel','Please send a towel')
+        self.assertIsNone(task)
+        self.notify.assert_not_called()
+
+    def test_active_guest_lookup_ignores_old_checkout_and_rejects_double_checkin(self):
+        app.shared_store['room_headers']=[
+            'Room (A)','Category (B)','Price (C)','Guest Name (D)',
+            'Phone (E)','Status (F)','CHECK IN TIME','CHECK OUT TIME']
+        app.shared_store['rooms']=[
+            ['101','Suite','1800','Old',GUEST,'CHECKED_IN',
+             '27-Sep-2026 01:27 AM','27-Sep-2026 10:06 PM'],
+            ['240','Suite','2800','Former',GUEST,'CHECKED_OUT',
+             '27-Sep-2026 10:26 PM','02-Oct-2026 04:07 PM'],
+            ['450','Suite','3300','New',GUEST,'CHECKED_IN',
+             '03-Oct-2026 05:03 AM','']]
+        with patch.object(app,'now_ist',return_value=NOW):
+            guest=ORIGINAL_GET_GUEST_STAY_STATUS(GUEST)
+            self.assertEqual(guest['room'],'450')
+            self.assertEqual(guest['name'],'New')
+            app.shared_store['rooms'].append(
+                ['451','Suite','3300','Duplicate',GUEST,'CHECKED_IN',
+                 '03-Oct-2026 05:10 AM',''])
+            self.assertEqual(ORIGINAL_GET_GUEST_STAY_STATUS(GUEST)['status'],'AMBIGUOUS')
+
+    def test_lifecycle_reply_unwraps_json_but_never_sends_raw_json(self):
+        self.mock('AI_LIFECYCLE_WORDING',True)
+        self.mock('ask_ai_chat',return_value='json {"recipient_phone":"","message":"Welcome to Hotel Shreya, guest!"}')
+        self.assertEqual(app.get_ai_lifecycle_message(
+            'WELCOME','english','Guest','203'), 'Welcome to Hotel Shreya, guest!')
+        app.ask_ai_chat.return_value='json {"recipient_phone":""}'
+        reply=app.get_ai_lifecycle_message('WELCOME','english','Guest','203')
+        self.assertNotIn('recipient_phone',reply)
+        self.assertNotIn('json {',reply)
 
     def test_room_types_from_screenshot_never_notify_reception(self):
         self.mock('get_room_categories', return_value={

@@ -3196,8 +3196,15 @@ def record_delivery_statuses(statuses):
             shared_store["last_delivery_event"] = event
         print(f"WHATSAPP DELIVERY: status={event['status']} codes={codes}", flush=True)
         if KNOWLEDGE_ONLY_MODE:
-            # Delivery metadata remains tracked, but no lifecycle/service Sheets
-            # fields are updated while testing AI conversational replies.
+            # All hotel actions still remain paused. Only the newly enabled,
+            # correctly mapped reception QUESTION alert may receive a failure
+            # callback; do not touch other operational sheets or staff tasks.
+            if KNOWLEDGE_RECEPTION_LEARNING:
+                remote_id = str(status.get("id") or "")
+                with state_lock:
+                    pending = reception_requests_by_alert.get(remote_id)
+                if pending and pending.get("source") == "ai_missing_hotel_knowledge":
+                    _update_reception_alert_delivery(remote_id, status.get("status"), codes)
             continue
         remote_id = status.get("id")
         delivery_state = status.get("status")

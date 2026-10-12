@@ -1,0 +1,661 @@
+{
+  "logs": [
+    {
+      "id": "2b196a15-895b-44e8-a9e0-fd11f98d699f",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL CONNECTION: {\"run_id\": \"readiness-lite-20261012-0852\", \"status\": 200, \"model\": \"gemini-3.5-flash-lite\", \"configured_model_listed\": true}",
+      "timestamp": "2026-10-12T08:52:35.217017044Z"
+    },
+    {
+      "id": "d2b9d783-4f71-48af-862b-5af2126cc852",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL START: {\"run_id\": \"readiness-lite-20261012-0852\", \"max_calls\": 10, \"mode\": \"synthetic guests; external mutations denied\"}",
+      "timestamp": "2026-10-12T08:52:35.217041636Z"
+    },
+    {
+      "id": "29f84233-985c-477b-8fb9-15df9bde5a7f",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "debug"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL ROW: {\"id\": \"followup-price\", \"question\": \"Kitne ki hai?\", \"output\": \"Standard Veg Thali — ₹200 hai.\", \"plan\": {\"understood_as\": \"Kitne ki hai?\", \"action\": \"MENU_ITEM_INFO\", \"intent\": \"MENU_ITEM_INFO\", \"category\": \"NONE\", \"photo_target\": \"\", \"menu_section\": \"\", \"show_prices\": true, \"generic\": \"\", \"items\": [{\"name\": \"Standard Veg Thali\", \"qty\": 1}], \"service\": \"\", \"needs_reception\": false, \"reception_followup\": false, \"reception_request\": \"\", \"language\": \"hinglish\", \"operation_text\": \"\", \"task_id\": \"\", \"reply\": \"\", \"confidence\": 0.9, \"submission_intent\": false}, \"errors\": [], \"state_after\": {}, \"memory\": [{\"role\": \"user\", \"content\": \"Standard veg thali bhi hai?\"}, {\"role\": \"assistant\", \"content\": \"Standard Veg Thali menu mein hai.\"}, {\"role\": \"user\", \"content\": \"Kitne ki hai?\"}, {\"role\": \"assistant\", \"content\": \"Standard Veg Thali — ₹200 hai.\"}], \"trace\": [], \"model_calls\": [{\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1779, \"candidatesTokenCount\": 188, \"totalTokenCount\": 1967, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1779}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2084, \"candidatesTokenCount\": 139, \"totalTokenCount\": 2223, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2084}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 462, \"candidatesTokenCount\": 20, \"totalTokenCount\": 482, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 462}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 482, \"candidatesTokenCount\": 10, \"totalTokenCount\": 492, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 482}], \"serviceTier\": \"standard\"}}], \"provenance\": \"fresh_model\", \"fresh_model_acceptance\": true, \"external_io\": \"isolated; no real WhatsApp, Sheets, orders or payments\", \"revision\": \"57d4ed2321f1dcc127584d414f666950f3b38529\", \"model\": \"gemini-3.5-flash-lite\", \"run_id\": \"readiness-lite-20261012-0852\"}",
+      "timestamp": "2026-10-12T08:53:21.128032681Z"
+    },
+    {
+      "id": "d2605e8e-c08b-4fc1-8bfd-09755ef78b07",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "debug"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL ROW: {\"id\": \"tea-options\", \"question\": \"Chai me kya kya option hai\", \"output\": \"Chai me ye options available hain:\\n• Cutting Chai\\n• Masala Chai\", \"plan\": {\"understood_as\": \"Chai options\", \"action\": \"MENU_ITEM_INFO\", \"intent\": \"MENU_ITEM_INFO\", \"category\": \"NONE\", \"photo_target\": \"\", \"menu_section\": \"\", \"show_prices\": false, \"generic\": \"\", \"items\": [{\"name\": \"Cutting Chai\", \"qty\": 1}, {\"name\": \"Masala Chai\", \"qty\": 1}], \"service\": \"\", \"needs_reception\": false, \"reception_followup\": false, \"reception_request\": \"\", \"language\": \"hinglish\", \"operation_text\": \"\", \"task_id\": \"\", \"reply\": \"\", \"confidence\": 0.95, \"submission_intent\": false}, \"errors\": [], \"state_after\": {}, \"memory\": [{\"role\": \"user\", \"content\": \"Chai me kya kya option hai\"}, {\"role\": \"assistant\", \"content\": \"Chai me ye options available hain:\\n• Cutting Chai\\n• Masala Chai\"}], \"trace\": [], \"model_calls\": [{\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1779, \"candidatesTokenCount\": 188, \"totalTokenCount\": 1967, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1779}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2084, \"candidatesTokenCount\": 139, \"totalTokenCount\": 2223, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2084}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 462, \"candidatesTokenCount\": 20, \"totalTokenCount\": 482, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 462}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 482, \"candidatesTokenCount\": 10, \"totalTokenCount\": 492, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 482}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1763, \"candidatesTokenCount\": 172, \"totalTokenCount\": 1935, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1763}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2029, \"candidatesTokenCount\": 161, \"totalTokenCount\": 2660, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2029}], \"thoughtsTokenCount\": 470, \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 459, \"candidatesTokenCount\": 27, \"totalTokenCount\": 486, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 459}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 488, \"candidatesTokenCount\": 10, \"totalTokenCount\": 498, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 488}], \"serviceTier\": \"standard\"}}], \"provenance\": \"fresh_model\", \"fresh_model_acceptance\": true, \"external_io\": \"isolated; no real WhatsApp, Sheets, orders or payments\", \"revision\": \"57d4ed2321f1dcc127584d414f666950f3b38529\", \"model\": \"gemini-3.5-flash-lite\", \"run_id\": \"readiness-lite-20261012-0852\"}",
+      "timestamp": "2026-10-12T08:54:21.146500194Z"
+    },
+    {
+      "id": "453a1833-9f68-4069-93d0-8004c99c545d",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "debug"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL ROW: {\"id\": \"own-room\", \"question\": \"What's my room number?\", \"output\": \"You are currently checked into Room 240.\", \"plan\": {\"understood_as\": \"What is my room number?\", \"action\": \"ANSWER\", \"intent\": \"ANSWER\", \"category\": \"NONE\", \"photo_target\": \"\", \"menu_section\": \"\", \"show_prices\": false, \"generic\": \"\", \"items\": [], \"service\": \"\", \"needs_reception\": false, \"reception_followup\": false, \"reception_request\": \"\", \"language\": \"english\", \"operation_text\": \"\", \"task_id\": \"\", \"reply\": \"You are currently checked into Room 240.\", \"confidence\": 1.0, \"submission_intent\": false}, \"errors\": [], \"state_after\": {}, \"memory\": [{\"role\": \"user\", \"content\": \"What's my room number?\"}, {\"role\": \"assistant\", \"content\": \"You are currently checked into Room 240.\"}], \"trace\": [], \"model_calls\": [{\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1779, \"candidatesTokenCount\": 188, \"totalTokenCount\": 1967, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1779}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2084, \"candidatesTokenCount\": 139, \"totalTokenCount\": 2223, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2084}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 462, \"candidatesTokenCount\": 20, \"totalTokenCount\": 482, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 462}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 482, \"candidatesTokenCount\": 10, \"totalTokenCount\": 492, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 482}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1763, \"candidatesTokenCount\": 172, \"totalTokenCount\": 1935, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1763}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2029, \"candidatesTokenCount\": 161, \"totalTokenCount\": 2660, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2029}], \"thoughtsTokenCount\": 470, \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 459, \"candidatesTokenCount\": 27, \"totalTokenCount\": 486, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 459}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 488, \"candidatesTokenCount\": 10, \"totalTokenCount\": 498, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 488}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 1826, \"candidatesTokenCount\": 120, \"totalTokenCount\": 1946, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 1826}], \"serviceTier\": \"standard\"}}, {\"provider\": \"gemini\", \"status\": 200, \"usage\": {\"promptTokenCount\": 2437, \"candidatesTokenCount\": 69, \"totalTokenCount\": 2506, \"promptTokensDetails\": [{\"modality\": \"TEXT\", \"tokenCount\": 2437}], \"serviceTier\": \"standard\"}}], \"provenance\": \"fresh_model\", \"fresh_model_acceptance\": true, \"external_io\": \"isolated; no real WhatsApp, Sheets, orders or payments\", \"revision\": \"57d4ed2321f1dcc127584d414f666950f3b38529\", \"model\": \"gemini-3.5-flash-lite\", \"run_id\": \"readiness-lite-20261012-0852\"}",
+      "timestamp": "2026-10-12T08:54:51.213936494Z"
+    },
+    {
+      "id": "74173d6a-44b9-49d0-9a98-a9fb0b1a9e6c",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-7s4fz"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "PRODUCTION EVAL END: {\"run_id\": \"readiness-lite-20261012-0852\", \"calls\": 10, \"rows\": 3, \"fresh_acceptance\": 3}",
+      "timestamp": "2026-10-12T08:54:51.213956425Z"
+    }
+  ],
+  "rows": [
+    {
+      "id": "followup-price",
+      "question": "Kitne ki hai?",
+      "output": "Standard Veg Thali — ₹200 hai.",
+      "plan": {
+        "understood_as": "Kitne ki hai?",
+        "action": "MENU_ITEM_INFO",
+        "intent": "MENU_ITEM_INFO",
+        "category": "NONE",
+        "photo_target": "",
+        "menu_section": "",
+        "show_prices": true,
+        "generic": "",
+        "items": [
+          {
+            "name": "Standard Veg Thali",
+            "qty": 1
+          }
+        ],
+        "service": "",
+        "needs_reception": false,
+        "reception_followup": false,
+        "reception_request": "",
+        "language": "hinglish",
+        "operation_text": "",
+        "task_id": "",
+        "reply": "",
+        "confidence": 0.9,
+        "submission_intent": false
+      },
+      "errors": [],
+      "state_after": {},
+      "memory": [
+        {
+          "role": "user",
+          "content": "Standard veg thali bhi hai?"
+        },
+        {
+          "role": "assistant",
+          "content": "Standard Veg Thali menu mein hai."
+        },
+        {
+          "role": "user",
+          "content": "Kitne ki hai?"
+        },
+        {
+          "role": "assistant",
+          "content": "Standard Veg Thali — ₹200 hai."
+        }
+      ],
+      "trace": [],
+      "model_calls": [
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1779,
+            "candidatesTokenCount": 188,
+            "totalTokenCount": 1967,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1779
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2084,
+            "candidatesTokenCount": 139,
+            "totalTokenCount": 2223,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2084
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 462,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 482,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 462
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 482,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 492,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 482
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        }
+      ],
+      "provenance": "fresh_model",
+      "fresh_model_acceptance": true,
+      "external_io": "isolated; no real WhatsApp, Sheets, orders or payments",
+      "revision": "57d4ed2321f1dcc127584d414f666950f3b38529",
+      "model": "gemini-3.5-flash-lite",
+      "run_id": "readiness-lite-20261012-0852"
+    },
+    {
+      "id": "tea-options",
+      "question": "Chai me kya kya option hai",
+      "output": "Chai me ye options available hain:\n• Cutting Chai\n• Masala Chai",
+      "plan": {
+        "understood_as": "Chai options",
+        "action": "MENU_ITEM_INFO",
+        "intent": "MENU_ITEM_INFO",
+        "category": "NONE",
+        "photo_target": "",
+        "menu_section": "",
+        "show_prices": false,
+        "generic": "",
+        "items": [
+          {
+            "name": "Cutting Chai",
+            "qty": 1
+          },
+          {
+            "name": "Masala Chai",
+            "qty": 1
+          }
+        ],
+        "service": "",
+        "needs_reception": false,
+        "reception_followup": false,
+        "reception_request": "",
+        "language": "hinglish",
+        "operation_text": "",
+        "task_id": "",
+        "reply": "",
+        "confidence": 0.95,
+        "submission_intent": false
+      },
+      "errors": [],
+      "state_after": {},
+      "memory": [
+        {
+          "role": "user",
+          "content": "Chai me kya kya option hai"
+        },
+        {
+          "role": "assistant",
+          "content": "Chai me ye options available hain:\n• Cutting Chai\n• Masala Chai"
+        }
+      ],
+      "trace": [],
+      "model_calls": [
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1779,
+            "candidatesTokenCount": 188,
+            "totalTokenCount": 1967,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1779
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2084,
+            "candidatesTokenCount": 139,
+            "totalTokenCount": 2223,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2084
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 462,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 482,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 462
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 482,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 492,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 482
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1763,
+            "candidatesTokenCount": 172,
+            "totalTokenCount": 1935,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1763
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2029,
+            "candidatesTokenCount": 161,
+            "totalTokenCount": 2660,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2029
+              }
+            ],
+            "thoughtsTokenCount": 470,
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 459,
+            "candidatesTokenCount": 27,
+            "totalTokenCount": 486,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 459
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 488,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 498,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 488
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        }
+      ],
+      "provenance": "fresh_model",
+      "fresh_model_acceptance": true,
+      "external_io": "isolated; no real WhatsApp, Sheets, orders or payments",
+      "revision": "57d4ed2321f1dcc127584d414f666950f3b38529",
+      "model": "gemini-3.5-flash-lite",
+      "run_id": "readiness-lite-20261012-0852"
+    },
+    {
+      "id": "own-room",
+      "question": "What's my room number?",
+      "output": "You are currently checked into Room 240.",
+      "plan": {
+        "understood_as": "What is my room number?",
+        "action": "ANSWER",
+        "intent": "ANSWER",
+        "category": "NONE",
+        "photo_target": "",
+        "menu_section": "",
+        "show_prices": false,
+        "generic": "",
+        "items": [],
+        "service": "",
+        "needs_reception": false,
+        "reception_followup": false,
+        "reception_request": "",
+        "language": "english",
+        "operation_text": "",
+        "task_id": "",
+        "reply": "You are currently checked into Room 240.",
+        "confidence": 1,
+        "submission_intent": false
+      },
+      "errors": [],
+      "state_after": {},
+      "memory": [
+        {
+          "role": "user",
+          "content": "What's my room number?"
+        },
+        {
+          "role": "assistant",
+          "content": "You are currently checked into Room 240."
+        }
+      ],
+      "trace": [],
+      "model_calls": [
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1779,
+            "candidatesTokenCount": 188,
+            "totalTokenCount": 1967,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1779
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2084,
+            "candidatesTokenCount": 139,
+            "totalTokenCount": 2223,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2084
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 462,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 482,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 462
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 482,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 492,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 482
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1763,
+            "candidatesTokenCount": 172,
+            "totalTokenCount": 1935,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1763
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2029,
+            "candidatesTokenCount": 161,
+            "totalTokenCount": 2660,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2029
+              }
+            ],
+            "thoughtsTokenCount": 470,
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 459,
+            "candidatesTokenCount": 27,
+            "totalTokenCount": 486,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 459
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 488,
+            "candidatesTokenCount": 10,
+            "totalTokenCount": 498,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 488
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 1826,
+            "candidatesTokenCount": 120,
+            "totalTokenCount": 1946,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 1826
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        },
+        {
+          "provider": "gemini",
+          "status": 200,
+          "usage": {
+            "promptTokenCount": 2437,
+            "candidatesTokenCount": 69,
+            "totalTokenCount": 2506,
+            "promptTokensDetails": [
+              {
+                "modality": "TEXT",
+                "tokenCount": 2437
+              }
+            ],
+            "serviceTier": "standard"
+          }
+        }
+      ],
+      "provenance": "fresh_model",
+      "fresh_model_acceptance": true,
+      "external_io": "isolated; no real WhatsApp, Sheets, orders or payments",
+      "revision": "57d4ed2321f1dcc127584d414f666950f3b38529",
+      "model": "gemini-3.5-flash-lite",
+      "run_id": "readiness-lite-20261012-0852"
+    }
+  ]
+}

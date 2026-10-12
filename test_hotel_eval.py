@@ -42,3 +42,17 @@ class ProductionEntryEvaluationTests(unittest.TestCase):
         self.assertFalse(row['errors'],row)
         self.assertEqual(row['state_after']['checkin_sessions']['step'],'ADDRESS')
         self.assertEqual(row['state_after']['checkin_sessions']['name'],'Aman Sharma')
+
+    def test_own_room_answer_uses_verified_sender_stay_in_actual_flow(self):
+        answers=[{'action':'ANSWER','reply':'Your room number is 240.','operation_text':'','language':'english','confidence':.96},
+                 {'menu_related':False,'action':'ANSWER','reply':'Your room number is 240.','language':'english'}]
+        prompts=[]
+        def transport(url,**kwargs):
+            prompts.append(json.dumps(kwargs['json']))
+            return Mock(status_code=200,json=Mock(return_value={'candidates':[{'content':{'parts':[{'text':json.dumps(answers.pop(0))}]},'finishReason':'STOP'}]}))
+        with patch.object(app,'GEMINI_API_KEY','test'):
+            row=hotel_eval.evaluate(app,hotel_eval.CASES[2],transport=transport)
+        self.assertFalse(row['errors'],row)
+        self.assertEqual(row['output'],'Your room number is 240.')
+        self.assertIn('Verified sender stay',prompts[1])
+        self.assertEqual(len(prompts),2)

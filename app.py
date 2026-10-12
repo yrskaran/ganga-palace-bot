@@ -4237,6 +4237,47 @@ def _cohere_extract_text(data):
     return str(text).strip() if text else ""
 
 
+def _cohere_select_final_contract_json(text, schema):
+    """Take the final schema-shaped object only when a reply contains adjacent JSON objects.
+
+    Some provider responses include a draft object followed by a corrected
+    object. Never salvage JSON from prose or chain-of-thought; accept only
+    complete, whitespace-separated JSON objects and let the workflow's full
+    validator check the returned object before any hotel action.
+    """
+    if not isinstance(text, str) or not isinstance(schema, dict):
+        return text
+    raw = text.strip()
+    try:
+        json.loads(raw)
+        return raw
+    except (ValueError, TypeError):
+        pass
+    decoder = json.JSONDecoder()
+    objects = []
+    pos = 0
+    try:
+        while pos < len(raw) and len(objects) < 4:
+            value, end = decoder.raw_decode(raw, pos)
+            if not isinstance(value, dict):
+                return text
+            objects.append(value)
+            pos = end
+            while pos < len(raw) and raw[pos].isspace():
+                pos += 1
+    except (ValueError, TypeError):
+        return text
+    if pos != len(raw) or len(objects) < 2:
+        return text
+    required = set(schema.get("required", []))
+    allowed = set(schema.get("properties", {}))
+    for value in reversed(objects):
+        keys = set(value)
+        if required <= keys and keys <= allowed:
+            return json.dumps(value, ensure_ascii=False)
+    return text
+
+
 def ask_cerebras_chat(user_text, guest_info=None, sender_phone=None, structured=False):
     """Fourth conversational AI fallback through Cerebras Inference."""
     if not CEREBRAS_API_KEY or _cerebras_circuit_open():
@@ -4498,7 +4539,8 @@ Hotel knowledge:\n{hotel_db}
             # Retry only the inference (never hotel actions) through the
             # compatibility endpoint, then apply the same output validation.
             native_data = res.json() or {}
-            native_text = _ai_content_is_usable(_cohere_extract_text(native_data), "Cohere")
+            native_text = _cohere_select_final_contract_json(_cohere_extract_text(native_data), contract_schema)
+            native_text = _ai_content_is_usable(native_text, "Cohere")
             try:
                 native_json = json.loads(native_text) if native_text else None
             except (ValueError, TypeError):
@@ -4513,6 +4555,8 @@ Hotel knowledge:\n{hotel_db}
         if res.status_code == 200:
             data = res.json() or {}
             content = _cohere_extract_text(data)
+            if structured and contract_schema:
+                content = _cohere_select_final_contract_json(content, contract_schema)
             usable = _ai_content_is_usable(content, "Cohere")
             finish_reason = str(data.get('finish_reason') or '').strip().upper()
             choices = data.get("choices") if isinstance(data, dict) else None

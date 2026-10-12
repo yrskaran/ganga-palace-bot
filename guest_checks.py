@@ -213,6 +213,19 @@ def run(bot, run_id, ids=None, delay=75):
 
 
 def start(bot, run_id, ids=None):
+    if str(run_id).startswith('gemini-'):
+        def comparison():
+            import subprocess,sys
+            from pathlib import Path
+            time.sleep(45)
+            environment=dict(os.environ,BOT_AUTOSTART='0',AI_PROVIDER_ORDER='gemini',AI_GUEST_CHECK_RUN=run_id)
+            try:
+                subprocess.run([sys.executable,str(Path(__file__).with_name('gemini_checks.py'))],
+                    env=environment,check=True,timeout=720)
+            except Exception as exc:
+                print('GEMINI CHECK WORKER ERROR: '+type(exc).__name__,flush=True)
+        threading.Thread(target=comparison,daemon=True,name='isolated-gemini-check').start()
+        return
     if str(run_id).startswith("qa200-"):
         import qa_runner
         return qa_runner.start(bot, run_id)

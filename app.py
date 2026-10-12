@@ -3852,8 +3852,12 @@ Local guide:
     payload = {
         "systemInstruction": {"parts": [{"text": system_prompt}]},
         "contents": contents,
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 260 if structured else 220},
+        "generationConfig": {"maxOutputTokens": 2048 if structured else 1024},
     }
+    if GEMINI_MODEL.startswith('gemini-3'):
+        payload['generationConfig']['thinkingConfig'] = {'thinkingLevel':'low', 'includeThoughts':False}
+    else:
+        payload['generationConfig']['temperature'] = 0.2
     if structured:
         payload["generationConfig"]["responseMimeType"] = "application/json"
 
@@ -3868,8 +3872,16 @@ Local guide:
             )
             if res.status_code == 200:
                 data = res.json()
-                parts = (((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or [])
-                text = "".join(str(x.get("text", "")) for x in parts if x.get("text"))
+                candidate = (data.get('candidates') or [{}])[0]
+                usage = data.get('usageMetadata') or {}
+                print('GEMINI USAGE: ' + json.dumps({'model':model,'structured':structured,
+                    'input_tokens':usage.get('promptTokenCount'), 'output_tokens':usage.get('candidatesTokenCount'),
+                    'thinking_tokens':usage.get('thoughtsTokenCount'), 'total_tokens':usage.get('totalTokenCount'),
+                    'finish':candidate.get('finishReason')},ensure_ascii=False),flush=True)
+                if candidate.get('finishReason') not in {None, 'STOP'}:
+                    return None
+                parts = (candidate.get('content') or {}).get('parts') or []
+                text = "".join(str(x.get("text", "")) for x in parts if x.get("text") and not x.get('thought'))
                 if text.strip():
                     return text.strip()
                 print(f"GEMINI EMPTY RESPONSE: {model}", flush=True)

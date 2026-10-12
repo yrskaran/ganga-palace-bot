@@ -93,5 +93,6 @@
   "demo_mode": false,
   "integrations": {
     "sheet_id": ""
-  }
+  },
+  "conversation_tool_engine": true
 }

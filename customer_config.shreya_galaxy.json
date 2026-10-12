@@ -204,5 +204,6 @@
   "demo_mode": false,
   "integrations": {
     "sheet_id": "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY"
-  }
+  },
+  "conversation_tool_engine": true
 }

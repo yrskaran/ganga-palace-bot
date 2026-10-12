@@ -4,6 +4,7 @@ import tempfile
 from reliability import Store
 import durable_runtime
 import ai_receptionist
+import conversation_engine
 import re
 import base64
 import io
@@ -145,7 +146,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V77-MODEL-QUOTA-FAILOVER"
+APP_VERSION = "HOTEL-AI-V78-CONVERSATION-TOOLS"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -3283,6 +3284,10 @@ def maybe_react_to_guest_message(to_number, message):
 
 
 def send_whatsapp_message(to_number, text):
+    # Hotel tools collect their guest result; staff recipients bypass this
+    # per-turn collector and still use the real transport.
+    if conversation_engine.capture_text(sys.modules[__name__], to_number, text):
+        return True
     text = ai_receptionist.compose(sys.modules[__name__], to_number, str(text or ''))
     # AI may use private [[MAP:...]] markers. Never expose those markers to guests.
     text = attach_google_maps_links(str(text or ""))
@@ -3451,6 +3456,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
             res = whatsapp_request(payload)
             if res and res.status_code in (200, 201):
                 print(f"PHOTO SEND MEDIA OK: media_id={media_id}", flush=True)
+                conversation_engine.capture_text(sys.modules[__name__], number,
+                    f'Photo request accepted by WhatsApp: {caption}. Guest delivery is unconfirmed.')
                 return True
             if res is not None:
                 print("PHOTO SEND MEDIA FAILED:", res.status_code, res.text[:500], flush=True)
@@ -3469,6 +3476,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
         res = whatsapp_request(direct_payload)
         if res and res.status_code in (200, 201):
             print(f"PHOTO SEND DIRECT OK: {url_value}", flush=True)
+            conversation_engine.capture_text(sys.modules[__name__], number,
+                f'Photo request accepted by WhatsApp: {caption}. Guest delivery is unconfirmed.')
             return True
         if res is not None:
             print("PHOTO SEND DIRECT FAILED:", res.status_code, res.text[:500], flush=True)
@@ -3478,6 +3487,8 @@ def send_whatsapp_image(to_number, image_url, caption=""):
     # Final fallback: never silently drop the request.
     link_ok = send_whatsapp_message(number, f"{caption}\n\nPhoto link: {url_value}")
     print(f"PHOTO SEND FINAL LINK FALLBACK: sent={link_ok} url={url_value}", flush=True)
+    conversation_engine.capture_text(sys.modules[__name__], number,
+        f'Photo image transport failed: {caption}. A photo link was prepared instead; image delivery is unconfirmed.')
     return False
 
 def mark_message_as_read(message_id):
@@ -4638,11 +4649,15 @@ def _ai_provider_functions():
     return [(name, functions[name]) for name in AI_PROVIDER_ORDER if name in functions]
 
 
-def ask_ai_chat(user_text, guest_info=None, sender_phone=None):
+def ask_ai_chat(user_text, guest_info=None, sender_phone=None, structured=False):
     """Resilient conversational gateway using the same provider order everywhere."""
     for provider_name, provider_fn in _ai_provider_functions():
         try:
-            reply = _ai_content_is_usable(provider_fn(user_text, guest_info, sender_phone), provider_name)
+            raw = (provider_fn(user_text, guest_info, sender_phone, structured=True)
+                   if structured else provider_fn(user_text, guest_info, sender_phone))
+            reply = _ai_content_is_usable(raw, provider_name)
+            if structured and not _parse_ai_json(reply):
+                continue
             if reply:
                 print(f"AI GATEWAY SUCCESS: provider={provider_name}", flush=True)
                 return reply
@@ -6931,6 +6946,22 @@ def _record_ai_readiness(status, provider=None):
 
 def check_ai_readiness():
     """Optional real primary-provider probe; no WhatsApp/Sheet/staff side effects."""
+    if conversation_engine.enabled(sys.modules[__name__]):
+        # Exercise the actual whole-turn contract once. No tools are executed,
+        # no guest phone is used and no conversation/Sheet state is changed.
+        item=next((row.get('name') for row in (CUSTOMER_CONFIG or {}).get('menu',[])
+                   if isinstance(row,dict) and row.get('name')),None)
+        query=f'1 {item} bhej deo ji, kab tak mil juga?' if item else 'Wi-Fi hai aur checkout kab hai?'
+        try:
+            result=conversation_engine.plan(sys.modules[__name__],None,query,None)
+            ok=bool(result and result['questions'] and result['script']=='roman'
+                    and (not item or any(op['action']=='ORDER' for op in result['operations'])))
+            print(f'CONVERSATION READ-ONLY PROBE: valid={ok} operations={len(result["operations"]) if result else 0} questions={len(result["questions"]) if result else 0} script={result.get("script") if result else None}',flush=True)
+            _record_ai_readiness('available' if ok else 'unavailable','configured_provider_chain')
+        except Exception as exc:
+            print(f'CONVERSATION READ-ONLY PROBE FAILED: {type(exc).__name__}',flush=True)
+            _record_ai_readiness('unavailable','configured_provider_chain')
+        return
     if not GROQ_API_KEY:
         _record_ai_readiness("not_configured", "groq")
         return
@@ -8609,9 +8640,9 @@ def _handle_ai_service_route(sender_phone, guest_info, result, user_text, is_inh
             sender_phone,
             bilingual_text(
                 sender_phone,
-                f"I've noted your {service} request, but couldn't send the staff alert. Please contact the front desk directly.",
-                f"Ji {guest_info.get('name','Guest')} ji, {service} request note kar li hai, par staff ko WhatsApp alert nahi bhej paaya. Front desk se seedhe baat kar lijiye.",
-                f"{service} अनुरोध नोट कर लिया है, लेकिन स्टाफ को WhatsApp अलर्ट नहीं भेज पाया। कृपया फ्रंट डेस्क से सीधे बात करें।",
+                f"I couldn't save your {service} request, so no staff alert was sent. Please contact the front desk directly.",
+                f"{guest_info.get('name','Guest')} ji, {service} request save nahi ho paayi, isliye staff ko alert nahi bheja. Front desk se seedhe baat kar lijiye.",
+                f"{service} अनुरोध सेव नहीं हो पाया, इसलिए स्टाफ को अलर्ट नहीं भेजा गया। कृपया फ्रंट डेस्क से सीधे बात करें।",
             )
         )
     return True
@@ -8847,7 +8878,8 @@ def _process_and_reply(message, sender_phone, msg_type, _executor=False, _unders
             capture = getattr(turn_capture, 'current', None)
             if capture is not None:
                 capture['user'] = text
-            return ai_receptionist.handle(sys.modules[__name__], sender_phone, text,
+            guest_handler = conversation_engine.handle if conversation_engine.enabled(sys.modules[__name__]) else ai_receptionist.handle
+            return guest_handler(sys.modules[__name__], sender_phone, text,
                 None if CUSTOMER_DEMO_MODE else get_guest_stay_status(sender_phone), message=message)
         with state_lock:
             session = checkin_sessions.get(sender_phone)
@@ -8890,7 +8922,8 @@ def _process_and_reply(message, sender_phone, msg_type, _executor=False, _unders
         if not CUSTOMER_DEMO_MODE and (guest is None or time.time() - shared_store.get('last_synced', 0) > SHEET_SYNC_MIN_INTERVAL):
             fetch_sheet_data_sync()
             guest = get_guest_stay_status(sender_phone)
-        return ai_receptionist.handle(sys.modules[__name__], sender_phone, user_text, guest, message=message)
+        guest_handler = conversation_engine.handle if conversation_engine.enabled(sys.modules[__name__]) else ai_receptionist.handle
+        return guest_handler(sys.modules[__name__], sender_phone, user_text, guest, message=message)
 
     # Legacy backend adapter uses canonical arguments only in AI receptionist mode.
     remember_guest_language(sender_phone, user_text)
@@ -11622,6 +11655,7 @@ def health():
     return jsonify({
         "status": "active",
         "version": APP_VERSION,
+        "conversation_engine": "tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action",
         "hotel": get_hotel_name(),
         "memory_rss_mb": current_memory_mb(),
         "sheet_synced": bool(synced),

@@ -527,7 +527,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         language = bot.get_guest_response_language(phone)
     # AI interpretation precedes all actions. As a fail-closed safety check,
     # a room-category list must not stand in for unverified bed/capacity facts.
-    if action == 'ROOM_OPTIONS' and re.search(
+    if action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
         r'\b(?:adults?|children|child|kids?|bacch[ae]|bachch[ae]|'
         r'(?:double|single|twin|alag|separate|extra)\s+beds?|'
         r'beds?\s+(?:arrangement|milenge|hoga|hain))\b',

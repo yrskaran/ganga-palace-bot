@@ -927,6 +927,59 @@ class IntegrationFlows(unittest.TestCase):
             self.assertFalse(app.fetch_sheet_data_sync(force=True))
             gateway.assert_not_called()
 
+    def test_checkout_timestamp_overrides_stale_checked_in_status(self):
+        headers=['ROOM (A)','TYPE','PRICE (C)','GUEST NAME (D)','PHONE (E)',
+                 'STATUS (F)','CHECK IN TIME','CHECK OUT TIME']
+        now=NOW.replace(hour=17)
+        rows=[['101','Suite','1800','Old Guest',GUEST,'CHECKED_IN',
+               '27-Sep-2026 01:27 AM','27-Sep-2026 10:06 PM']]
+        self.assertEqual(app._eligible_lifecycle_stay_keys(rows,headers,now),set())
+
+    def test_newer_checkout_on_same_phone_suppresses_old_room_reminders(self):
+        headers=['ROOM (A)','TYPE','PRICE (C)','GUEST NAME (D)','PHONE (E)',
+                 'STATUS (F)','CHECK IN TIME','CHECK OUT TIME']
+        now=NOW.replace(hour=17)
+        rows=[
+            ['101','Suite','1800','Old Guest',GUEST,'CHECKED_IN',
+             '27-Sep-2026 01:27 AM',''],
+            ['240','Suite','2800','Current Guest',GUEST,'CHECKED_OUT',
+             '27-Sep-2026 10:26 PM','03-Oct-2026 04:07 PM'],
+        ]
+        self.assertEqual(app._eligible_lifecycle_stay_keys(rows,headers,now),set())
+        # A genuinely newer hotel check-in may resume reminders.
+        rows.append(['305','Deluxe','2000','Rechecked Guest',GUEST,'CHECKED_IN',
+                     '03-Oct-2026 04:30 PM',''])
+        self.assertEqual(app._eligible_lifecycle_stay_keys(rows,headers,now),{(GUEST,'305')})
+
+    def test_worker_blocks_aarti_for_stale_active_room_after_other_checkout(self):
+        current=NOW.replace(hour=17,minute=0)
+        app.shared_store['room_headers']=[
+            'ROOM (A)','TYPE','PRICE (C)','GUEST NAME (D)','PHONE (E)',
+            'STATUS (F)','CHECK IN TIME','CHECK OUT TIME','CHECKOUT MSG SENT']
+        app.shared_store['rooms']=[
+            ['101','Suite','1800','Old Guest',GUEST,'CHECKED_IN',
+             '27-Sep-2026 01:27 AM','27-Sep-2026 10:06 PM',''],
+            ['240','Suite','2800','Current Guest',GUEST,'CHECKED_OUT',
+             '27-Sep-2026 10:26 PM','03-Oct-2026 04:07 PM','SENT'],
+        ]
+        app.shared_store['lifecycle_headers']=[
+            'Room','Guest Name','Phone','Status','WELCOME SENT','30 MIN SENT',
+            'BREAKFAST SENT','LUNCH SENT','AARTI SENT','DINNER SENT',
+            'CHECKOUT SENT','STAY KEY']
+        app.shared_store['lifecycle_rows']=[
+            ['101','Old Guest',GUEST,'CHECKED_IN','YES','YES','','','','','','old-stay']]
+        dispatch=Mock(return_value=True)
+        with patch.object(app,'now_ist',return_value=current), \
+             patch.object(app,'reconcile_lifecycle_from_room_sheet',return_value=False), \
+             patch.object(app,'process_complaint_followups'), \
+             patch.object(app,'process_full_bill_paid_notifications'), \
+             patch.object(app,'maybe_send_owner_report'), \
+             patch.object(app,'send_lifecycle_notification',dispatch), \
+             patch.object(app.time,'sleep',side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                app.monitor_guest_status_lifecycle()
+        dispatch.assert_not_called()
+
     def test_worker_checked_out_guest_no_reminders(self):
         self.assertEqual(self.monitor_once(NOW,status='OUT'),[])
 

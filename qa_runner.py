@@ -17,6 +17,11 @@ from guest_checks import errors_for
 
 
 def batch_rows(obj, ids):
+    # A single case can use the ordinary production object. The sole request
+    # supplies controller metadata; never relabel a different explicit case ID.
+    if (len(ids)==1 and isinstance(obj,dict) and 'results' not in obj
+            and obj.get('id',ids[0])==ids[0] and ('action' in obj or 'reply' in obj)):
+        return {ids[0]:dict(obj,id=ids[0])}
     rows = obj.get('results') if isinstance(obj, dict) else None
     if not isinstance(rows, list) or len(rows) != len(ids):
         return None
@@ -229,10 +234,11 @@ def run(bot, run_id, resume=True):
     if resume and seed_path.exists():
         for line in seed_path.read_text().splitlines():
             row=json.loads(line)
-            seeds[row['id']]=row
+            if row.get('reply'):
+                seeds[row['id']]=row
     for turn_index in range(10):
-        for offset in range(0,len(chats),4):
-            group=chats[offset:offset+4]
+        for offset in range(0,len(chats)):
+            group=chats[offset:offset+1]
             remaining=[]
             for chat in group:
                 key=f"{chat.chat['id']}-{turn_index+1:02}"
@@ -255,6 +261,7 @@ def run(bot, run_id, resume=True):
             prompt=policy+'\nShared verified hotel facts: '+json.dumps(facts,ensure_ascii=False)+'\nApply identical instructions independently to EACH case below. The placeholder Guest:null in the shared policy is replaced by each case guest. Return {"results":[{"id":"case ID", ...all interpretation fields...}]}. No case may borrow another case context.\nCases: '+json.dumps(cases,ensure_ascii=False)
             plans,model=transport.call(prompt,ids,'interpret')
             outputs={}
+            reply_models={}
             sources={}
             compose_cases=[]
             for chat,case in zip(group,cases):
@@ -270,9 +277,11 @@ def run(bot, run_id, resume=True):
                         compose_cases.append({'id':case['id'],'message':case['message'],'language':plan.get('language'),'understanding':plan.get('understood_as'),'verified_result':source})
                     else:
                         outputs[case['id']]={'reply':plan.get('reply','')}
+                        reply_models[case['id']]=model
             if compose_cases:
                 replies,compose_model=transport.call('Write final guest-facing WhatsApp replies, 1-3 natural sentences in EACH case language. Only use verified_result. Preserve exact data lines, item names, quantities and prices. Never claim failed staff delivery succeeded or pending completion/stock confirmed. No analysis, internal/backend terminology, greetings or invented facts. Return {"results":[{"id":"case ID","reply":"guest reply"}]}. Cases are independent.\n'+json.dumps(compose_cases,ensure_ascii=False),[c['id'] for c in compose_cases],'compose')
                 outputs.update(replies or {})
+                reply_models.update({key:compose_model for key in (replies or {})})
             for chat,case in zip(group,cases):
                 turn=chat.chat['turns'][turn_index]
                 plan=(plans or {}).get(case['id'])
@@ -305,7 +314,7 @@ def run(bot, run_id, resume=True):
                 source=sources.get(case['id'],'')
                 if source and reply and not ai.faithful_numbers_and_links(source,reply):
                     errors.append('Backend numeric/item/URL facts changed or missing')
-                result={'source':source,'id':case['id'],'run_id':run_id,'segment':chat.chat['segment'],'question':case['message'],'reply':reply,'passed':not errors,'errors':errors,'plan':plan,'model':model,'code_revision':os.getenv('RENDER_GIT_COMMIT','unknown'),'prior_history':copy.deepcopy(chat.history[-8:]),'pending_before':case['verified_session_state'],'execution':'isolated synthetic records; no WhatsApp/Sheets writes','mode':'batched production interpretation policy; independent review stage not executed'}
+                result={'source':source,'id':case['id'],'run_id':run_id,'segment':chat.chat['segment'],'question':case['message'],'reply':reply,'passed':not errors,'errors':errors,'plan':plan,'model':model,'reply_model':reply_models.get(case['id']),'code_revision':os.getenv('RENDER_GIT_COMMIT','unknown'),'prior_history':copy.deepcopy(chat.history[-8:]),'pending_before':case['verified_session_state'],'execution':'isolated synthetic records; no WhatsApp/Sheets writes','mode':'single-case production interpretation policy; independent review stage not executed'}
                 rows.append(result)
                 print('HOTEL QA ROW: '+json.dumps(result,ensure_ascii=False),flush=True)
                 chat.remember(case['message'],reply or '[No model reply: provider failure]')

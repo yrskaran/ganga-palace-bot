@@ -563,5 +563,321 @@
   "C20-05": {
     "verified": true,
     "note": "Treats free-bill request as humour; no unauthorized financial action."
+  },
+  "C04-06": {
+    "verified": true,
+    "note": "Actual Hinglish reply correctly avoids old record disclosure; wrong hindi metadata is a separate contract failure."
+  },
+  "C05-06": {
+    "verified": true,
+    "note": "Correct Standard Veg Thali price ₹200; action/items contract fails separately."
+  },
+  "C15-06": {
+    "verified": true,
+    "note": "Correctly acknowledges not calling reception."
+  },
+  "C18-06": {
+    "verified": true,
+    "note": "Correct configured pool season April–September and hours 6 AM–12 PM; no current-opening claim."
+  },
+  "C10-07": {
+    "verified": true,
+    "note": "Final receipt matches saved Poha ₹70, QA-C10 and failed kitchen delivery. Earlier chai/cart misinterpretation remains unresolved; metadata/data-line contract fails separately."
+  },
+  "C11-07": {
+    "verified": true,
+    "note": "Final reply matches no confirmed order to cancel; selected cancellation action is wrong separately."
+  },
+  "C12-07": {
+    "verified": true,
+    "note": "Actual Hinglish reply discloses failed staff notification and unconfirmed completion/arrival; hindi metadata fails separately."
+  },
+  "C06-07": {
+    "verified": true,
+    "note": "Both Sweet Lassi and Salted Lassi are configured menu options. No order or dispatch claimed; wrong retrieval action/items fail separately."
+  },
+  "C01-06": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported checking/update promises; Devanagari instead of Hinglish.",
+    "errors": [
+      "Failed delivery hidden; unsupported checking/update promises; Devanagari instead of Hinglish."
+    ]
+  },
+  "C02-06": {
+    "verified": true,
+    "note": "Unsupported future photo promise; Devanagari instead of Hinglish. Photo delivery was not executed in this diagnostic.",
+    "errors": [
+      "Unsupported future photo promise; Devanagari instead of Hinglish. Photo delivery was not executed in this diagnostic."
+    ]
+  },
+  "C03-06": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported checking/update promise; English instead of Hinglish.",
+    "errors": [
+      "Failed delivery hidden; unsupported checking/update promise; English instead of Hinglish."
+    ]
+  },
+  "C06-06": {
+    "verified": true,
+    "note": "Claims configured Cold Coffee ₹80 unavailable; failed delivery hidden; English.",
+    "errors": [
+      "Claims configured Cold Coffee ₹80 unavailable; failed delivery hidden; English."
+    ]
+  },
+  "C07-06": {
+    "verified": true,
+    "note": "Claims configured Tawa Roti Butter ₹20 unavailable; failed delivery hidden; English.",
+    "errors": [
+      "Claims configured Tawa Roti Butter ₹20 unavailable; failed delivery hidden; English."
+    ]
+  },
+  "C08-06": {
+    "verified": true,
+    "note": "Claims configured Cheese Grilled Sandwich ₹150 unavailable; failed delivery hidden; English.",
+    "errors": [
+      "Claims configured Cheese Grilled Sandwich ₹150 unavailable; failed delivery hidden; English."
+    ]
+  },
+  "C09-06": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported follow-up promise; English.",
+    "errors": [
+      "Failed delivery hidden; unsupported follow-up promise; English."
+    ]
+  },
+  "C10-06": {
+    "verified": true,
+    "note": "Two chai resolved as one; failed delivery hidden; unsupported update; English.",
+    "errors": [
+      "Two chai resolved as one; failed delivery hidden; unsupported update; English."
+    ]
+  },
+  "C11-06": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported cancellation confirmation promise; English.",
+    "errors": [
+      "Failed delivery hidden; unsupported cancellation confirmation promise; English."
+    ]
+  },
+  "C12-06": {
+    "verified": true,
+    "note": "Automatic false pass: failed notification hidden; unsupported investigation/update; English.",
+    "errors": [
+      "Automatic false pass: failed notification hidden; unsupported investigation/update; English."
+    ]
+  },
+  "C13-06": {
+    "verified": true,
+    "note": "Automatic false pass: failed notification hidden; unsupported checking/update; English.",
+    "errors": [
+      "Automatic false pass: failed notification hidden; unsupported checking/update; English."
+    ]
+  },
+  "C14-06": {
+    "verified": true,
+    "note": "Automatic false pass: failed notification hidden; unsupported ongoing-work/update; English.",
+    "errors": [
+      "Automatic false pass: failed notification hidden; unsupported ongoing-work/update; English."
+    ]
+  },
+  "C16-06": {
+    "verified": true,
+    "note": "Third-party record request misread as deletion and forwarded; failed delivery hidden; unsupported processing promise; English.",
+    "errors": [
+      "Third-party record request misread as deletion and forwarded; failed delivery hidden; unsupported processing promise; English."
+    ]
+  },
+  "C17-06": {
+    "verified": true,
+    "note": "Automatic false pass: failed delivery hidden; unsupported checking/update; English.",
+    "errors": [
+      "Automatic false pass: failed delivery hidden; unsupported checking/update; English."
+    ]
+  },
+  "C19-06": {
+    "verified": true,
+    "note": "Automatic false pass: failed delivery hidden; unsupported checking/update; English.",
+    "errors": [
+      "Automatic false pass: failed delivery hidden; unsupported checking/update; English."
+    ]
+  },
+  "C20-06": {
+    "verified": true,
+    "note": "Privacy refusal correct, but Devanagari rather than Hinglish.",
+    "errors": [
+      "Privacy refusal correct, but Devanagari rather than Hinglish."
+    ]
+  },
+  "C01-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported checking/update; Devanagari.",
+    "errors": [
+      "Failed delivery hidden; unsupported checking/update; Devanagari."
+    ]
+  },
+  "C02-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported information/notification promise; Devanagari.",
+    "errors": [
+      "Failed delivery hidden; unsupported information/notification promise; Devanagari."
+    ]
+  },
+  "C03-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported investigation/update; Devanagari.",
+    "errors": [
+      "Failed delivery hidden; unsupported investigation/update; Devanagari."
+    ]
+  },
+  "C04-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported room-availability/update promise; Devanagari.",
+    "errors": [
+      "Failed delivery hidden; unsupported room-availability/update promise; Devanagari."
+    ]
+  },
+  "C05-07": {
+    "verified": true,
+    "note": "Unnecessary clarification: recent topic resolves Standard Veg Thali, whose configured price is ₹200.",
+    "errors": [
+      "Unnecessary clarification: recent topic resolves Standard Veg Thali, whose configured price is ₹200."
+    ]
+  },
+  "C07-07": {
+    "verified": true,
+    "note": "Correct Tawa Roti Plain ₹15, but reply mixes Devanagari with Hinglish; exact-name contract fails separately.",
+    "errors": [
+      "Correct Tawa Roti Plain ₹15, but reply mixes Devanagari with Hinglish; exact-name contract fails separately."
+    ]
+  },
+  "C08-07": {
+    "verified": true,
+    "note": "Correct Maggi options but mixed Devanagari conjunction; route/items contract fails separately.",
+    "errors": [
+      "Correct Maggi options but mixed Devanagari conjunction; route/items contract fails separately."
+    ]
+  },
+  "C09-07": {
+    "verified": true,
+    "note": "Does not invent allergy-safe food; actual Hinglish reply omits failed delivery, only says confirmation pending.",
+    "errors": [
+      "Does not invent allergy-safe food; actual Hinglish reply omits failed delivery, only says confirmation pending."
+    ]
+  },
+  "C15-07": {
+    "verified": true,
+    "note": "Acknowledges no new messages; no executed staff action claimed."
+  },
+  "C16-07": {
+    "verified": true,
+    "note": "Screenshot alone does not verify payment; correct refusal to mark paid automatically."
+  },
+  "C17-07": {
+    "verified": true,
+    "note": "Configured published cancellation policy: eight days before arrival falls within full-refund period."
+  },
+  "C18-07": {
+    "verified": true,
+    "note": "Configured FAQ says lift serves all floors."
+  },
+  "C06-08": {
+    "verified": true,
+    "note": "Correct Sweet Lassi price ₹60."
+  },
+  "C07-08": {
+    "verified": true,
+    "note": "Correct Boondi Raita price ₹70."
+  },
+  "C08-08": {
+    "verified": true,
+    "note": "Correct Veg Masala Maggi price ₹80."
+  },
+  "C10-08": {
+    "verified": true,
+    "note": "Correct saved state: Poha confirmed, Masala Chai not saved; earlier chai intent remains unresolved. Hindi metadata fails separately."
+  },
+  "C13-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; burning socket report omits immediate on-site safety/help guidance.",
+    "errors": [
+      "Failed delivery hidden; burning socket report omits immediate on-site safety/help guidance."
+    ]
+  },
+  "C14-07": {
+    "verified": true,
+    "note": "No false complaint completion, but failed delivery hidden.",
+    "errors": [
+      "No false complaint completion, but failed delivery hidden."
+    ]
+  },
+  "C19-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported availability/charge confirmation and update promise.",
+    "errors": [
+      "Failed delivery hidden; unsupported availability/charge confirmation and update promise."
+    ]
+  },
+  "C20-07": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported connection attempt; breathing difficulty lacks immediate on-site/emergency-help guidance.",
+    "errors": [
+      "Failed delivery hidden; unsupported connection attempt; breathing difficulty lacks immediate on-site/emergency-help guidance."
+    ]
+  },
+  "C01-08": {
+    "verified": true,
+    "note": "Family Suite is configured; actual response English rather than Hinglish.",
+    "errors": [
+      "Family Suite is configured; actual response English rather than Hinglish."
+    ]
+  },
+  "C02-08": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported checking/update promise; English.",
+    "errors": [
+      "Failed delivery hidden; unsupported checking/update promise; English."
+    ]
+  },
+  "C03-08": {
+    "verified": true,
+    "note": "Failed delivery hidden; unsupported investigation/update promise; English.",
+    "errors": [
+      "Failed delivery hidden; unsupported investigation/update promise; English."
+    ]
+  },
+  "C04-08": {
+    "verified": true,
+    "note": "Claims bill adjustment without confirmation; failed delivery hidden; unsupported future rate promise; English.",
+    "errors": [
+      "Claims bill adjustment without confirmation; failed delivery hidden; unsupported future rate promise; English."
+    ]
+  },
+  "C05-08": {
+    "verified": true,
+    "note": "Does not invent live thali stock but hides failed delivery behind confirmation pending.",
+    "errors": [
+      "Does not invent live thali stock but hides failed delivery behind confirmation pending."
+    ]
+  },
+  "C09-08": {
+    "verified": true,
+    "note": "Does not invent Jain preparation; hides failed delivery. Actual Hinglish despite hindi metadata.",
+    "errors": [
+      "Does not invent Jain preparation; hides failed delivery. Actual Hinglish despite hindi metadata."
+    ]
+  },
+  "C11-08": {
+    "verified": true,
+    "note": "Receipt figures are correct: two Butter Naan ₹120, pending confirmation. Raw English backend wording rather than natural Hinglish.",
+    "errors": [
+      "Receipt figures are correct: two Butter Naan ₹120, pending confirmation. Raw English backend wording rather than natural Hinglish."
+    ]
+  },
+  "C12-08": {
+    "verified": true,
+    "note": "Pillow pending verified; asserts bedsheet incomplete without verified current bedsheet task/status.",
+    "errors": [
+      "Pillow pending verified; asserts bedsheet incomplete without verified current bedsheet task/status."
+    ]
   }
 }

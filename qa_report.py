@@ -12,7 +12,7 @@ def write_report(jsonl, target, reviews=None):
     reviews=reviews or {}
     lines=['HOTEL RECEPTIONIST — 200 CUSTOMER QUESTIONS / ACTUAL AI ANSWERS',
            'Scope: 20 linked conversations, 10 turns each. Independent synthetic guest records.',
-           'Method: batched real-model AI using shared production interpretation instructions.',
+           'Method: batched and single-case real-model AI using shared production interpretation instructions.',
            'No actual WhatsApp, staff messages, orders, payments or Google Sheet edits executed.',
            'Production independent AI review stage and real operational end-to-end delivery are not exercised by this batch.',
            'A model answer is never invented where the provider did not return one.',
@@ -38,7 +38,9 @@ def write_report(jsonl, target, reviews=None):
             lines.extend(['',key+' | '+state,'Customer: '+turn['text'],
                           'Actual bot answer: '+((row.get('reply') if row else '') or '[No actual AI answer]')])
             if row:
-                lines.extend(['Model: '+str(row.get('model')),'Actual action: '+str((row.get('plan') or {}).get('action')),
+                lines.extend(['Interpretation model: '+str(row.get('model')),
+                              'Reply model: '+str(row.get('reply_model','not separately logged; may differ')),
+                              'Actual action: '+str((row.get('plan') or {}).get('action')),
                               'Code revision: '+str(row.get('code_revision','initial diagnostic run')),
                               'Automatic checks: '+('FAIL — '+'; '.join(row['errors']) if row.get('errors') else 'PASS — routing/data checks only')])
                 if row.get('source'):
@@ -90,6 +92,9 @@ def append_probe_report(target, paths):
         out.write('3. Every review branch now explicitly requests current language; Roman Hindi means Hinglish. This repairs the missing language field in the menu-review prompt. Actual model language quality still needs further rechecks.\n')
         out.write('4. Composer/critic require disclosure of failed staff delivery and reject unsupported update/arrival promises. Guard failure retains the verified result.\n')
         out.write('5. Check-in policy prompting preserves possible requirements instead of inventing mandatory rules. Actual-model results were inconsistent, so this is NOT claimed resolved.\n')
-        out.write('Validation: 249 automated repository tests passed; independent code review found no blocker in targeted reception/language repair. These are not 249 customer-model tests.\n')
-        out.write('Live acceptance: latest post-fix AI rechecks were blocked/incomplete by provider cooldown/quota. Earlier quantity recheck preserved 2 Masala Chai and ₹60 but replied in English. No claim that all failures are fixed.\n')
+        out.write('6. Factual review now covers Wi-Fi, timings, room information/rates, availability and local guide. Billing scopes are restricted to full/food/room; room tariff and current room bill remain distinct.\n')
+        out.write('7. Known menu prices must be retrieved through the backend before claiming unknown price or forwarding to staff. Room-option price flags are retained after review.\n')
+        out.write('8. Composer and independent result critic receive the original guest question for urgent context, require immediate in-person/emergency help guidance for urgent danger, and must disclose failed staff notification. No invented treatment, contact number or arranged help.\n')
+        out.write('Validation: 258 automated repository tests passed; independent code review found no blocker in the prepared changes. These are not 258 customer-model tests.\n')
+        out.write('Live acceptance: new factual/billing/urgent-context changes still need actual production-path model rechecks. Previous attempts hit provider limits and invalid multi-case output formats. Earlier quantity recheck preserved 2 Masala Chai and ₹60 but replied in English. No claim that all failures are fixed.\n')
         out.write('Other unresolved findings: conversation routing/scope, saved cart revisions, preparation assumptions, factual response grounding and language/script consistency. Originals above are preserved, not replaced with hoped-for answers.\n')

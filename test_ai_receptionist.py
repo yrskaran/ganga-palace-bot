@@ -74,6 +74,59 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertTrue(schemas)
         self.assertTrue(all('language' in schema for schema in schemas))
 
+    def test_wifi_factual_reply_is_reviewed_and_corrected_without_tv_password_claim(self):
+        import json
+        provider=Mock(return_value=json.dumps({'menu_related':False,'blocked':False,'language':'hinglish',
+             'action':'ANSWER','operation_text':'','reply':'Wi-Fi password verified nahi hai; reception se confirm karna hoga.'}))
+        original=self.understanding(action='WIFI',reply='Password TV screen par hai.')
+        with patch.object(app,'_ai_knowledge_snapshot',return_value='Complimentary Wi-Fi; no password is configured.'):
+            result=gateway.review_plan(app,'Wifi password batao',original,[],provider=provider,pending={})
+        provider.assert_called_once()
+        self.assertEqual(result['action'],'ANSWER')
+        self.assertNotIn('TV',result['reply'])
+        self.assertIn('no password is configured',provider.call_args.args[0])
+
+    def test_room_tariff_misclassification_can_be_repaired_to_own_room_bill_scope(self):
+        import json
+        review={'menu_related':False,'blocked':False,'language':'hinglish','action':'BILL',
+                'operation_text':'room','reply':''}
+        result=gateway.review_plan(app,'Room ka rent alag batao',self.understanding(action='ROOM_RATE'),
+             [{'role':'user','content':'Mera bill dikhao'}],guest={'room':'240','is_inhouse':True},
+             provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'BILL')
+        self.assertEqual(result['operation_text'],'room')
+        self.assertEqual(result['reply'],'')
+
+    def test_review_cannot_create_unknown_bill_scope_or_invent_an_action(self):
+        import json
+        for review in ({'action':'BILL','operation_text':'other_guest'}, {'action':'MARK_PAID','operation_text':'full'}):
+            with self.subTest(review=review):
+                review=dict(review,menu_related=False,blocked=False,language='hinglish',reply='')
+                self.assertIsNone(gateway.review_plan(app,'Mera bill',self.understanding(action='BILL'),[],
+                      provider=Mock(return_value=json.dumps(review)),pending={}))
+
+    def test_factual_room_options_review_keeps_requested_price_flag(self):
+        import json
+        review={'menu_related':False,'blocked':False,'language':'hinglish','action':'ROOM_OPTIONS',
+                'operation_text':'','show_prices':True,'reply':'Room categories ke starting rates dikhati hoon.'}
+        result=gateway.review_plan(app,'Room options aur unke rates dikhao',
+                self.understanding(action='ROOM_OPTIONS',show_prices=True),[],
+                provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertTrue(result['show_prices'])
+
+    def test_result_verifier_receives_original_urgent_guest_question_as_context(self):
+        import json
+        question='Mujhe saans lene mein dikkat hai doctor bulao'
+        reply='Reception tak message nahi pahunch paaya. Abhi onsite/emergency help lein; chat par intezar na karein.'
+        app.ask_ai_chat.side_effect=[json.dumps({'reply':reply}),json.dumps({'supported':True})]
+        token=gateway.current.set({'phone':app.format_whatsapp_number(self.phone),'text':question,
+                  'language':'hinglish','meaning':'Urgent medical help requested','guest':None,'direct':False})
+        try:
+            self.assertEqual(gateway.compose(app,self.phone,'Doctor help requested. Reception notification failed. No doctor arrival verified.'),reply)
+        finally:
+            gateway.current.reset(token)
+        self.assertIn(question,app.ask_ai_chat.call_args.args[0])
+
     def test_observed_operational_reception_review_routes_task_without_claiming_stock(self):
         import json
         review={'operational':True,'action':'RECEPTION','items':[],'category':'NONE',

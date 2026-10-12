@@ -5,6 +5,36 @@ import qa_conversations as cases
 import qa_runner as qa
 
 class ConversationQATests(unittest.TestCase):
+    def test_single_case_accepts_direct_model_envelope_without_cross_case_relabeling(self):
+        row={'action':'ANSWER','reply':'Actual model output'}
+        self.assertEqual(qa.batch_rows(row,['a'])['a']['reply'],row['reply'])
+        self.assertIsNone(qa.batch_rows(dict(row,id='other'),['a']))
+        self.assertIsNone(qa.batch_rows(row,['a','b']))
+
+    def test_resume_retries_seed_with_no_actual_model_reply(self):
+        import json
+        calls=[]
+        def call(prompt,ids,stage):
+            calls.extend(ids)
+            return {i:{'id':i,'action':'ANSWER','reply':'Actual reply','language':'hinglish','operation_text':'','confidence':.9} for i in ids},'mock'
+        fake=SimpleNamespace(call=call,usage=0)
+        bot=SimpleNamespace(CUSTOMER_CONFIG={'menu':[]},_ai_content_is_usable=lambda *a:True)
+        seed=json.dumps({'id':'C01-01','question':'Kal 2 logo ke liye kamra milega?','reply':'','plan':None,'passed':False})
+        with patch.object(qa,'Transport',return_value=fake),patch.object(qa.ai,'interpretation_prompt',return_value='policy'),patch.object(qa.Path,'exists',return_value=True),patch.object(qa.Path,'read_text',return_value=seed),patch('builtins.print'):
+            qa.run(bot,'retry-failed-seed')
+        self.assertIn('C01-01',calls)
+
+    def test_answer_provenance_distinguishes_interpreter_and_composer(self):
+        def call(prompt,ids,stage):
+            if stage=='compose':
+                return {i:{'id':i,'reply':'Poha ₹70'} for i in ids},'composer-model'
+            return {i:{'id':i,'action':'MENU_ITEM_INFO','items':[{'name':'Poha','qty':1}],
+                       'show_prices':True,'reply':'ack','language':'hinglish','operation_text':'','confidence':.9} for i in ids},'interpreter-model'
+        bot=SimpleNamespace(CUSTOMER_CONFIG={'menu':[{'name':'Poha','price':70}]},_ai_content_is_usable=lambda *a:True)
+        with patch.object(qa,'Transport',return_value=SimpleNamespace(call=call,usage=0)),patch.object(qa.ai,'interpretation_prompt',return_value='policy'),patch('builtins.print'):
+            rows=qa.run(bot,'provenance-test',resume=False)
+        self.assertTrue(all(r['model']=='interpreter-model' and r['reply_model']=='composer-model' for r in rows))
+
     def test_qa_can_resume_after_daily_limits_using_previous_configured_model(self):
         import threading,json
         from unittest.mock import Mock

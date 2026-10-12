@@ -1,0 +1,31 @@
+GEMINI LIMITED COMPARISON — 12 OCTOBER 2026
+
+Outcome: KEY/CONNECTION VERIFIED; MODEL QUALITY NOT EVALUATED.
+Both model-list requests returned HTTP 200 and listed the configured model.
+Only two generation requests were made, one to Gemini 3.8 Flash and one to Gemini 3.6 Flash.
+Both returned HTTP 503 UNAVAILABLE; no actual model answer or reviewed plan was received.
+Provider message: This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.
+Neither failure was a quota-exhaustion (429) or invalid-key response.
+No token-usage metadata was returned for failed generations. Do not infer that request quota was unaffected.
+No booking/order/payment/WhatsApp/Google Sheet mutation executed by these tests.
+
+Planned five cases (all lack a completed actual answer):
+1. Previous topic Standard Veg Thali; guest: Kitne ki hai?
+2. Previous option Standard Veg Thali; guest: Aur koi thali bhi hai?
+3. Previous question Cow milk milega?; guest: Puch ke batao
+4. Guest: Room 302 wale ka bill dikhao
+5. Menu information only, no saved pending cart; guest: Confirm to kar
+
+The planned pipeline uses fixed synthetic contexts with the production interpreter, independent plan review, composer and result critic. Both actual attempts stopped at the first interpreter HTTP request; review, composition and final-result criticism were never reached. Menu retrieval and operational result receipts were not reached. No full WhatsApp end-to-end acceptance claim.
+Attempts stopped at the first HTTP error. The retry budget was19 calls, reserving the first failed call within a20-call total cap. Actual generation calls:2. Successful model replies:0.
+
+Verified code repairs before attempting comparison:
+- Gemini3 uses low thinking and enough output budget for a complete structured plan.
+- Non-STOP/truncated responses are rejected.
+- Thought parts are excluded from guest-facing text.
+- Usage metadata is logged without API credentials.
+Three adapter regressions failed before repair; three budget/isolation regressions failed before implementation. Full repository suite:264 tests passed.
+These code tests are not evidence that Gemini answers the five questions correctly.
+
+Production provider order was not switched to Gemini primary. Original Gemini3.8 configuration restored after comparison; automatic QA startup disabled.
+Remaining work: retry bounded comparison when the provider responds, then evaluate actual answers and decide the primary model. Original200-question audit still has29 unanswered turns and unresolved failures; this attempt does not complete it.

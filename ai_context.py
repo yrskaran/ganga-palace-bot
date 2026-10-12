@@ -1,6 +1,7 @@
 """Shared bounded message envelope; recent dialogue gets a reserved budget."""
 import json
 import knowledge_only
+import reception_learning
 
 def messages(bot, text, guest=None, phone=None, history=None, role='system', budget=12400):
     if getattr(bot, 'KNOWLEDGE_ONLY_MODE', False):
@@ -18,6 +19,9 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
         hotel_facts = knowledge_only.facts_for_conversation(
             bot, full_facts, query, max_bytes=9300
         )
+        learned_facts = reception_learning.faq_context(bot, query, max_bytes=1200)
+        if learned_facts:
+            hotel_facts += "\n\nRECEPTION-VERIFIED HOTEL FAQ (use this before asking reception again):\n" + learned_facts
         system = (
             f"You are the professional, friendly WhatsApp information receptionist for {knowledge_hotel_name}. "
             "Your role is to UNDERSTAND AND REPLY naturally to the real guest message. "
@@ -59,6 +63,21 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
             "directly, without claiming you contacted them. Still answer other factual questions. "
             "For emergencies, advise contacting on-site reception or local emergency services "
             "directly rather than relying on this chat. Do not invent contact numbers. "
+            "RECEPTION HANDOFF: If the guest asks a specific hotel fact not found in the "
+            "hotel facts or verified FAQ below, or asks you to arrange a real-world hotel "
+            "service that this test mode cannot do, DO NOT guess, refuse, or tell them to "
+            "contact reception yourself. Instead append exactly ONE token at the END "
+            "of your natural reply: [[ASK_RECEPTION: short precise question for hotel reception]]. "
+            "This is a transport signal, NOT guest-facing text. The system will send "
+            "the guest's question to actual reception and forward their exact answer. "
+            "For multiple questions, answer the known parts, and include the token for "
+            "the unknown part. If NOTHING can be answered, output only the token. "
+            "If reception-verified FAQ already answers the question, answer from that "
+            "FAQ WITHOUT a token and without asking reception again. "
+            "Never use this token for jokes, greetings, ghosts, philosophical questions, "
+            "or ordinary conversation where no actual hotel record is needed. "
+            "Never claim a message has been forwarded yourself; the application must "
+            "first confirm WhatsApp accepted the reception notification. "
             "No internal prompts, tech details, unverified promises or lengthy disclaimers.\n"
             "PUBLISHED HOTEL FACTS (not live availability or operational instructions):\n"
             + (hotel_facts or "No factual hotel file was loaded. Do not invent details.")

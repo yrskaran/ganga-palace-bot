@@ -5,6 +5,7 @@ from reliability import Store
 import durable_runtime
 import ai_receptionist
 import conversation_engine
+import knowledge_only
 import re
 import base64
 import io
@@ -125,6 +126,9 @@ except CustomerConfigError as exc:
 CUSTOMER_ENV_DEFAULTS = env_defaults_from_config(CUSTOMER_CONFIG or {})
 SHEET_ID = str(CUSTOMER_CONFIG.get("integrations", {}).get("sheet_id", "")).strip() if CUSTOMER_CONFIG else os.getenv("SHEET_ID", "1E7iI0vSkRlwpiog-GUjN7Gfh35REAhfY_yVG0t63wqY").strip()
 CUSTOMER_DEMO_MODE = bool((CUSTOMER_CONFIG or {}).get("demo_mode", False))
+# Temporary reversible test mode, not a code deletion.
+KNOWLEDGE_ONLY_MODE = os.getenv("KNOWLEDGE_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+KNOWLEDGE_ONLY_STARTED_AT = time.time()
 
 KITCHEN_PHONE = CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "") if CUSTOMER_CONFIG else os.getenv("KITCHEN_PHONE", "919058929796").strip()
 STAFF_PHONE = CUSTOMER_ENV_DEFAULTS.get("STAFF_PHONE", "") if CUSTOMER_CONFIG else os.getenv("STAFF_PHONE", "917668426524").strip()
@@ -146,7 +150,7 @@ RENDER_EXTERNAL_URL = os.getenv(
 GRAPH_API_VERSION = os.getenv("GRAPH_API_VERSION", "v20.0").strip()
 
 STAFF_NOTIFICATION_LANGUAGE = "hindi"
-APP_VERSION = "HOTEL-AI-V78-CONVERSATION-TOOLS"
+APP_VERSION = "HOTEL-AI-V79-KNOWLEDGE-ONLY-OPTION"
 AI_READINESS = {"status": "not_checked", "checked_at": None}
 ROOM_CHECKOUT_MESSAGE_SENT_HEADER = "CHECKOUT MSG SENT"
 ENABLE_PAYMENT_NOTIFICATIONS = True  # Full-bill PAID transition notification is enabled; kitchen row payments stay silent.
@@ -8783,6 +8787,9 @@ def handle_monika_identity(message, sender_phone, msg_type):
 
 def process_and_reply(message, sender_phone, msg_type):
     """Record guest turns; staff/reception operators use mapped task bridges."""
+    if KNOWLEDGE_ONLY_MODE:
+        # Never enter any legacy handler, staff bridge, Sheets lookup or tool planner.
+        return knowledge_only.process(sys.modules[__name__], message, sender_phone, msg_type)
     if handle_room_cleaning_message(message, sender_phone, msg_type):
         return
     if handle_service_staff_message(message, sender_phone, msg_type):
@@ -11732,6 +11739,13 @@ import hotel_admin
 hotel_admin.register(sys.modules[__name__])
 
 
+@app.before_request
+def knowledge_only_admin_guard():
+    # While testing plain AI conversation, block all non-webhook admin routes.
+    if KNOWLEDGE_ONLY_MODE and request.path.rstrip("/") not in {"", "/health", "/webhook"}:
+        return jsonify({"status": "knowledge_only", "message": "Hotel actions are paused for AI testing."}), 503
+
+
 @app.route("/", methods=["GET"])
 def index():
     return f"{get_hotel_name()} WhatsApp Bot is Live | {APP_VERSION}", 200
@@ -11757,7 +11771,8 @@ def health():
     return jsonify({
         "status": "active",
         "version": APP_VERSION,
-        "conversation_engine": "tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action",
+        "mode": "knowledge-only" if KNOWLEDGE_ONLY_MODE else "operations",
+        "conversation_engine": "disabled" if KNOWLEDGE_ONLY_MODE else ("tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action"),
         "hotel": get_hotel_name(),
         "memory_rss_mb": current_memory_mb(),
         "sheet_synced": bool(synced),
@@ -11975,6 +11990,15 @@ def startup():
         flush=True,
     )
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
+    if KNOWLEDGE_ONLY_MODE:
+        # Webhook inbox/outbox for text replies only. Never start sheet sync,
+        # guest lifecycle, payment alerts, service auto-resolve or owner reports.
+        print("KNOWLEDGE ONLY MODE: all hotel operations and scheduled jobs are paused", flush=True)
+        for target, name in ((durable_runtime.inbox_loop, "durable-inbox"),
+                             (durable_runtime.loop, "durable-outbox")):
+            threading.Thread(target=target, args=(sys.modules[__name__],), daemon=True, name=name).start()
+        print(f"========== {APP_VERSION} KNOWLEDGE ONLY READY ==========", flush=True)
+        return
     if os.getenv("AI_STARTUP_CHECK", "0").strip().lower() in {"1", "true", "yes"}:
         threading.Thread(target=check_ai_readiness, daemon=True, name="ai-readiness").start()
     if os.getenv("AI_PRODUCTION_CHECK_RUN", "").strip():

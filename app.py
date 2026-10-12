@@ -5751,6 +5751,29 @@ def _complaint_role(text):
     return "Reception"
 
 
+def _bot_format_error_followup(phone, message):
+    """Recognize confusion specifically about OUR previous JSON-like reply.
+
+    Never use generic negative sentiment as proof of an operational complaint.
+    If the previous bot message was normal prose, let AI handle the guest's
+    dissatisfaction through the usual complaint path.
+    """
+    text = normalize_text(message)
+    if not re.search(
+        r"(?:ye|yah|yeh|y[e]?|this|what).*(?:kya|what|why|bhej|bhj|send|sent|message)"
+        r"|(?:kya|what).*(?:bhej|bhj|sent|send|message)",
+        text, re.I,
+    ):
+        return False
+    history = get_conversation_history(phone)[-8:]
+    for turn in reversed(history):
+        if turn.get("role") != "assistant":
+            continue
+        previous = str(turn.get("content") or "").strip()
+        return bool(re.search(r"(?i)recipient_phone|^json\s*[{[]", previous))
+    return False
+
+
 def _append_complaint(room, guest_name, phone, complaint_text):
     try:
         client = get_gspread_client()
@@ -5785,8 +5808,35 @@ def _append_complaint(room, guest_name, phone, complaint_text):
         }
         for key, value in vals.items():
             if key in hm: row[hm[key]] = value
-        sheet.append_row(row)
-        return {"id": cid, "category": category, "assigned": assigned, "follow_up_due": follow, "row_number": sheet.get_last_row()}
+        # gspread.Worksheet has no get_last_row(). The append itself may
+        # succeed remotely, so NEVER describe it as a registration failure
+        # just because row-number discovery failed afterward.
+        response = None
+        try:
+            response = sheet.append_row(row, value_input_option="RAW")
+        except Exception:
+            # A Sheets timeout can occur after its write was committed.
+            # Query the unique complaint ID before declaring failure.
+            try:
+                saved = sheet.find(cid, in_column=1)
+            except Exception:
+                saved = None
+            if not saved:
+                raise
+
+        row_number = _parse_sheet_row_number(
+            ((response or {}).get("updates") or {}).get("updatedRange")
+        )
+        if row_number < 2:
+            try:
+                saved = sheet.find(cid, in_column=1)
+                row_number = int(saved.row) if saved else 0
+            except Exception:
+                row_number = 0
+        if row_number < 2:
+            print(f"COMPLAINT SAVED WITHOUT ROW LOOKUP: id={cid}", flush=True)
+        return {"id": cid, "category": category, "assigned": assigned,
+                "follow_up_due": follow, "row_number": row_number}
     except Exception as exc:
         print("COMPLAINT CREATE ERROR:", exc, flush=True)
         return None
@@ -9239,6 +9289,21 @@ def _process_and_reply(message, sender_phone, msg_type, _executor=False, _unders
         )
         return
 
+    # A guest asking what a raw JSON/transport message was is questioning the
+    # bot's own formatting error, not reporting a room/staff service incident.
+    # The AI still interprets the text; the backend checks the actual prior
+    # outgoing message before it creates any complaint or staff action.
+    if _bot_format_error_followup(sender_phone, user_text):
+        correction = (
+            "Sorry ji, mera pichhla message galti se technical JSON format mein "
+            "chala gaya tha. Woh hotel ka welcome / Ganga Aarti reminder tha, "
+            "koi nayi room-service request nahi. Aage se normal message bhejungi. 🙏"
+        )
+        send_whatsapp_message(sender_phone, correction)
+        remember_conversation(sender_phone, "user", user_text)
+        remember_conversation(sender_phone, "assistant", correction)
+        return
+
     # ========================================================
     # 2. AI SEMANTIC COMPLAINT DETECTION
     # ========================================================
@@ -9271,8 +9336,13 @@ def _process_and_reply(message, sender_phone, msg_type, _executor=False, _unders
         role = rec.get("category", _complaint_role(user_text))
         if ai_intent.get("category") in {"HOUSEKEEPING", "MAINTENANCE", "KITCHEN", "RECEPTION"}:
             role = ai_intent["category"].title()
-            # Keep the stored operational category aligned with AI classification.
-            _update_complaint(rec.get("row_number", 0), {"Category": role, "Last Updated": now_ist().strftime("%d-%b-%Y %I:%M %p")})
+            # Never write row 0 if Sheets accepted the append but did not
+            # return a row number. The complaint ID still exists in Sheets.
+            if rec.get("row_number", 0) >= 2:
+                _update_complaint(rec["row_number"], {
+                    "Category": role,
+                    "Last Updated": now_ist().strftime("%d-%b-%Y %I:%M %p")
+                })
 
         staff_ok = send_staff_alert(
             room=room, role=role,

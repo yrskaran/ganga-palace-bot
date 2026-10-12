@@ -32,6 +32,56 @@ class GuestFlows(unittest.TestCase):
         append.assert_called_once()
         feedback.assert_not_called()
 
+    def test_complaint_sheet_append_returns_real_row_without_nonexistent_api(self):
+        sheet = Mock()
+        sheet.get_all_values.return_value = [app.COMPLAINT_HEADERS]
+        sheet.append_row.return_value = {'updates': {'updatedRange': 'Complaints!A5:O5'}}
+        client = Mock()
+        client.open_by_key.return_value.worksheet.return_value = sheet
+        self.mock('get_gspread_client', return_value=client)
+        self.mock('find_on_duty_staff', return_value=None)
+        rec = app._append_complaint('203', 'Kitty', GUEST, 'Bathroom tap leak')
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec['row_number'], 5)
+        self.assertEqual(rec['category'], 'Reception')
+        sheet.append_row.assert_called_once()
+        self.assertEqual(sheet.append_row.call_args.kwargs['value_input_option'], 'RAW')
+        self.assertFalse(hasattr(sheet, 'get_last_row') and sheet.get_last_row.called)
+
+    def test_complaint_append_timeout_is_reconciled_by_unique_id(self):
+        sheet = Mock()
+        sheet.get_all_values.return_value = [app.COMPLAINT_HEADERS]
+        sheet.append_row.side_effect = TimeoutError('response timeout after commit')
+        sheet.find.return_value = Mock(row=7)
+        client = Mock()
+        client.open_by_key.return_value.worksheet.return_value = sheet
+        self.mock('get_gspread_client', return_value=client)
+        self.mock('find_on_duty_staff', return_value=None)
+        rec = app._append_complaint('203', 'Kitty', GUEST, 'Bathroom tap leak')
+        self.assertEqual(rec['row_number'], 7)
+        sheet.append_row.assert_called_once()
+
+    def test_bot_format_question_not_registered_as_room_complaint(self):
+        app.conversation_memory[GUEST] = [
+            {'role': 'assistant', 'content':
+             'json {"recipient_phone":"","message":"Welcome to Hotel Shreya!"}'}
+        ]
+        brain = self.mock('understand_guest_request', return_value={
+            'action': 'COMPLAINT', 'confidence': 0.95, 'category': 'RECEPTION',
+            'reply': 'I will register a complaint.'})
+        created = self.mock('_append_complaint', side_effect=AssertionError('wrong action'))
+        self.turn('Ye kya bhj diya')
+        self.assertIn('technical JSON', self.sent.call_args.args[1])
+        created.assert_not_called()
+        app.notify_reception_request.assert_not_called()
+
+    def test_real_service_problem_not_suppressed_as_formatting_issue(self):
+        app.conversation_memory[GUEST] = [
+            {'role': 'assistant', 'content': 'Room 203 ka order note ho gaya hai.'}
+        ]
+        self.assertFalse(app._bot_format_error_followup(GUEST, 'Ye kya bhej diya'))
+        self.assertFalse(app._bot_format_error_followup(GUEST, 'AC kharab hai'))
+
     def test_ai_complaint_cannot_be_hijacked_by_duplicate_order(self):
         app.duplicate_order_sessions[GUEST] = {'order':'1 x Poha', 'total':70, 'created':__import__('time').time()}
         append = self.mock('_append_complaint', return_value={'id':'C-TEST','row_number':2,'category':'Maintenance'})

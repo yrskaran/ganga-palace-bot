@@ -131,6 +131,9 @@ def plan(bot, phone, text, guest):
         '"script":"roman|native","questions":["every question or conversational need"],'
         '"operations":[{"action":"one allowed tool","category":"NONE",'
         '"items":[],"operation_text":"resolved argument","confidence":0.95}]}. '
+        'category must be exactly NONE, KITCHEN, HOUSEKEEPING, MAINTENANCE, ROOM_SERVICE or RECEPTION. '
+        'Each items entry is {"name":"exact canonical name","qty":1}; qty is a JSON integer, never a string. '
+        'action must be one of the allowed tool names below, not ANSWER or a new name. '
         'No reasoning, no final guest reply here. Zero tools for ordinary conversation, facts, '
         'readability feedback or language changes. One tool per independent actual operation, maximum four. '
         'Do not route an entire combined request to reception when individual tools can handle it. '
@@ -174,7 +177,13 @@ def plan(bot, phone, text, guest):
                 'language_valid':isinstance(value,dict) and value.get('language') in gateway.LANGUAGES,
                 'script_valid':isinstance(value,dict) and value.get('script') in {'roman','native'},
                 'operations_type':type(operations).__name__,
-                'operation_shapes':[{k:type(v).__name__ for k,v in op.items()} for op in operations if isinstance(op,dict)] if isinstance(operations,list) else []}
+                'operation_shapes':[{k:type(v).__name__ for k,v in op.items()} for op in operations if isinstance(op,dict)] if isinstance(operations,list) else [],
+                'operation_checks':[{'action_valid':op.get('action') in ACTIONS,
+                    'category_valid':op.get('category','NONE') in {'KITCHEN','HOUSEKEEPING','MAINTENANCE','ROOM_SERVICE','RECEPTION','NONE'},
+                    'confidence_valid':type(op.get('confidence')) in {int,float} and 0.65<=op['confidence']<=1,
+                    'items_checks':[{'name_valid':item.get('name') in set(inventory),'qty_type':type(item.get('qty')).__name__,
+                        'qty_valid':type(item.get('qty')) is int and 1<=item['qty']<=50} for item in op.get('items',[]) if isinstance(item,dict)]}
+                    for op in operations if isinstance(op,dict)] if isinstance(operations,list) else []}
             print('CONVERSATION PLAN CONTRACT REJECTED: '+json.dumps(summary),flush=True)
         return accepted
     raw=request_json(bot,prompt,guest,validator=valid)

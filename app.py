@@ -3580,6 +3580,9 @@ def _openai_semantic_schema():
 
 
 def _openai_messages(user_text, guest_info=None, sender_phone=None, structured=False):
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        return ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone, role="developer")
     guest_message = _extract_semantic_guest_message(user_text)
     semantic_wrapper = guest_message != str(user_text or "").strip()
     # During semantic routing, the short current message may be linguistically
@@ -3658,7 +3661,7 @@ def ask_openai_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
     payload = {
         "model": OPENAI_MODEL,
         "messages": messages,
-        "max_completion_tokens": 260 if structured else 180,
+        "max_completion_tokens": 1024 if structured else 512,
         "stream": False,
     }
     # This model family supports configurable reasoning effort. Keep it at none for
@@ -3675,6 +3678,9 @@ def ask_openai_chat(user_text, guest_info=None, sender_phone=None, structured=Fa
                 "schema": _openai_semantic_schema(),
             },
         }
+
+    if structured and (ai_receptionist.current.get() or {}).get("plan_review"):
+        payload["response_format"] = {"type": "json_object"}
 
     headers = {
         "Authorization": f"Bearer {OPENAI_API_KEY}",
@@ -3845,6 +3851,11 @@ Local guide:
 """
 
     contents = _gemini_contents_from_history(history, user_text)
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        bounded = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone)
+        system_prompt = bounded[0]["content"]
+        contents = [{"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]} for m in bounded[1:]]
     models = [GEMINI_MODEL] if GEMINI_MODEL else []
 
     url_base = "https://generativelanguage.googleapis.com/v1beta/models"
@@ -4214,11 +4225,15 @@ Hotel knowledge:\n{hotel_db}
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": str(user_text)})
 
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone)
+
     payload = {
         "model": CEREBRAS_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 260 if structured else 180,
+        "max_tokens": 1024 if structured else 512,
         "stream": False,
     }
     if structured:
@@ -4359,11 +4374,15 @@ Hotel knowledge:\n{hotel_db}
     # request, this request intentionally sends NO tools and NO tool_choice.
     # Command A+ remains the configured model and still understands context and
     # multilingual guest messages; backend code continues to own transactions.
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone)
+
     payload = {
         "model": COHERE_MODEL,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 260 if structured else 180,
+        "max_tokens": 1024 if structured else 512,
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}
@@ -4491,6 +4510,10 @@ Hotel knowledge:
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": str(user_text)})
 
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone)
+
     models = _openrouter_model_candidates()
     if not models:
         return None
@@ -4499,7 +4522,7 @@ Hotel knowledge:
         "model": model,
         "messages": messages,
         "temperature": 0.2,
-        "max_tokens": 260 if structured else 180,
+        "max_tokens": 1024 if structured else 512,
     }
     if structured and "nemotron-3.5-lightning" not in model.lower():
         payload["response_format"] = {"type": "json_object"}
@@ -5193,11 +5216,15 @@ Hotel knowledge:
     messages.extend(reversed(recent_messages))
     messages.append({"role": "user", "content": current_text})
 
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        import ai_context
+        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone, history=history)
+
     payload = {
         "model": model,
         "messages": messages,
         "temperature": 0.15,
-        "max_completion_tokens": 384 if structured else 180,
+        "max_completion_tokens": 1024 if structured else 512,
     }
 
     input_bytes = sum(len(item["content"].encode("utf-8")) for item in messages)
@@ -5215,7 +5242,7 @@ Hotel knowledge:
         payload["reasoning_effort"] = "low"
         payload["include_reasoning"] = False
         # Reserve room for private reasoning plus the complete JSON envelope.
-        payload["max_completion_tokens"] = 768 if structured else 384
+        payload["max_completion_tokens"] = 1536 if structured else 768
 
     if structured:
         # JSON mode is intentionally used instead of a large strict schema here.
@@ -5713,13 +5740,13 @@ def _append_complaint(room, guest_name, phone, complaint_text):
         return None
 
 
-def _find_active_complaint(phone):
+def _pending_complaints(phone, complaint_id=None):
     p = clean_phone(phone)
     with state_lock:
         headers = list(shared_store.get("complaint_headers", []))
         rows = list(shared_store.get("complaint_rows", []))
     if not headers or not rows:
-        return None
+        return []
     hm = _complaint_header_map(headers)
     candidates=[]
     for i,row in enumerate(rows,start=2):
@@ -5731,7 +5758,14 @@ def _find_active_complaint(phone):
         # complaint can contain words like "nahi" as part of a new complaint.
         if status == "waiting feedback":
             candidates.append((i,m))
-    return candidates[-1] if candidates else None
+    if complaint_id:
+        candidates = [(row,rec) for row,rec in candidates if str(rec.get("complaint_id", "")).upper() == str(complaint_id).upper()]
+    return candidates
+
+
+def _find_active_complaint(phone, complaint_id=None):
+    candidates = _pending_complaints(phone, complaint_id)
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _update_complaint(row_number, updates):
@@ -5749,15 +5783,20 @@ def _update_complaint(row_number, updates):
         print("COMPLAINT UPDATE ERROR:",exc,flush=True); return False
 
 
-def _handle_complaint_feedback(phone, text):
-    active=_find_active_complaint(phone)
-    if not active: return False
-    row_number, rec=active
+def _handle_complaint_feedback(phone, text, complaint_id=None):
     # AI can understand the conversation; these confirmations are only the final safety gate.
     norm_feedback = normalize_text(text)
     yes=is_yes(text) or bool(re.search(r"\b(yes|haan|ha|ji haan|ab theek|theek ho gaya|solve ho gaya|solved|ho gaya|done)\b", norm_feedback))
     no=is_no(text) or bool(re.search(r"\b(no|nahi|nahin|abhi bhi|still|not solved|same problem|problem hai|nahi hua)\b", norm_feedback))
     if not yes and not no: return False
+    candidates = _pending_complaints(phone, complaint_id)
+    if len(candidates) > 1:
+        choices = "; ".join(f"{rec.get('complaint_id','')}: {rec.get('complaint','')}" for _,rec in candidates)
+        send_whatsapp_message(phone, "Which complaint do you mean? " + choices)
+        return True
+    active = candidates[0] if len(candidates) == 1 else None
+    if not active: return False
+    row_number, rec=active
     now=now_ist().strftime("%d-%b-%Y %I:%M %p")
     if yes:
         ok = _update_complaint(row_number,{"Status":"RESOLVED","Feedback":"YES","Resolved At":now,"Resolution":"Guest confirmed the problem is solved.","Last Updated":now})
@@ -5769,8 +5808,14 @@ def _handle_complaint_feedback(phone, text):
     else:
         ok = _update_complaint(row_number,{"Status":"REOPENED","Feedback":"NO","Resolution":"Guest reported that the problem is still not solved.","Last Updated":now,"Follow-up Due":now})
         guest=get_guest_stay_status(phone) or {}
-        send_staff_alert(room=guest.get("room",rec.get("room","")),role=rec.get("category","Reception"),message=(f"COMPLAINT REOPENED\nRoom: {guest.get('room',rec.get('room',''))}\nGuest: {guest.get('name',rec.get('guest_name','Guest'))}\nProblem still not solved.\nComplaint: {rec.get('complaint','')}\nPhone: +{phone}"),fallback_phone=STAFF_PHONE)
-        send_whatsapp_message(phone,"Ji, samajh gaya. 🙏 Maine complaint dobara staff ko priority ke saath bhej di hai.")
+        sent = send_staff_alert(room=guest.get("room",rec.get("room","")),role=rec.get("category","Reception"),message=(f"COMPLAINT REOPENED\nRoom: {guest.get('room',rec.get('room',''))}\nGuest: {guest.get('name',rec.get('guest_name','Guest'))}\nProblem still not solved.\nComplaint: {rec.get('complaint','')}\nPhone: +{phone}"),fallback_phone=STAFF_PHONE)
+        if ok and sent:
+            reply = "Your complaint was reopened and the follow-up was sent to staff; their response is pending."
+        elif ok:
+            reply = "Your complaint was reopened, but the staff notification failed. Please contact the front desk."
+        else:
+            reply = "The complaint update failed; it has not been recorded as reopened. Please contact the front desk."
+        send_whatsapp_message(phone, reply)
     fetch_sheet_data_sync()
     return True
 
@@ -6714,6 +6759,9 @@ def concierge_style():
 
 def _ai_understanding_prompt(user_text, guest_info, sender_phone):
     """Compact one-pass semantic contract used by every AI provider."""
+    if ai_receptionist.enabled(sys.modules[__name__]):
+        state = ai_receptionist.snapshot(sys.modules[__name__], sender_phone, user_text)
+        return ai_receptionist.interpretation_prompt(sys.modules[__name__], user_text, guest_info, sender_phone, json.dumps(state, ensure_ascii=False))
     pending = []
     with state_lock:
         active = active_orders.get(sender_phone)
@@ -6897,6 +6945,7 @@ def understand_guest_request(user_text, guest_info=None, sender_phone=None):
                 "task_id": str(obj.get('task_id', '')).strip().upper(),
                 "reply": str(obj.get("reply", "")).strip(),
                 "confidence": confidence,
+                "submission_intent": obj.get("submission_intent") is True,
             }
             print(f"AI UNDERSTANDING: provider={provider_name} meaning={result['understood_as']!r} action={result['action']} confidence={result['confidence']:.2f} photo={result['photo_target']!r} menu={result['menu_section']!r} prices={result['show_prices']!r} items={result['items']!r}", flush=True)
             _record_ai_readiness("available", provider_name)
@@ -11592,6 +11641,9 @@ def startup():
     print(f"AI PROVIDERS CONFIGURED: {', '.join(configured) if configured else 'NONE'}", flush=True)
     if os.getenv("AI_STARTUP_CHECK", "0").strip().lower() in {"1", "true", "yes"}:
         threading.Thread(target=check_ai_readiness, daemon=True, name="ai-readiness").start()
+    if os.getenv("AI_PRODUCTION_CHECK_RUN", "").strip():
+        import hotel_eval
+        hotel_eval.start(sys.modules[__name__], os.getenv("AI_PRODUCTION_CHECK_RUN"))
     if os.getenv("AI_GUEST_CHECK_RUN", "").strip():
         import guest_checks
         selected_checks = {value.strip() for value in os.getenv("AI_GUEST_CHECK_IDS", "").split(',') if value.strip()}

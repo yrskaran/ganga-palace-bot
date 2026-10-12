@@ -10,6 +10,7 @@ import re
 import time
 
 current = ContextVar('ai_receptionist_turn', default=None)
+evaluation = ContextVar('ai_receptionist_evaluation', default=None)
 LANGUAGES = {'english', 'hinglish', 'hindi', 'punjabi', 'rajasthani', 'bengali',
              'gujarati', 'marathi', 'tamil', 'telugu', 'kannada', 'malayalam',
              'odia', 'urdu', 'garhwali', 'kumaoni'}
@@ -23,19 +24,63 @@ def enabled(bot):
     return bool((bot.CUSTOMER_CONFIG or {}).get('ai_receptionist_flow'))
 
 
-def snapshot(bot, phone):
-    """State needed to understand follow-ups; no OTP or unrelated guest records."""
+def snapshot(bot, phone, text=""):
+    """Compact cached operation receipts belonging to this sender; no secrets."""
     result = {}
+    clean = getattr(bot, 'clean_phone', lambda x: str(x))
+    def safe(value):
+        if isinstance(value, dict):
+            return {k: safe(v) for k, v in value.items()
+                    if k.lower() not in {'otp','id_link','id_bytes','id_photo','id_url',
+                        'staff_phone','reception_phone','guest_phone','phone'}
+                    and not any(x in k.lower() for x in ('secret','token','password'))}
+        if isinstance(value, list): return [safe(v) for v in value[:50]]
+        if isinstance(value, str): return value[:1000]
+        if isinstance(value, (int,float,bool)) or value is None: return value
+        return str(value)[:100]
+    def prioritize(records, key, eligible):
+        def rank(r):
+            identity = str(r.get(key,''))
+            return (bool(identity and identity.upper() in text.upper()),
+                    str(r.get('status','')).upper().replace(' ','_') in eligible)
+        selected = sorted(reversed(records),key=rank,reverse=True)[:8]
+        return [{k:(v[:120] if k in {'details','complaint','resolution'} and isinstance(v,str) else v)
+                 for k,v in record.items()} for record in selected]
     with bot.state_lock:
         for name in ('checkin_sessions', 'order_sessions', 'duplicate_order_sessions',
-                     'active_orders', 'demo_food_sessions', 'demo_guest_sessions', 'service_guest_pending',
-                     'reception_consent_sessions'):
+                     'active_orders', 'demo_food_sessions', 'demo_guest_sessions',
+                     'service_guest_pending', 'reception_consent_sessions',
+                     'reception_request_sessions', 'photo_sessions'):
             value = getattr(bot, name, {}).get(phone)
             if value:
-                if isinstance(value, dict):
-                    value = {k: v for k, v in value.items()
-                             if k not in {'otp', 'id_link', 'id_bytes'}}
-                result[name] = value
+                owner = value.get('guest_phone') if isinstance(value, dict) else None
+                if not owner or clean(owner) == clean(phone):
+                    value = safe(value)
+                    if isinstance(value,dict):
+                        for key in ('request','last_reply','staff_reply','address','reception_request','text'):
+                            if isinstance(value.get(key),str) and len(value[key])>180:
+                                value[key] = value[key][:180] + ' [excerpt; full record retained in backend]'
+                    result[name] = value
+        tasks = [safe({k:v for k,v in task.items() if k in
+                    {'request_id','service','details','status','role','created_at','staff_done_at','guest_confirmed_at'}})
+                 for task in getattr(bot,'service_tasks_by_id',{}).values()
+                 if clean(task.get('guest_phone','')) == clean(phone)]
+        if tasks: result['service_tasks'] = prioritize(tasks,'request_id',{'STAFF_COMPLETED','CONFIRMATION_FAILED'})
+        store = getattr(bot,'shared_store',{})
+        complaints = []
+        for row in store.get('complaint_rows',[]):
+            rec = bot._complaint_row_map(row,store.get('complaint_headers',[]))
+            if clean(rec.get('phone','')) != clean(phone): continue
+            complaints.append({k:rec.get(k,'') for k in
+                ('complaint_id','complaint','category','status','feedback','resolution')})
+        if complaints: result['complaints'] = prioritize(complaints,'complaint_id',{'WAITING_FEEDBACK'})
+    # Optional historical records yield to pending cart and check-in authority.
+    while len(json.dumps(result,ensure_ascii=False).encode()) > 3500:
+        removable = next((k for k in ('service_tasks','complaints') if len(result.get(k,[]))>1),None)
+        if removable: result[removable].pop(); continue
+        removable = next((k for k in ('demo_guest_sessions','photo_sessions') if k in result),None)
+        if removable: result.pop(removable); continue
+        break
     return result
 
 
@@ -44,60 +89,55 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         menu_section='',show_prices=False,generic='',items=[],service='',
         needs_reception=False,reception_followup=False,reception_request='',
         language='',operation_text='',task_id='',reply='',confidence=0.0)
-    guest = {key: guest.get(key) for key in ('name','room','is_inhouse','status')} if guest else None
-    inventory = [row['name'] for row in (bot.CUSTOMER_CONFIG or {}).get('menu', [])
-                 if isinstance(row, dict) and row.get('name')]
+    guest = {k:guest.get(k) for k in ('name','room','is_inhouse','status')} if guest else None
+    inventory = [r['name'] for r in (bot.CUSTOMER_CONFIG or {}).get('menu',[])
+                 if isinstance(r,dict) and r.get('name')]
+    actions = [a for a in bot._openai_semantic_schema()['properties']['action']['enum']
+               if bot.CUSTOMER_DEMO_MODE or not a.startswith('DEMO_')]
     return (
-        "Interpret the complete guest turn as Monika, the hotel's virtual receptionist. Return JSON only. "
-        "Use the role-separated recent conversation to resolve pronouns, omitted subjects, corrections and follow-ups. "
-        "Current message wins when the topic changes. Do not ask guests to repeat an item/topic already clear in recent dialogue. "
-        "AI owns understanding, language and the natural guest reply; Python executes validated actions afterwards. Never describe menu information as a cart, saved order or confirmed order. "
-        "Select the language field from the CURRENT guest message, never from a default example value. Plain English sentences require language=english and an English reply. Hindi written in Latin letters uses language=hinglish; Hindi in Devanagari uses language=hindi. Reply warmly in 1-3 sentences in the current message language/script, including Hinglish and typos. If the guest switches to clear English, reply in English even after Hindi dialogue. "
-        "No repeated greetings, internal reasoning or backend terminology. Never pretend to be human. "
-        "Use supplied verified hotel facts only. A published possibility is not a mandatory requirement; do not add document, booking, payment or eligibility requirements absent from verified facts. Unknown hotel facts need RECEPTION, needs_reception=true; "
-        "resolve the full question in reception_request. Same pending question follow-up uses reception_followup=true; "
-        "a new question is a new request. Never claim staff delivery or action success before backend confirmation. "
-        "Information, humour, greetings and side questions use ANSWER; genuine ambiguity uses NONE and one clarification. "
-        "ANSWER/NONE replies must not promise to submit staff requests, change carts or confirm orders; those require the matching action or needs_reception=true. "
-        "A specific menu item listing/price enquiry uses MENU_ITEM_INFO with resolved names in items (qty=1 by default), "
-        "The canonical menu items have configured prices in the backend even when numeric prices are not supplied in this prompt. A price question about a listed item must retrieve it with MENU_ITEM_INFO and show_prices=true, not ask reception because the number is absent here. The executor will supply the verified price; do not guess it in reply. "
-        "Resolve typos, transliteration and informal names against the canonical menu inventory below; return the EXACT configured name, not the guest spelling. Never invent a new item name. "
-        "Questions about menu options ask what is listed, not proof of live kitchen stock; retrieve the matching listed category/items and qualify DEMO status. Ingredients, customization, preparation or milk type are unknown unless explicitly verified; use RECEPTION to confirm them, never infer from an item name or promise the kitchen will do it. "
-        "show_prices=true only when price is requested. Select only menu names matching the kind requested. If a category card also contains unrelated kinds, use MENU_ITEM_INFO with only matching names instead of SHOW_MENU. A category/full menu uses SHOW_MENU with menu_section FULL, BREAKFAST, LUNCH, DINNER, DRINKS, SNACKS, MAIN_COURSE, BREADS, RICE, SIDES, THALI, DAL, PANEER, RAITA or SALAD. Never broaden a category request to FULL. Alternatives mean the remaining choices after removing items already offered in the recent conversation. Put only those remaining names in MENU_ITEM_INFO; never repeat the old choice or use a whole category card for this question. If none remain, answer that no other listed options were found. Price requests refer to the current turn; availability or alternatives alone must have show_prices=false. "
-        "An enquiry is never an order. Explicit ordering requests use ORDER even before check-in: the executor enforces verified active stay. Do not route such orders to RECEPTION to bypass that prerequisite. ORDER requires explicit ordering intent in the whole dialogue, including a list supplied after the receptionist asked which items to order. Resolve complete items and integer quantities; a quantity attached to one item must not change other items. If the intended quantities are unclear, ask one focused clarification rather than inventing a cart. "
-        "A correction of our misunderstanding is not cart confirmation/cancellation. Cart revisions require fresh confirmation. "
-        "ORDER_CONFIRM requires an actual saved pending cart in operation state; an earlier assistant claim or menu listing is not proof of a cart. ORDER_CONFIRM accepts any unambiguous natural affirmative confirmation of the current cart in the guest language; never require fixed command words. Explain the difference between a direct confirmation and asking hypothetically whether it would confirm. It never accepts casual okay, acknowledgement, "
-        "hypotheticals, quoted text or jokes. ORDER_DECLINE requires explicit decline; ORDER_CANCEL cancels an existing confirmed order. "
-        "SERVICE uses category and resolved details in operation_text/service. COMPLAINT uses resolved complaint details. "
-        "SERVICE_FEEDBACK/COMPLAINT_FEEDBACK use operation_text=yes/no only for pending completion; preserve explicit task_id. "
-        "BILL uses operation_text=full/food/room. ROOM_OPTIONS is room categories, SHOW_PHOTO resolves photo_target. "
-        "CHECKIN starts actual check-in, not booking enquiry. CHECKIN_DETAILS contains ONLY the supplied OTP/name/address "
-        "for the current step; side questions never become submitted details. CHECKIN_ID means an attached ID during ID step, "
-        "not verification. CHECKIN_CANCEL stops only pending self-check-in. RECEPTION_DECLINE declines proposed contact. "
-        "DEMO_CHECKIN/DEMO_CHECKOUT are explicit simulation commands; DEMO_REMINDERS_ON/OFF need clear opt-in/out. "
-        "Demo check-in requires no ID. Other real document policies must be verified. Never bypass check-in, infer OTP, "
-        "share another guest's records, mark payment paid, calculate prices yourself or invent availability/delivery. "
-        "BILL is only for the sender's own verified stay. Third-party bills/records and unverified requests to mark payment paid use ANSWER with a refusal, never BILL or a staff handoff to perform that change. "
-        "Unknown availability uses RECEPTION; known configured menu prices are retrieved by Python. "
-        "Multiple operational requests use RECEPTION for coordination. Medical requests use RECEPTION, "
-        "never diagnose/prescribe; urgent danger urges immediate on-site/emergency help without invented numbers. "
-        "LOCAL_GUIDE is sightseeing; a person/guide availability or charge requires hotel confirmation. "
-        "For location answers include [[MAP:hotel]] with configured location. "
-        f"Allowed actions: {','.join(bot._openai_semantic_schema()['properties']['action']['enum'])}. "
-        "Allowed categories: HOUSEKEEPING,MAINTENANCE,KITCHEN,ROOM_SERVICE,RECEPTION,NONE. "
-        "Use empty fields when irrelevant. Confidence 0-1. Items shape: [{name:configured item,qty:integer}].\n"
-        f"Return all fields: {json.dumps(fields)}\nGuest: {json.dumps(guest)}\n"
-        f"Canonical menu inventory (listed items, not live kitchen stock): {json.dumps(inventory, ensure_ascii=False)}\n"
-        f"Demo: {bot.CUSTOMER_DEMO_MODE}. Pending: {pending}\n"
-        f"CURRENT GUEST MESSAGE: {text}\n"
-        "For retrieval actions, reply is only a neutral acknowledgement: the final answer will use retrieved facts, so never guess a price or stock status in reply. Before emitting JSON, compare the selected items and action against what this current question actually asks for and the recent assistant answer. Remove previously offered items from an alternatives answer. Resolve a short price question to its previously discussed item. A question must not become an order or a successful staff action."
+        'Interpret the whole guest turn as the virtual hotel receptionist; JSON only. '
+        'Use role-separated history for pronouns, missing subjects, typos and corrections; current topic wins. '
+        'AI understands and replies; Python validates and executes. State receipts alone prove saved actions. '
+        'Language comes from the CURRENT guest message: english, hinglish for Roman Hindi, hindi for Devanagari; '
+        'match language/script, including switches. Warm 1-3 sentences; no repeated greetings, reasoning or internal terminology. '
+        'Use verified facts only; do not invent requirements, document policies, stock, timing, payment or delivery. '
+        'Unknown hotel facts use RECEPTION, needs_reception=true, with the fully resolved question in reception_request. '
+        'Same pending request uses reception_followup=true; a changed request is new. Never claim staff action before a receipt. '
+        'Harmless conversation and known facts use ANSWER; genuine ambiguity uses NONE with one focused clarification. '
+        'Listed item/group questions use MENU_ITEM_INFO with EXACT matching canonical names and qty=1; '
+        'show_prices=true only if the CURRENT question asks price. Retrieve configured prices even if absent here; never guess or hand off for that reason. '
+        'Full meal/category requests use SHOW_MENU, menu_section FULL/BREAKFAST/LUNCH/DINNER/DRINKS/SNACKS/MAIN_COURSE/BREADS/RICE/SIDES/THALI/DAL/PANEER/RAITA/SALAD. '
+        'Never broaden a narrower subset to a parent category. Alternatives exclude previously offered choices; if none remain, say so. '
+        'Listed menu options do not prove live kitchen stock. Undocumented ingredients, milk type, preparation/customization use RECEPTION. '
+        'An enquiry is never an order. ORDER needs actual ordering intent, including a list following a request for order items; '
+        'use complete items with explicit positive integer quantities, or clarify ambiguity. Resolve informal names to canonical names. '
+        'Even before check-in use ORDER for order intent; Python enforces verified stay, never bypass via reception. '
+        'Cart revisions require fresh confirmation; corrections are not cancellation or confirmation. '
+        'ORDER_CONFIRM requires an actual saved pending cart and unambiguous natural confirmation, never a casual acknowledgement, question, hypothetical, quote or joke. '
+        'ORDER_DECLINE declines a pending cart; ORDER_CANCEL cancels a saved confirmed order. Never call a menu enquiry a saved cart. '
+        'SERVICE uses category and resolved operation_text/service; COMPLAINT uses resolved details. '
+        'SERVICE_FEEDBACK/COMPLAINT_FEEDBACK use yes/no only for pending completion, plus exact task_id from state; ambiguity clarifies without changes. '
+        'BILL uses operation_text=full/food/room for the sender only. Refuse third-party records or unverified paid-status changes with ANSWER. '
+        'ROOM_OPTIONS is room categories; SHOW_PHOTO resolves photo_target from available choices. '
+        'CHECKIN starts requested check-in, not a booking/process enquiry. CHECKIN_DETAILS contains ONLY current supplied OTP/name/address for the saved step; '
+        'side questions never submit details. CHECKIN_ID requires an attached image at ID step, not verification. CHECKIN_CANCEL stops pending check-in only. '
+        'RECEPTION_DECLINE declines proposed contact. Multiple operations use RECEPTION for coordination. '
+        'Medical help uses RECEPTION; never diagnose/prescribe. Urgent danger urges immediate on-site/emergency help without invented numbers or arranged-help claims. '
+        'LOCAL_GUIDE is sightseeing; a guide person/charge needs hotel confirmation. Location answers include [[MAP:hotel]]. '
+        'Retrieval replies are neutral acknowledgements; final answers use backend facts. '
+        f'Allowed actions: {",".join(actions)}. Categories: HOUSEKEEPING,MAINTENANCE,KITCHEN,ROOM_SERVICE,RECEPTION,NONE. '
+        'Items: [{"name":"canonical name","qty":integer}]. Empty irrelevant fields; confidence 0-1.\n'
+        f'Return all fields: {json.dumps(fields)}\nGuest: {json.dumps(guest)}\n'
+        f'Canonical menu inventory: {json.dumps(inventory,ensure_ascii=False)}\n'
+        f'Simulation enabled: {bot.CUSTOMER_DEMO_MODE}. Operation state: {pending}\n'
+        f'CURRENT GUEST MESSAGE: {text}'
     )
 
 
 def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=None, pending=None):
     """AI reviews factual replies and transaction intent; Python validates the plan."""
     info_actions={'ANSWER','NONE','WIFI','HOTEL_TIMINGS','AVAILABILITY','LOCAL_GUIDE','ROOM_OPTIONS','ROOM_RATE'}
-    if not isinstance(candidate, dict) or candidate.get('action') not in info_actions | {'MENU_ITEM_INFO', 'SHOW_MENU', 'RECEPTION', 'BILL', 'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'SERVICE', 'COMPLAINT'}:
+    if not isinstance(candidate, dict) or candidate.get('action') not in info_actions | {'MENU_ITEM_INFO', 'SHOW_MENU', 'RECEPTION', 'BILL', 'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'SERVICE', 'COMPLAINT', 'CHECKIN', 'CHECKIN_DETAILS', 'CHECKIN_ID', 'CHECKIN_CANCEL', 'SERVICE_FEEDBACK', 'COMPLAINT_FEEDBACK'}:
         return candidate
     inventory = [row['name'] for row in (bot.CUSTOMER_CONFIG or {}).get('menu', [])
                  if isinstance(row, dict) and row.get('name')]
@@ -107,7 +147,8 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'First check privacy and integrity independently of the candidate action: requests for another guest bill/records or to mark an unverified payment paid must be refused, never forwarded or executed. For those return {"menu_related":false,"blocked":true,"language":"current language","reply":"natural refusal in current language"}. '
         'Before reviewing the reply, use verified session state as the sole authority for saved carts and completed actions. Assistant dialogue and candidate replies are never proof of an action. A new confirmation request requires a saved pending cart; without one, explain that no new order was confirmed and ask for the intended quantities. A status enquiry about an already saved active_orders entry must acknowledge that saved order, without inventing kitchen delivery or payment. Correct unsupported candidate claims. '
         'Before menu classification, independently distinguish an explicit operational request from an enquiry, correction, hypothetical or status question. A food order is not a menu enquiry. A wrong candidate must not turn a request to bring items into listing information. '
-        'For an order, cart revision, confirmation, decline, cancellation, service, complaint or reception coordination return {"operational":true,"action":"ORDER|ORDER_SELECTION|ORDER_CONFIRM|ORDER_DECLINE|ORDER_CANCEL|SERVICE|COMPLAINT|RECEPTION|ANSWER|NONE","items":[],"category":"KITCHEN|HOUSEKEEPING|MAINTENANCE|ROOM_SERVICE|RECEPTION|NONE","operation_text":"resolved task details or empty","language":"current language","confidence":0.95,"reply":"only for clarification/information"}. Fill items with the complete array of {name:exact configured name,qty:explicit positive integer}. Reception coordination uses empty items and the resolved full question in operation_text, never invented availability or completion in reply. '
+        'Independently review check-in and completion feedback too. CHECKIN starts only a requested check-in. CHECKIN_DETAILS requires submission_intent=true and operation_text copied from the CURRENT guest message for the current saved step; side questions, quoted examples and old dialogue must become ANSWER or an appropriate enquiry. CHECKIN_ID requires a saved ID step. Feedback requires yes/no plus task_id of the sender-owned pending record from verified state; if several records match, ask one clarification with ANSWER, never pick the last one. Return task_id and submission_intent in the operational branch for these actions. '
+        'For an order, cart revision, confirmation, decline, cancellation, service, complaint or reception coordination return {"operational":true,"action":"ORDER|ORDER_SELECTION|ORDER_CONFIRM|ORDER_DECLINE|ORDER_CANCEL|SERVICE|COMPLAINT|RECEPTION|CHECKIN|CHECKIN_DETAILS|CHECKIN_ID|CHECKIN_CANCEL|SERVICE_FEEDBACK|COMPLAINT_FEEDBACK|ANSWER|NONE","items":[],"category":"KITCHEN|HOUSEKEEPING|MAINTENANCE|ROOM_SERVICE|RECEPTION|NONE","operation_text":"resolved task details or empty","language":"current language","confidence":0.95,"reply":"only for clarification/information"}. Fill items with the complete array of {name:exact configured name,qty:explicit positive integer}. Reception coordination uses empty items and the resolved full question in operation_text, never invented availability or completion in reply. '
         'Read every explicit quantity independently from the CURRENT message, resolving references from dialogue and the saved cart. Quantity 1 is only an enquiry default, never permission to replace an explicit order quantity. Revisions return the complete resulting cart and require fresh confirmation. Unclear quantities or intent use NONE and one focused clarification rather than a guessed cart. '
         'ORDER_CONFIRM requires a saved pending cart. SERVICE and COMPLAINT require resolved task details. ANSWER/NONE must not promise execution. An operational review returns only the operational object; do not label an order as menu_related. '
         'Use verified hotel facts below for factual answers. Do not turn a possible published requirement into a mandatory rule, or add required booking details, documents, payment or eligibility conditions absent from those facts. '
@@ -133,7 +174,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'Every branch must return language using exact lowercase values: english for clear English, hinglish for Hindi in Latin letters, hindi for Devanagari. Do not label Roman Hindi as hindi. Do not let English item names or candidate wording change the current guest language. For example "Kal 2 logo ke liye kamra milega?" is hinglish. Use only the chosen branch schema; all enum examples separated by | mean select ONE exact value.\n'
         f'Canonical inventory: {json.dumps(inventory, ensure_ascii=False)}\n'
         f'Verified hotel facts: {bot._ai_knowledge_snapshot(1600, text) if candidate.get("action") in info_actions and hasattr(bot, "_ai_knowledge_snapshot") else "Only explicitly supplied facts are verified."}\n'
-        f'Verified session state: {json.dumps(pending if pending is not None else snapshot(bot, phone), ensure_ascii=False)}\n'
+        f'Verified session state: {json.dumps(pending if pending is not None else snapshot(bot, phone, text), ensure_ascii=False)}\n'
         f'Recent dialogue: {json.dumps(history[-8:], ensure_ascii=False)}\n'
         f'Candidate: {json.dumps(candidate, ensure_ascii=False)}\n'
         f'CURRENT GUEST MESSAGE: {text}'
@@ -154,7 +195,7 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         language=review.get('language')
         confidence=review.get('confidence')
         operation=review.get('operation_text')
-        if (action not in {'ORDER','ORDER_SELECTION','ORDER_CONFIRM','ORDER_DECLINE','ORDER_CANCEL','SERVICE','COMPLAINT','RECEPTION','ANSWER','NONE'}
+        if (action not in {'ORDER','ORDER_SELECTION','ORDER_CONFIRM','ORDER_DECLINE','ORDER_CANCEL','SERVICE','COMPLAINT','RECEPTION','CHECKIN','CHECKIN_DETAILS','CHECKIN_ID','CHECKIN_CANCEL','SERVICE_FEEDBACK','COMPLAINT_FEEDBACK','ANSWER','NONE'}
                 or not isinstance(items,list) or language not in LANGUAGES
                 or category not in {'KITCHEN','HOUSEKEEPING','MAINTENANCE','ROOM_SERVICE','RECEPTION','NONE'}
                 or not isinstance(operation,str) or type(confidence) not in {int,float} or not 0<=confidence<=1):
@@ -164,7 +205,24 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
             return None
         if action in {'ORDER','ORDER_SELECTION'} and not items:
             return None
-        state=pending if pending is not None else snapshot(bot,phone)
+        state=pending if pending is not None else snapshot(bot,phone,text)
+        task_id = str(review.get('task_id','')).strip().upper()
+        if action == 'CHECKIN_DETAILS':
+            session = state.get('checkin_sessions') or {}
+            if (review.get('submission_intent') is not True
+                    or session.get('step') not in {'OTP','NAME','ADDRESS'}
+                    or not operation.strip() or operation.strip() not in text):
+                return None
+        if action == 'CHECKIN_ID' and (state.get('checkin_sessions') or {}).get('step') != 'ID':
+            return None
+        if action in {'SERVICE_FEEDBACK','COMPLAINT_FEEDBACK'}:
+            records = state.get('service_tasks' if action=='SERVICE_FEEDBACK' else 'complaints',[])
+            id_key = 'request_id' if action=='SERVICE_FEEDBACK' else 'complaint_id'
+            eligible = [r for r in records if str(r.get('status','')).upper().replace(' ','_') in
+                        ({'STAFF_COMPLETED','CONFIRMATION_FAILED'} if action=='SERVICE_FEEDBACK' else {'WAITING_FEEDBACK'})]
+            matches = [r for r in eligible if str(r.get(id_key,'')).upper()==task_id] if task_id else eligible
+            if operation not in {'yes','no'} or len(matches)!=1: return None
+            task_id = str(matches[0].get(id_key,'')).upper()
         if action=='ORDER_CONFIRM' and not any(state.get(key) for key in ('order_sessions','duplicate_order_sessions','demo_food_sessions')):
             return None
         if action in {'SERVICE','COMPLAINT','RECEPTION'} and not operation.strip():
@@ -178,13 +236,14 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
             reply=''
         return dict(candidate,action=action,items=items,category=category,language=language,
                     operation_text=operation,confidence=confidence,reply=reply,
+                    task_id=task_id,submission_intent=review.get("submission_intent") is True,
                     needs_reception=action=='RECEPTION',
                     reception_followup=bool(candidate.get('reception_followup')) if action=='RECEPTION' else False,
                     reception_request=operation if action=='RECEPTION' else '',
                     menu_section='',show_prices=False)
     if not isinstance(review.get('menu_related'), bool):
         return None
-    if candidate.get('action') in {'ORDER','ORDER_SELECTION','ORDER_CONFIRM','ORDER_DECLINE','ORDER_CANCEL','SERVICE','COMPLAINT'}:
+    if candidate.get('action') in {'ORDER','ORDER_SELECTION','ORDER_CONFIRM','ORDER_DECLINE','ORDER_CANCEL','SERVICE','COMPLAINT','CHECKIN','CHECKIN_DETAILS','CHECKIN_ID','CHECKIN_CANCEL','SERVICE_FEEDBACK','COMPLAINT_FEEDBACK'}:
         # An incomplete operational review cannot silently preserve a wrong cart.
         if not review.get('blocked') and not review['menu_related']:
             reply=review.get('reply')
@@ -297,6 +356,8 @@ def compose(bot, phone, backend_text):
         return reply
     # Provider failure must not hide a completed action or corrupt financial data.
     print('AI RECEPTIONIST COMPOSER: unavailable or changed protected data; verified result retained', flush=True)
+    trace = evaluation.get()
+    if trace is not None: trace.append({'stage':'compose','outcome':'verified_backend_fallback'})
     return backend_text
 
 
@@ -506,7 +567,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                 bot.send_whatsapp_message(phone, 'No matching service completion is pending. Please specify which request you mean.')
         elif action == 'COMPLAINT_FEEDBACK':
             value = result.get('operation_text', '').lower()
-            if value not in {'yes', 'no'} or not bot._handle_complaint_feedback(phone, value):
+            if value not in {'yes', 'no'} or not bot._handle_complaint_feedback(phone, value, complaint_id=result.get('task_id') or None):
                 bot.send_whatsapp_message(phone, 'No matching complaint follow-up is pending.')
         elif action in {'ORDER', 'ORDER_SELECTION', 'ORDER_CONFIRM', 'ORDER_DECLINE', 'ORDER_CANCEL', 'COMPLAINT'}:
             _legacy_operation(bot, phone, result, message)

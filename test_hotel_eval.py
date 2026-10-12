@@ -1,0 +1,44 @@
+import os
+os.environ['BOT_AUTOSTART']='0'
+import json
+import unittest
+from unittest.mock import Mock,patch
+import app
+import hotel_eval
+
+class ProductionEntryEvaluationTests(unittest.TestCase):
+    def test_actual_entry_review_compose_and_wire_memory(self):
+        answers=[{'action':'MENU_ITEM_INFO','items':[{'name':'Standard Veg Thali','qty':1}],'language':'hinglish','operation_text':'','confidence':.96},
+            {'menu_related':True,'language':'hinglish','request_kind':'price','action':'MENU_ITEM_INFO','menu_section':'','items':[{'name':'Standard Veg Thali','qty':1}],'excluded_items':[],'show_prices':True,'needs_reception':False,'reception_request':'','reply':''},
+            {'reply':'Standard Veg Thali ki price ₹200 hai.'},{'supported':True}]
+        prompts=[]
+        def transport(url,**kwargs):
+            prompts.append(json.dumps(kwargs['json']))
+            return Mock(status_code=200,json=Mock(return_value={'candidates':[{'content':{'parts':[{'text':json.dumps(answers.pop(0))}]},'finishReason':'STOP'}]}))
+        with patch.object(app,'GEMINI_API_KEY','test'):
+            row=hotel_eval.evaluate(app,hotel_eval.CASES[0],transport=transport)
+        self.assertFalse(row['errors'],row)
+        self.assertEqual(len(prompts),4)
+        self.assertEqual(row['memory'][-1]['content'],row['output'])
+        self.assertFalse(row['fresh_model_acceptance'])
+        self.assertNotIn('expected_action',''.join(prompts))
+    def test_network_failure_never_counts_as_acceptance(self):
+        transport=Mock(return_value=Mock(status_code=503,text='Unavailable',json=Mock(return_value={'error':{'message':'Unavailable'}})))
+        with patch.object(app,'GEMINI_API_KEY','test'):
+            row=hotel_eval.evaluate(app,hotel_eval.CASES[0],transport=transport)
+        self.assertFalse(row['fresh_model_acceptance'])
+        self.assertIn('No completed interpreter/review plan',row['errors'])
+        self.assertEqual(transport.call_count,1)
+
+    def test_reviewed_name_submission_advances_actual_checkin(self):
+        answers=[{'action':'CHECKIN_DETAILS','operation_text':'Aman Sharma','language':'english','confidence':.96},
+            {'operational':True,'action':'CHECKIN_DETAILS','items':[],'category':'NONE','operation_text':'Aman Sharma','submission_intent':True,'language':'english','confidence':.96,'reply':''},
+            {'reply':'Full name recorded. Please send your full address with city and state.'},{'supported':True}]
+        def transport(url,**kwargs):
+            return Mock(status_code=200,json=Mock(return_value={'candidates':[{'content':{'parts':[{'text':json.dumps(answers.pop(0))}]},'finishReason':'STOP'}]}))
+        case={'id':'name','question':'Aman Sharma','pending':{'checkin_sessions':{'step':'NAME'}}}
+        with patch.object(app,'GEMINI_API_KEY','test'):
+            row=hotel_eval.evaluate(app,case,transport=transport)
+        self.assertFalse(row['errors'],row)
+        self.assertEqual(row['state_after']['checkin_sessions']['step'],'ADDRESS')
+        self.assertEqual(row['state_after']['checkin_sessions']['name'],'Aman Sharma')

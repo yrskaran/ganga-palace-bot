@@ -51,12 +51,42 @@ def public_knowledge(raw):
             continue
         if heading.startswith("# Replace these") or heading.startswith("# Do not change"):
             continue
+        if heading.startswith("The following is the hotel kitchen's current pure-vegetarian room-service menu."):
+            output.append("Published pure-vegetarian room-service food menu (information only):")
+            continue
         output.append(line)
     # Lightweight callers/tests may provide just a flat hotel fact snippet,
     # without the numbered sections found in production hotel_data.txt.
     if not re.search(r"(?m)^\d{1,2}\.\s+[A-Z]", str(raw or "")):
         return str(raw or "").strip()
     return "\n".join(output).strip()
+
+
+def facts_for_conversation(bot, public_text, conversation_query="", max_bytes=9300):
+    """Keep all core hotel facts with each AI turn, regardless of guest wording.
+
+    Guest-facing identity, complete room tariffs, the full published food menu,
+    Aarti facts and Maps links form the stable base. Relevant long local-guide
+    excerpts fit in the remaining budget; actions remain fully disabled.
+    """
+    text = str(public_text or "").strip()
+    section_matches = list(re.finditer(r"(?m)^(\d{1,2})\.\s+[A-Z].*$", text))
+    if not section_matches:
+        return text  # Support flat fact snippets in other callers and tests.
+    sections = {}
+    for idx, match in enumerate(section_matches):
+        end = section_matches[idx + 1].start() if idx + 1 < len(section_matches) else len(text)
+        sections[int(match.group(1))] = text[match.start():end].strip()
+    essential = "\n\n".join(sections.get(n, "") for n in (1, 2, 3, 5) if sections.get(n))
+    remaining = max_bytes - len(essential.encode("utf-8")) - 100
+    guide = sections.get(4, "")
+    if guide and remaining > 450:
+        excerpts = bot._ai_knowledge_snapshot(
+            min(remaining, 5000), conversation_query, raw_override=guide
+        ).strip()
+        if excerpts:
+            essential += "\n\nADDITIONAL LOCAL GUIDE FACTS:\n" + excerpts
+    return essential.strip()
 
 
 # A final boundary for false operational-success claims. This does NOT decide

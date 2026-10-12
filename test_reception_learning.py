@@ -140,6 +140,45 @@ class ReceptionLearningUnitTests(unittest.TestCase):
         self.assertEqual(result,"pending")
         self.bot.notify_reception_request.assert_not_called()
 
+    def test_forwarded_request_has_persistent_ticket_and_reception_quote_id(self):
+        self.bot._ensure_reception_sheet=Mock(return_value=object())
+        self.bot.RECEPTION_REQUEST_HEADERS=["Request ID"]
+        self.ticket["status"]="pending"
+        self.ticket["created"]=learning.time.time()
+        self.ticket["sheet_row"]=2
+        self.ticket["source"]="ai_missing_hotel_knowledge"
+        self.ticket["alert_message_id"]="wamid-new-alert"
+        self.bot.notify_reception_request=Mock(return_value=True)
+        result=learning.forward_unknown(
+            self.bot,self.guest,"Cow milk ka type kya hai?","Cow milk source confirm karein"
+        )
+        self.assertEqual(result,"sent")
+        self.bot._ensure_reception_sheet.assert_called_once()
+        self.bot.notify_reception_request.assert_called_once()
+        self.assertIn("Cow milk source confirm karein",
+                      self.bot.notify_reception_request.call_args.args[2])
+
+    def test_alert_without_persistent_row_never_promises_forwarded_reply(self):
+        self.bot._ensure_reception_sheet=Mock(return_value=object())
+        self.bot.RECEPTION_REQUEST_HEADERS=["Request ID"]
+        self.ticket["status"]="pending"
+        self.ticket["created"]=learning.time.time()
+        self.ticket["source"]="ai_missing_hotel_knowledge"
+        self.ticket["alert_message_id"]="wamid-new-alert"
+        self.bot.notify_reception_request=Mock(return_value=True)
+        self.assertEqual(learning.forward_unknown(self.bot,self.guest,"Room mein locker hai?"),"untracked")
+
+    def test_knowledge_mode_only_records_mapped_reception_statuses(self):
+        ticket={"source":"ai_missing_hotel_knowledge"}
+        with patch.object(app,"KNOWLEDGE_ONLY_MODE",True), \
+             patch.object(app,"KNOWLEDGE_RECEPTION_LEARNING",True), \
+             patch.dict(app.reception_requests_by_alert,{"wamid-learn-alert":ticket}), \
+             patch.object(app,"_update_reception_alert_delivery") as reception, \
+             patch.object(app,"_update_service_alert_delivery",side_effect=AssertionError("Old service called")), \
+             patch.object(app,"_update_lifecycle_delivery",side_effect=AssertionError("Old lifecycle called")):
+            app.record_delivery_statuses([{"id":"wamid-learn-alert","status":"failed","errors":[{"code":131047}]}])
+        reception.assert_called_once_with("wamid-learn-alert","failed",[131047])
+
     def test_forward_failure_does_not_claim_reception_notified(self):
         self.bot.notify_reception_request.return_value=False
         self.assertEqual(learning.forward_unknown(self.bot,self.guest,"Some missing hotel info"),"failed")

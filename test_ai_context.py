@@ -61,7 +61,7 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0],'https://api.cohere.ai/v2/chat')
         self.assertEqual(payload['messages'][0]['role'],'system')
         self.assertEqual(payload['thinking'],{'type':'disabled'})
-        self.assertEqual(payload['response_format'],{'type':'json_object','json_schema':schema})
+        self.assertEqual(payload['response_format'],{'type':'json_object','schema':schema})
 
     def test_native_cohere_rejection_falls_back_to_compatibility_inference(self):
         schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}

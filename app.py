@@ -2865,47 +2865,43 @@ def room_value(row, columns, field, default=""):
 
 
 def get_guest_stay_status(sender_phone):
-    phone = clean_phone(sender_phone)
+    """Verify the single current active stay by phone and checkout timestamp.
 
+    Refuse ambiguous duplicate check-ins, including external Sheets API edits
+    that might bypass spreadsheet data validation.
+    """
+    phone = clean_phone(sender_phone)
     with state_lock:
         rows = list(shared_store.get('rooms', []))
-        headers = [str(x).strip().upper() for x in shared_store.get('room_headers', [])]
-
+        headers = [str(x).strip() for x in shared_store.get('room_headers', [])]
     columns = room_columns(headers)
-    room_col, name_col, phone_col, rate_col, status_col = (
-        columns[k] for k in ("room", "name", "phone", "rate", "status"))
-
-    # Check the newest matching guest record first. This is important when the
-    # same WhatsApp number has older OUT records and a newer IN record.
-    for row in reversed(rows):
-        if not phone or phone_col < 0 or phone_col >= len(row):
+    if not phone or columns['phone'] < 0 or columns['status'] < 0:
+        return None
+    eligible = _eligible_lifecycle_stay_keys(rows, headers, now_ist())
+    active = []
+    checked_out = []
+    for row in rows:
+        if clean_phone(room_value(row, columns, 'phone')) != phone:
             continue
-
         room = clean_room(room_value(row, columns, 'room'))
-        name = str(room_value(row, columns, 'name', 'Guest')).strip()
-        row_phone = clean_phone(row[phone_col])
+        name = str(room_value(row, columns, 'name', 'Guest')).strip() or 'Guest'
         status = _classify_guest_status(room_value(row, columns, 'status'))
-
-        if phone == row_phone:
-            if status == 'CHECKED_IN' and room:
-                return {
-                    'is_inhouse': True,
-                    'status': 'CHECKED_IN',
-                    'room': room,
-                    'name': name or 'Guest',
-                    'price': safe_int(room_value(row, columns, 'rate'), 0),
-                }
-
-            if status == 'CHECKED_OUT':
-                return {
-                    'is_inhouse': False,
-                    'status': 'CHECKED_OUT',
-                    'room': room,
-                    'name': name or 'Guest',
-                }
-
+        if status == 'CHECKED_IN' and (phone, room) in eligible:
+            active.append((row, room, name))
+        elif status == 'CHECKED_OUT':
+            checked_out.append((row, room, name))
+    if len(active) > 1:
+        print('GUEST STAY CONFLICT: multiple active rooms for one phone; actions denied', flush=True)
+        return {'is_inhouse': False, 'status': 'AMBIGUOUS'}
+    if active:
+        row, room, name = active[0]
+        return {'is_inhouse': True, 'status': 'CHECKED_IN', 'room': room,
+                'name': name, 'price': safe_int(room_value(row, columns, 'rate'), 0)}
+    if checked_out:
+        row, room, name = checked_out[-1]
+        return {'is_inhouse': False, 'status': 'CHECKED_OUT',
+                'room': room, 'name': name}
     return None
-
 
 def room_is_available(room_number):
     target = clean_room(room_number)

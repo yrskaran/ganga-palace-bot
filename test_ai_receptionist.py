@@ -81,6 +81,50 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertIsNone(gateway._language_meta(app,self.phone,
             'Punjabi guest ka bill batao'))
 
+    def test_literacy_complaint_recovers_previous_reply_without_menu_action(self):
+        # Real WhatsApp regression: "Padhni ni aundi menu" = cannot read
+        # previous Gurmukhi message; "menu" means "to me", not hotel menu.
+        self.assertEqual(app.guest_language('Padhni ni aundi menu'), 'punjabi')
+        app.conversation_memory[self.phone] = [
+            {'role':'user','content':'Confirm'},
+            {'role':'assistant','content':'ਹਿਤੇਸ਼ ਜੀ, ਰੂਮ 450 ਲਈ 1 x ਛੋਲੇ ਭਟੂਰੇ ਦਾ ਆਰਡਰ ਨੋਟ ਕੀਤਾ ਗਿਆ ਹੈ।'}]
+        app.ask_ai_chat.return_value = (
+            '{"reply":"Room 450 ke liye 1 x Chole Bhature ka order note kiya gaya hai."}')
+        with patch.object(app, '_process_and_reply') as executor:
+            gateway.handle(app, self.phone, 'Padhni ni aundi menu', None,
+                semantic=self.understanding(action='SHOW_MENU', language='punjabi',
+                    menu_section='BREAKFAST'))
+        executor.assert_not_called()
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('Roman Hindi',reply)
+        self.assertIn('Room 450',reply)
+        self.assertNotIn('Breakfast Menu',reply)
+        self.assertFalse(any('\\u0a00' <= ch <= '\\u0a7f' for ch in reply))
+        self.assertEqual(app.guest_language_cache[self.phone], 'hinglish')
+
+    def test_real_food_menu_request_is_not_a_literacy_correction(self):
+        app.conversation_memory[self.phone] = [
+            {'role':'assistant','content':'ਇੱਥੇ ਹੋਟਲ ਦੇ ਨਾਸ਼ਤੇ ਦੀ ਸੂਚੀ ਹੈ।'}]
+        self.assertIsNone(gateway._reading_correction(
+            app,self.phone,'Breakfast menu dikhao'))
+        self.assertIsNone(gateway._reading_correction(
+            app,self.phone,'Menu ka price padh ke batao'))
+
+    def test_ai_reviewer_can_repair_menu_into_conversational_answer(self):
+        import json
+        candidate=self.understanding(action='SHOW_MENU',language='punjabi',
+            menu_section='BREAKFAST')
+        review={'menu_related':False,'blocked':False,'language':'hinglish',
+            'action':'ANSWER','operation_text':'','show_prices':False,
+            'reply':'Sorry ji, pichhla message Roman Hindi mein samjha deti hoon.'}
+        result=gateway.review_plan(app,'Padhni ni aundi menu',candidate,
+            [{'role':'assistant','content':'ਪੰਜਾਬੀ ਵਿਚ ਜਵਾਬ'}],
+            provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'ANSWER')
+        self.assertEqual(result['language'],'hinglish')
+        self.assertNotEqual(result['action'],'SHOW_MENU')
+        self.assertFalse(result['needs_reception'])
+
     def test_failed_qa_hinglish_menu_question_keeps_script_and_verified_item(self):
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':200}]
         gateway.handle(app,self.phone,'Standard veg thali bhi hai?',None,

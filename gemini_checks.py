@@ -38,7 +38,8 @@ def run(bot,run_id):
     if tuple(bot.AI_PROVIDER_ORDER)!=('gemini',):
         raise CheckStopped('Comparison requires an isolated Gemini-only process')
     selected={'02','03','12','26','32'}
-    budget=Budget(bot.requests.post)
+    # Reserve the first failed availability call within the total20-call comparison.
+    budget=Budget(bot.requests.post,limit=19)
     print('GEMINI CHECK START: '+json.dumps({'run_id':run_id,'model':bot.GEMINI_MODEL,
         'key_present':bool(bot.GEMINI_API_KEY),'max_calls':budget.limit,
         'cases':sorted(selected),'context':'fixed synthetic histories; real production interpreter/review/composer/critic; no operational writes'}),flush=True)

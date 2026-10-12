@@ -1,0 +1,122 @@
+{
+  "hasMore": false,
+  "logs": [
+    {
+      "id": "d083b34b-eb7b-4930-9cb4-a051bc8cc4f1",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-9f2tf"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "GEMINI CHECK START: {\"run_id\": \"gemini-compare-20261012-01\", \"model\": \"gemini-3.8-flash\", \"key_present\": true, \"max_calls\": 20, \"cases\": [\"02\", \"03\", \"12\", \"26\", \"32\"], \"context\": \"fixed synthetic histories; real production interpreter/review/composer/critic; no operational writes\"}",
+      "timestamp": "2026-10-12T06:06:11.61791702Z"
+    },
+    {
+      "id": "9f8fa48c-24ae-4bae-961a-afc81271616d",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-9f2tf"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "GEMINI CHECK CONNECTION: {\"status\": 200, \"configured_model_listed\": true}",
+      "timestamp": "2026-10-12T06:06:11.993515289Z"
+    },
+    {
+      "id": "cea92f07-a7be-44dd-bd65-f3ebf0f18778",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-9f2tf"
+        },
+        {
+          "name": "level",
+          "value": "error"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "GEMINI CHAT ERROR: model=gemini-3.8-flash status=503 {",
+      "timestamp": "2026-10-12T06:06:12.629609776Z"
+    },
+    {
+      "id": "5a2be022-cfd2-40c5-aec7-19fb578afccc",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-9f2tf"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "GEMINI CHECK ROW: {\"id\": \"02\", \"run_id\": \"gemini-compare-20261012-01\", \"code_revision\": \"43ece6dfeef4a9a8702154c00b9f10c51db2c84a\", \"question\": \"Kitne ki hai?\", \"history\": [{\"role\": \"user\", \"content\": \"Veg thali hai?\"}, {\"role\": \"assistant\", \"content\": \"Standard Veg Thali menu mein listed hai.\"}], \"plan\": null, \"reply\": \"\", \"source\": \"\", \"errors\": [\"No valid interpreter JSON\", \"No completed actual-model plan\"], \"calls\": 1, \"total_tokens\": 0, \"provider\": \"gemini\", \"model\": \"gemini-3.8-flash\", \"execution\": \"No WhatsApp/Sheets/order/payment writes; isolated result receipts\"}",
+      "timestamp": "2026-10-12T06:06:13.631558501Z"
+    },
+    {
+      "id": "d42b18db-2710-4986-bef6-525b5a7490a5",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-9f2tf"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "GEMINI CHECK SUMMARY: {\"run_id\": \"gemini-compare-20261012-01\", \"completed\": 1, \"calls\": 1, \"total_tokens\": 0, \"blocked\": true}",
+      "timestamp": "2026-10-12T06:06:13.631584981Z"
+    }
+  ],
+  "nextEndTime": "2026-10-12T06:07:05.209054919Z",
+  "nextStartTime": "2026-10-12T06:06:13.631584982Z"
+}

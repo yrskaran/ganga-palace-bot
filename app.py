@@ -4482,7 +4482,7 @@ Hotel knowledge:\n{hotel_db}
             native={"model":COHERE_MODEL,"stream":False,"messages":[
                 dict(m,role='system' if m['role']=='developer' else m['role']) for m in messages],
                 "temperature":0.2,"max_tokens":2048,"thinking":{"type":"disabled"},
-                "response_format":{"type":"json_object","json_schema":contract_schema}}
+                "response_format":{"type":"json_object","schema":contract_schema}}
             print('COHERE CONTRACT: endpoint=v2 thinking=disabled',flush=True)
             res=requests.post('https://api.cohere.ai/v2/chat',json=native,headers=headers,timeout=25)
             if res.status_code in {400,422}:

@@ -1,0 +1,122 @@
+{
+  "hasMore": false,
+  "logs": [
+    {
+      "id": "0d8a78d1-c4dd-4dec-aaab-39ee44a7b04a",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-92n87"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "HOTEL QA LIMIT: {\"model\": \"openai/gpt-oss-120b\", \"stage\": \"interpret\", \"type\": \"daily\"}",
+      "timestamp": "2026-10-12T04:24:12.955179042Z"
+    },
+    {
+      "id": "891a31e2-ff9c-45be-81c9-85c1f745c853",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-92n87"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "HOTEL QA LIMIT: {\"model\": \"qwen/qwen3.8-27b\", \"stage\": \"interpret\", \"type\": \"daily\"}",
+      "timestamp": "2026-10-12T04:30:20.356080695Z"
+    },
+    {
+      "id": "18e138b4-1391-4f6c-b303-fbfbf7f3bb8f",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-92n87"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "HOTEL QA LIMIT: {\"model\": \"openai/gpt-oss-20b\", \"stage\": \"interpret\", \"type\": \"daily\"}",
+      "timestamp": "2026-10-12T04:38:11.228408347Z"
+    },
+    {
+      "id": "2d9933c4-39fb-47c4-a702-dc0b063e1091",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-92n87"
+        },
+        {
+          "name": "level",
+          "value": "error"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "HOTEL QA PROVIDER ERROR: {\"model\": \"google/gemma-4-31b-it:free\", \"provider\": \"openrouter\", \"stage\": \"interpret\", \"status\": 429}",
+      "timestamp": "2026-10-12T04:38:57.0252188Z"
+    },
+    {
+      "id": "3a5c6e37-2760-46c2-813b-ea15ab9136ef",
+      "labels": [
+        {
+          "name": "resource",
+          "value": "srv-dag6vcajnfac73dlcf5g"
+        },
+        {
+          "name": "instance",
+          "value": "srv-dag6vcajnfac73dlcf5g-92n87"
+        },
+        {
+          "name": "level",
+          "value": "info"
+        },
+        {
+          "name": "type",
+          "value": "app"
+        }
+      ],
+      "message": "HOTEL QA BLOCKED: {\"run_id\": \"qa200-20261012-01\", \"completed\": 172, \"reason\": \"No provider batch available\"}",
+      "timestamp": "2026-10-12T04:38:57.027252699Z"
+    }
+  ],
+  "nextEndTime": "2026-10-12T04:40:56.386138201Z",
+  "nextStartTime": "2026-10-12T04:38:57.0272527Z"
+}

@@ -879,5 +879,143 @@
     "errors": [
       "Pillow pending verified; asserts bedsheet incomplete without verified current bedsheet task/status."
     ]
+  },
+  "C13-08": {
+    "verified": true,
+    "errors": [
+      "Failed staff notification hidden; unsupported future electrician update promised",
+      "Hindi script instead of requested Roman Hindi/Hinglish"
+    ],
+    "note": "No verified arrival time exists. Actual synthetic receipt says staff delivery failed, but answer promises to find and notify an arrival time. SERVICE routing also creates another request rather than answers its status.",
+    "fix": "Production composer/critic delivery and promise constraints already deployed; this diagnostic reply bypasses independent result review and is not proof of production repair."
+  },
+  "C14-08": {
+    "verified": true,
+    "errors": [],
+    "note": "Acknowledges guest report that noise resolved without inventing staff completion or closing other complaints."
+  },
+  "C15-08": {
+    "verified": true,
+    "errors": [],
+    "note": "Correctly says no staff late-checkout confirmation and honors prior no-contact instruction. No booking or approval invented."
+  },
+  "C16-08": {
+    "verified": true,
+    "errors": [
+      "English operational receipt sent instead of natural Hinglish answer",
+      "Introduces room-240 payment verification question without stating that payment itself is still unverified"
+    ],
+    "note": "Correctly discloses failed staff delivery and does not mark payment paid. However, raw execution text was copied into the guest reply and did not clearly answer who verified payment.",
+    "fix": "Production composer and independent critic require guest language and verified payment facts; actual production-path recheck pending."
+  },
+  "C17-08": {
+    "verified": true,
+    "errors": [],
+    "note": "Three days before arrival falls within configured published within-five-days cancellation band: full booking amount charged, no refund. No refund action executed; actual booking policy must still be confirmed before finalization."
+  },
+  "C18-08": {
+    "verified": true,
+    "errors": [
+      "English reply despite current Roman Hindi/Hinglish question"
+    ],
+    "note": "Amenity facts and category-specific caveat match configured refrigerator/minibar FAQ; language is wrong."
+  },
+  "C19-08": {
+    "verified": true,
+    "errors": [
+      "Failed reception delivery hidden; unsupported confirmation/update promise"
+    ],
+    "note": "No exact configured Chardham package rate exists. Receipt explicitly says delivery failed; reply instead claims current checking and promises an update.",
+    "fix": "Production composer/critic promise and failure constraints deployed; normal-path actual recheck pending."
+  },
+  "C20-08": {
+    "verified": true,
+    "errors": [
+      "Attempted staff notification failure omitted"
+    ],
+    "note": "Does not invent a medicine and appropriately directs to a doctor. Actual reply is Roman Hinglish; language=hindi metadata fails the automatic contract. Receipt says attempted reception delivery failed, which the reply omits. Missing room-number preservation is not itself a false medical answer."
+  },
+  "C01-09": {
+    "verified": true,
+    "errors": [
+      "Says question recorded at reception despite failed reception delivery; delivery failure omitted"
+    ],
+    "note": "Correctly does not guarantee room hold or create a booking, but local recording and staff receipt are not the same."
+  },
+  "C02-09": {
+    "verified": true,
+    "errors": [
+      "Failed reception WhatsApp delivery omitted"
+    ],
+    "note": "Does not invent wheelchair-accessible bathroom dimensions or guarantee access. Correctly says no confirmation and directs to reception, but omits known failed notification."
+  },
+  "C03-09": {
+    "verified": true,
+    "errors": [
+      "Misreads Roman Hindi bus/bas (only) as transport bus, ignoring check-in conversation",
+      "Creates reception handoff despite explicit do-not-start instruction",
+      "English reply instead of Hinglish; failed delivery omitted"
+    ],
+    "note": "Guest only asked the check-in process and explicitly forbade starting it. Bot instead invents a bus-process question and routes it to staff.",
+    "fix": "Needs production independent plan review and actual contextual recheck; not claimed resolved."
+  },
+  "C04-09": {
+    "verified": true,
+    "errors": [
+      "Hindi-script reply instead of Roman Hindi/Hinglish"
+    ],
+    "note": "Synthetic guest current room 240 is correct; no other guest record exposed or action performed."
+  },
+  "C05-09": {
+    "verified": true,
+    "errors": [],
+    "note": "Final answer uses actual backend Special Deluxe Ganga Thali ₹290, correcting invented candidate ₹250. Explicit no-order request honored; no cart created."
+  },
+  "C06-09": {
+    "verified": true,
+    "errors": [
+      "Unknown reduced-sugar preparation promised as available"
+    ],
+    "note": "No verified customization data supports low-sugar chai; selected NONE and invented a yes instead of asking reception.",
+    "fix": "Production factual/menu preparation review requires reception for unknown customization; actual production recheck pending."
+  },
+  "C07-09": {
+    "verified": true,
+    "errors": [
+      "Hindi-script reply instead of Hinglish"
+    ],
+    "note": "Veg Raita is correct remaining raita option after previously discussed Boondi Raita. Wording should make clear it is the other listed choice, not proof of live stock."
+  },
+  "C08-09": {
+    "verified": true,
+    "errors": [],
+    "note": "Both Veg Pakode and Paneer Pakode are configured options; actual reply is Roman Hindi. Routing, missing canonical items and language metadata fail automatic contracts but actual listed-options fact is correct."
+  },
+  "C09-09": {
+    "verified": true,
+    "errors": [
+      "Repeats guest ingredient question instead of answering unknown ingredients/confirmation status",
+      "Failed reception notification omitted"
+    ],
+    "note": "Does not invent vegetables, but final reply supplies neither the unknown-ingredient caveat nor failed notification status. Actual reply is Roman Hindi although metadata incorrectly says hindi."
+  },
+  "C10-09": {
+    "verified": true,
+    "errors": [
+      "Invents pending Masala Chai order despite saved confirmed order being Poha",
+      "Failed staff notification hidden; unsupported future update promised",
+      "English reply instead of Hinglish"
+    ],
+    "note": "Guest asks chai status; verified synthetic state contains Poha, not a saved chai order. Neither chai arrival nor kitchen status is confirmed. Bot must distinguish that rather than repeat an invented pending chai order.",
+    "fix": "Production review uses saved state as authority and critic rejects unsupported action/update claims; normal-path recheck still pending."
+  },
+  "C11-09": {
+    "verified": true,
+    "errors": [
+      "Direct saved-cart confirmation misclassified as a fresh ORDER, leaving it pending again",
+      "English reply instead of Hinglish"
+    ],
+    "note": "Saved cart before this turn is 2 Butter Naan ₹120. Guest explicitly confirms it. Returned plan re-saves it and final answer asks confirmation again. Item and total remain correct; no dispatch/payment falsely confirmed.",
+    "fix": "Production independent review requires saved-cart confirmation semantics; normal-path recheck pending."
   }
 }

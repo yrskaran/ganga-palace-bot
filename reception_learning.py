@@ -14,6 +14,11 @@ import threading
 from pathlib import Path
 
 _lock = threading.RLock()
+
+
+def enabled(bot):
+    """Explicit opt-in; the established chat flow remains untouched until enabled."""
+    return bool(getattr(bot, "KNOWLEDGE_RECEPTION_LEARNING", False))
 _HANDOFF = re.compile(r"\[\[ASK_RECEPTION:\s*([^\]\r\n]{3,350})\s*\]\]", re.I)
 _TICKET_PREFIX = re.compile(r"^\s*R-[A-F0-9]{6}\s*[:\-\s]\s*", re.I)
 _PRIVATE = re.compile(
@@ -145,8 +150,9 @@ def _pending_same_question(bot, guest_phone, question):
     return bool(ticket and
                 ticket.get("status") in {"pending", "accepted"} and
                 now - float(ticket.get("created") or 0) < bot.RECEPTION_REQUEST_TTL_SECONDS and
-                bot._reception_question_key(ticket.get("request", "")) ==
-                bot._reception_question_key(question))
+                bot._reception_question_key(str(ticket.get("request", "")).split(
+                    "\nReception clarification required:", 1
+                )[0]) == bot._reception_question_key(question))
 
 
 def forward_unknown(bot, guest_phone, guest_text, clarification=""):

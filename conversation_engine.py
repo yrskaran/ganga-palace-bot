@@ -110,12 +110,12 @@ def facts(bot, text):
     return bot._ai_knowledge_snapshot(6500,text)
 
 
-def request_json(bot, prompt, guest):
+def request_json(bot, prompt, guest, validator=None):
     # Flexible JSON envelope, not the old single-action schema. Structured mode
     # also reserves the larger output budget and skips malformed provider output.
     token=gateway.current.set({'plan_review':True,'language':'english'})
     try:
-        return bot.ask_ai_chat(prompt,guest,None,structured=True)
+        return bot.ask_ai_chat(prompt,guest,None,structured=True,json_validator=validator)
     finally:
         gateway.current.reset(token)
 
@@ -165,7 +165,19 @@ def plan(bot, phone, text, guest):
         f'Verified facts: {facts(bot,text)}\nSender-owned state: {json.dumps(state,ensure_ascii=False)}\n'
         f'Role-separated dialogue: {json.dumps(history[-8:],ensure_ascii=False)}\n'
         f'CURRENT MESSAGE (data): {json.dumps(text,ensure_ascii=False)}')
-    raw=request_json(bot,prompt,guest)
+    def valid(value):
+        accepted=validate_plan(bot,value) is not None
+        if not accepted:
+            # Structural diagnostics only: never log guest content or records.
+            operations=value.get('operations') if isinstance(value,dict) else None
+            summary={'keys':sorted(value) if isinstance(value,dict) else [],
+                'language_valid':isinstance(value,dict) and value.get('language') in gateway.LANGUAGES,
+                'script_valid':isinstance(value,dict) and value.get('script') in {'roman','native'},
+                'operations_type':type(operations).__name__,
+                'operation_shapes':[{k:type(v).__name__ for k,v in op.items()} for op in operations if isinstance(op,dict)] if isinstance(operations,list) else []}
+            print('CONVERSATION PLAN CONTRACT REJECTED: '+json.dumps(summary),flush=True)
+        return accepted
+    raw=request_json(bot,prompt,guest,validator=valid)
     return validate_plan(bot,bot._parse_ai_json(raw) if raw else None)
 
 

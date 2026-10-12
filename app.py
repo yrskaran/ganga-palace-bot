@@ -6864,13 +6864,13 @@ def _extract_semantic_guest_message(text):
     return match.group(1).strip() if match else raw.strip()
 
 
-def _ai_knowledge_snapshot(max_chars=3600, user_text=""):
+def _ai_knowledge_snapshot(max_chars=3600, user_text="", raw_override=None):
     """Select whole, source-grounded facts within a UTF-8 byte budget.
 
     Never return the entire growing guide regardless of the requested limit, or
     cut a price/policy halfway through. Backend execution still reads the full file.
     """
-    raw = str(get_hotel_data() or "").strip()
+    raw = str((get_hotel_data() if raw_override is None else raw_override) or "").strip()
     if not raw or max_chars <= 0:
         return ""
     query = normalize_text(user_text)
@@ -11748,7 +11748,8 @@ def knowledge_only_admin_guard():
 
 @app.route("/", methods=["GET"])
 def index():
-    return f"{get_hotel_name()} WhatsApp Bot is Live | {APP_VERSION}", 200
+    name = knowledge_only.read_hotel_file(sys.modules[__name__])[1] if KNOWLEDGE_ONLY_MODE else get_hotel_name()
+    return f"{name} WhatsApp Bot is Live | {APP_VERSION}", 200
 
 
 def current_memory_mb():
@@ -11773,7 +11774,8 @@ def health():
         "version": APP_VERSION,
         "mode": "knowledge-only" if KNOWLEDGE_ONLY_MODE else "operations",
         "conversation_engine": "disabled" if KNOWLEDGE_ONLY_MODE else ("tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action"),
-        "hotel": get_hotel_name(),
+        "hotel": knowledge_only.read_hotel_file(sys.modules[__name__])[1] if KNOWLEDGE_ONLY_MODE else get_hotel_name(),
+        "knowledge_source": "hotel_data.txt" if KNOWLEDGE_ONLY_MODE else ("customer_config.json" if CUSTOMER_CONFIG else "hotel_data.txt"),
         "memory_rss_mb": current_memory_mb(),
         "sheet_synced": bool(synced),
         "sheet_last_synced": synced,
@@ -11993,7 +11995,7 @@ def startup():
     if KNOWLEDGE_ONLY_MODE:
         # Webhook inbox/outbox for text replies only. Never start sheet sync,
         # guest lifecycle, payment alerts, service auto-resolve or owner reports.
-        print("KNOWLEDGE ONLY MODE: all hotel operations and scheduled jobs are paused", flush=True)
+        print("KNOWLEDGE ONLY MODE: hotel_data.txt only; all hotel operations and scheduled jobs paused", flush=True)
         for target, name in ((durable_runtime.inbox_loop, "durable-inbox"),
                              (durable_runtime.loop, "durable-outbox")):
             threading.Thread(target=target, args=(sys.modules[__name__],), daemon=True, name=name).start()

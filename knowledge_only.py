@@ -8,6 +8,7 @@ import json
 import os
 import re
 import reception_learning
+import conversation_quality
 from pathlib import Path
 
 
@@ -185,6 +186,9 @@ def process(bot, message, sender_phone, msg_type):
     if not reply:
         reply = ("Abhi AI se sahi jawab nahi mil pa raha ji. "
                  "Is chat mein koi hotel request ya action nahi kiya gaya.")
+
+    if reply:
+        reply = conversation_quality.reconsider(bot, text, sender_phone, reply)
 
     reply, uncertainty = (reception_learning.extract_handoff(reply)
                           if reception_learning.enabled(bot) else (reply, ""))

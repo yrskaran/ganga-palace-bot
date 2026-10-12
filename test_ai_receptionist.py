@@ -36,6 +36,65 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         return dict({'action': 'ANSWER', 'reply': 'AI ne poori baat samjhi.',
                      'language': 'hinglish', 'confidence': 0.95}, **values)
 
+    def test_failed_qa_hinglish_menu_question_keeps_script_and_verified_item(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':200}]
+        gateway.handle(app,self.phone,'Standard veg thali bhi hai?',None,
+            semantic=self.understanding(action='MENU_ITEM_INFO',language='english',
+                items=[{'name':'Standard Veg Thali','qty':1}],show_prices=False))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('menu mein',reply)
+        self.assertIn('Standard Veg Thali',reply)
+        self.assertNotIn('₹',reply)
+        self.assertEqual(app.guest_language_cache[self.phone],'hinglish')
+
+    def test_failed_qa_hindi_price_question_has_devanagari_intro(self):
+        app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':200}]
+        gateway.handle(app,self.phone,'थाली कितने की है?',None,
+            semantic=self.understanding(action='MENU_ITEM_INFO',language='hinglish',
+                items=[{'name':'Standard Veg Thali','qty':1}],show_prices=True))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('कीमत',reply)
+        self.assertIn('Standard Veg Thali — ₹200',reply)
+        self.assertEqual(app.guest_language_cache[self.phone],'hindi')
+
+    def test_failed_qa_bed_enquiry_keeps_room_context_and_requires_verification(self):
+        app.CUSTOMER_CONFIG['rooms'] = [{'name':'Premium Window'}]
+        app.conversation_memory[self.phone] = [
+            {'role':'assistant','content':'Premium Window room ki photo available hai.'}]
+        with patch.object(app,'reply_to_reception_request',return_value=False) as handoff:
+            gateway.handle(app,self.phone,'2 alag bed milenge ya double bed?',None,
+                semantic=self.understanding(action='ROOM_OPTIONS',
+                    reply='Available room categories are Deluxe and Premium Window.'))
+        handoff.assert_called_once()
+        request=handoff.call_args.args[2]
+        self.assertIn('Premium Window',request)
+        self.assertIn('2 alag bed',request)
+        self.assertNotIn('categories',request)
+
+    def test_failed_qa_group_count_does_not_turn_into_room_category_list(self):
+        app.CUSTOMER_CONFIG['rooms'] = [{'name':'Family Suite'}]
+        with patch.object(app,'reply_to_reception_request',return_value=False) as handoff:
+            gateway.handle(app,self.phone,'Hum 2 adults aur ek 6 saal ka baccha hain',None,
+                semantic=self.understanding(action='ROOM_OPTIONS',
+                    reply='Ji, Family Suite available hai.'))
+        self.assertIn('6 saal',handoff.call_args.args[2])
+        self.assertEqual(app.guest_language_cache[self.phone],'hinglish')
+
+    def test_failed_qa_photo_receives_current_message_not_only_model_target(self):
+        with patch.object(app,'_handle_ai_photo_route') as photos:
+            gateway.handle(app,self.phone,'Ab hotel bahar se kaisa hai wo photo bhejo',None,
+                semantic=self.understanding(action='SHOW_PHOTO',photo_target='Hotel Exterior'))
+        photos.assert_called_once()
+        self.assertEqual(photos.call_args.args[3],
+                         'Ab hotel bahar se kaisa hai wo photo bhejo')
+
+    def test_failed_qa_checkin_process_decline_is_not_claimed_as_cancellation(self):
+        gateway.handle(app,self.phone,'Main bas process pooch raha tha, start mat karo',None,
+            semantic=self.understanding(action='CHECKIN_CANCEL'))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('koi self check-in chal nahi raha',reply)
+        self.assertFalse(app.checkin_sessions)
+
     def test_enabled_interpreter_keeps_recent_context_within_input_budget(self):
         app.conversation_memory[self.phone] = [
             {'role':'user','content':'Standard veg thali bhi hai?'},
@@ -241,7 +300,10 @@ class ReceptionistBoundaryTests(unittest.TestCase):
             gateway.handle(app, self.phone, 'Butter roti hai?', None,
                 semantic=self.understanding(action='MENU_ITEM_INFO', items=[{'name':'Tawa Roti Butter','qty':1}], show_prices=False))
         source = app.send_whatsapp_message.call_args.args[1]
-        self.assertEqual(source, '• Tawa Roti Butter')
+        self.assertTrue(source.endswith('• Tawa Roti Butter'))
+        self.assertIn('menu mein',source)
+        self.assertNotIn('DEMO',source)
+        self.assertNotIn('order confirm',source.lower())
 
     def test_snapshot_preserves_only_senders_confirmed_order(self):
         with patch.object(app, 'active_orders', {

@@ -498,7 +498,14 @@ def _menu_item_info(bot, phone, result):
         return
     if bot.CUSTOMER_DEMO_MODE:
         lines.append('DEMO menu; kitchen availability confirm nahi hai.' if (current.get() or {}).get('language') == 'hinglish' else 'DEMO menu; no real kitchen availability confirmed.')
-    bot.send_whatsapp_message(phone, '\n'.join(lines))
+    lang = (current.get() or {}).get('language', 'english')
+    if lang == 'hindi':
+        prefix = 'जी, मेन्यू में यह कीमत दर्ज है:\n' if result.get('show_prices') else 'जी, मेन्यू में ये विकल्प दर्ज हैं:\n'
+    elif lang == 'hinglish':
+        prefix = 'Ji, menu mein yeh rate listed hai:\n' if result.get('show_prices') else 'Haan ji, menu mein yeh options listed hain:\n'
+    else:
+        prefix = 'The menu lists this price:\n' if result.get('show_prices') else 'These options are listed on the menu:\n'
+    bot.send_whatsapp_message(phone, prefix + '\n'.join(lines))
 
 
 def handle(bot, phone, text, guest, message=None, semantic=None):
@@ -511,8 +518,32 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         return True
     action = str(result.get('action', 'NONE')).upper()
     language = result.get('language')
+    # The model can confuse English menu names for an English guest reply.
+    # A clear Roman-Hindi or Devanagari current message takes precedence.
+    detected = bot.guest_language(text)
+    if detected in {'hinglish', 'hindi'} and language != detected:
+        language = detected
     if language not in LANGUAGES:
         language = bot.get_guest_response_language(phone)
+    # AI interpretation precedes all actions. As a fail-closed safety check,
+    # a room-category list must not stand in for unverified bed/capacity facts.
+    if action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
+        r'\b(?:adults?|children|child|kids?|bacch[ae]|bachch[ae]|'
+        r'(?:double|single|twin|alag|separate|extra)\s+beds?|'
+        r'beds?\s+(?:arrangement|milenge|hoga|hain))\b',
+        text, re.I,
+    ):
+        rooms = [str(room.get('name', '')) for room in (bot.CUSTOMER_CONFIG or {}).get('rooms', [])
+                 if isinstance(room, dict) and room.get('name')]
+        recent = bot._ai_recent_history(phone)
+        selected = next((name for entry in reversed(recent[-6:]) for name in rooms
+                         if name.casefold() in str(entry.get('content', '')).casefold()), '')
+        resolved = (f'For {selected}: {text}' if selected and selected.casefold() not in text.casefold()
+                    else text)
+        result = dict(result, action='RECEPTION', category='RECEPTION',
+                      needs_reception=True, reception_request=resolved,
+                      reception_followup=False, operation_text=resolved, reply='', items=[])
+        action = 'RECEPTION'
     with bot.state_lock:
         bot.guest_language_cache[phone] = language
     turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
@@ -536,7 +567,12 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                     bot.checkin_sessions.pop(phone, None)
                     outcome = 'Pending self check-in stopped. No active hotel stay or guest record was cancelled.'
                 else:
-                    outcome = 'No pending self check-in was stopped. Active stays and reception verification cannot be cancelled here.'
+                    outcome = ('Ji, koi self check-in chal nahi raha tha. Aap sirf process pooch rahe the; '
+                               'koi naya check-in ya reception request shuru nahi kiya.')
+            if language == 'hindi' and outcome.startswith('Ji,'):
+                outcome = 'जी, कोई सेल्फ चेक-इन शुरू नहीं हुआ था। आपने केवल प्रक्रिया पूछी थी।'
+            elif language == 'english' and outcome.startswith('Ji,'):
+                outcome = 'No self check-in was in progress. Your process enquiry did not start a check-in or contact reception.'
             bot.send_whatsapp_message(phone, outcome)
         elif action == 'AVAILABILITY':
             bot.send_whatsapp_message(phone, 'Live room availability has not been verified. No new reception request or booking was made. Reception must confirm availability.')
@@ -555,7 +591,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                     data = bot._menu_section_message(section, include_prices=result.get('show_prices', False), sender_phone=phone, include_cta=False)
                     send_menu(bot, phone, [data or 'Configured menu section unavailable.'])
         elif action == 'SHOW_PHOTO':
-            bot._handle_ai_photo_route(phone, guest, result, result.get('photo_target', ''))
+            bot._handle_ai_photo_route(phone, guest, result, text)
         elif action == 'ROOM_OPTIONS':
             # Room comparisons already have an AI-written, independently reviewed
             # answer. Verify it against complete static records before rendering;

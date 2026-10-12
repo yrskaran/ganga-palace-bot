@@ -193,6 +193,7 @@ def process(bot, message, sender_phone, msg_type):
         acknowledgement = {
             "sent": "Ji, ye sawaal reception ko bhej diya hai. Unka jawab aane par yahin forward kar dungi.",
             "pending": "Ji, ye sawaal pehle se reception ke paas hai. Unka jawab milne par yahin forward kar dungi.",
+            "untracked": "Ji, reception ke WhatsApp par message accept hua hai, lekin jawab ki tracking save nahi hui. Zaroori ho toh reception se seedha sampark karein.",
             "failed": "Ji, abhi reception ko WhatsApp par message nahi pahunch paaya. Kripya front desk se seedha sampark karein.",
         }[result]
         outgoing = (reply + "\n\n" + acknowledgement).strip() if reply else acknowledgement

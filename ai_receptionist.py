@@ -98,8 +98,13 @@ def interpretation_prompt(bot, text, guest, phone, pending):
         'Interpret the whole guest turn as the virtual hotel receptionist; JSON only. '
         'Use role-separated history for pronouns, missing subjects, typos and corrections; current topic wins. '
         'AI understands and replies; Python validates and executes. State receipts alone prove saved actions. '
-        'Language comes from the CURRENT guest message: english, hinglish for Roman Hindi, hindi for Devanagari; '
-        'match language/script, including switches. Warm 1-3 sentences; no repeated greetings, reasoning or internal terminology. '
+        'Language comes from the CURRENT guest message and any explicit preference: English, simple Roman Hindi/Hinglish, '
+        'Devanagari Hindi, Punjabi (Roman or Gurmukhi), and other configured Indian languages are supported. '
+        'Do NOT claim that the assistant speaks only Hindi or English. A question like Punjabi bhi aati hai? is about '
+        'language capability, not a request to switch. A command like Punjabi vich gal karo changes language. '
+        'Keep Roman Hindi casual: common words such as baat, madad, batao, not stiff shuddh Hindi or '
+        'repeated sahayata/kripya. For Hinglish keep Latin letters. Follow the guest script and language preference. '
+        'Warm 1-3 sentences; no repeated greetings, reasoning or internal terminology. '
         'Use verified facts only; do not invent requirements, document policies, stock, timing, payment or delivery. '
         'Unknown hotel facts use RECEPTION, needs_reception=true, with the fully resolved question in reception_request. '
         'Same pending request uses reception_followup=true; a changed request is new. Never claim staff action before a receipt. '
@@ -175,7 +180,12 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         '"action":"MENU_ITEM_INFO|SHOW_MENU|RECEPTION|ANSWER","menu_section":"","items":[{"name":"exact configured name","qty":1}],'
         '"excluded_items":[],"show_prices":false,"needs_reception":false,"reception_request":"",'
         '"understood_as":"short corrected meaning","reply":"only for ANSWER"}. excluded_items is an array of exact configured name strings to omit, empty when none.\n'
-        'Every branch must return language using exact lowercase values: english for clear English, hinglish for Hindi in Latin letters, hindi for Devanagari. Do not label Roman Hindi as hindi. Do not let English item names or candidate wording change the current guest language. For example "Kal 2 logo ke liye kamra milega?" is hinglish. Use only the chosen branch schema; all enum examples separated by | mean select ONE exact value.\n'
+        'Every branch must return one configured language code: english for clear English, hinglish for Hindi in Latin letters, '
+        'hindi for Devanagari, punjabi for Punjabi (Roman or Gurmukhi), or another supported code if explicitly requested. '
+        'Do not label Roman Hindi as hindi or claim Punjabi is unsupported. If the guest asks whether you know Punjabi, '
+        'answer yes; it is not a switch instruction. Never force overly formal Hindi in casual Roman-script chat. '
+        'Do not let English item names or candidate wording change the current guest language. '
+        'Use only the chosen branch schema; enum values separated by | mean select ONE exact value.\n'
         f'Canonical inventory: {json.dumps(inventory, ensure_ascii=False)}\n'
         f'Verified hotel facts: {bot._ai_knowledge_snapshot(1600, text) if candidate.get("action") in info_actions and hasattr(bot, "_ai_knowledge_snapshot") else "Only explicitly supplied facts are verified."}\n'
         f'Verified session state: {json.dumps(pending if pending is not None else snapshot(bot, phone, text), ensure_ascii=False)}\n'
@@ -508,6 +518,92 @@ def _menu_item_info(bot, phone, result):
     bot.send_whatsapp_message(phone, prefix + '\n'.join(lines))
 
 
+def _language_conversation_reply(bot, phone, text):
+    """Ground language preferences/capabilities in the bot's actual supported set.
+
+    A question *about* Punjabi is not automatically an instruction to switch;
+    an explicit language preference is. Keep this boundary narrow so unrelated
+    hotel/service questions are still interpreted by the model.
+    """
+    raw = str(text or '').strip()
+    normal = raw.lower()
+    supported = {
+        'hindi': r'\bhindi\b|हिंदी|हिन्दी',
+        'punjabi': r'\bpunjabi\b|ਪੰਜਾਬੀ',
+        'english': r'\benglish\b',
+        'bengali': r'\bbengali\b|বাংলা',
+        'marathi': r'\bmarathi\b|मराठी',
+        'gujarati': r'\bgujarati\b|ગુજરાતી',
+        'tamil': r'\btamil\b|தமிழ்',
+        'telugu': r'\btelugu\b|తెలుగు',
+        'kannada': r'\bkannada\b|ಕನ್ನಡ',
+        'malayalam': r'\bmalayalam\b|മലയാളം',
+        'urdu': r'\burdu\b|اردو',
+        'rajasthani': r'\brajasthani\b|राजस्थानी',
+        'garhwali': r'\bgarhwali\b|गढ़वाली',
+        'kumaoni': r'\bkumaoni\b|कुमाऊनी',
+        'odia': r'\bodia\b|ओड़िया',
+    }
+    mentioned = [(name, match.start()) for name, pattern in supported.items()
+                 if name in LANGUAGES
+                 for match in [re.search(pattern, normal, re.I)] if match]
+    mentioned.sort(key=lambda pair: pair[1])
+    # Questions about the bot's language abilities, including "Punjabi bhi
+    # aati hai?", must answer truthfully without switching preference.
+    ability = bool(re.search(
+        r'\b(?:aati|aata|aandi|aundi|aavdi|samajh|speak|understand|languages?|bhasha|bol sakti|bol sakte)\b|'
+        r'आती है|ਬੋਲ|ਸਮਝ', normal, re.I))
+    question = bool(re.search(r'\?|\bkya\b|\bcan you\b|\bwhich\b|\bkitni\b|\bkaun', normal, re.I))
+    if (mentioned and ability and question) or (
+        not mentioned and question and re.search(r'\b(?:language|languages|bhasha|boli)\b',normal)
+        and re.search(r'\b(?:kaun|which|what|aati|speak|know)\b',normal)
+    ):
+        preferred = bot.get_guest_response_language(phone)
+        if mentioned and mentioned[0][0] == 'punjabi':
+            answer = ('Haan ji, Punjabi vich vi gall kar sakdi haan 😊 '
+                      'Tusi Punjabi vich likho, main usi vich jawab devangi.')
+        elif mentioned and mentioned[0][0] == 'hindi':
+            answer = ('Haan ji, simple Hindi mein bhi baat kar sakti hoon. '
+                      'Bilkul aaram se poochho 😊')
+        elif preferred == 'english' and re.search(r'\b(?:what|which|can you)\b',normal):
+            answer = ('Yes! I can chat in Hindi, English, Punjabi and several '
+                      'other Indian languages. Which would you prefer?')
+        else:
+            answer = ('Haan ji, Hindi, English, Punjabi aur kai aur Indian '
+                      'languages mein bhi baat kar sakti hoon. Jo easy lage usmein bolo 😊')
+        return (None, answer)
+
+    # A language mention alone ("Punjabi bhi aati hai") is not a switch.
+    # Require a direct language/style instruction with an indicated target.
+    change_instruction = bool(re.search(
+        r'\b(?:samjha|samjhao|samjhaao|samjhaiye|samjhana|bol|bolo|bolna|bolo na|baat|'
+        r'batana|batao|bataiye|reply|respond|speak|talk|explain|likho|karo|karna|'
+        r'gal|gall|gallaan|vich|mein|me|in)\b|'
+        r'बोलो|बात करो|समझाओ|ਪੰਜਾਬੀ ਵਿੱਚ|ਵਿੱਚ ਗੱਲ', normal, re.I))
+    if not mentioned or not change_instruction:
+        return None
+    target = mentioned[0][0]
+    if target == 'hindi' and bot.guest_script(text) == 'roman':
+        target = 'hinglish'  # Everyday Hindi in the guest's own Roman script.
+    if target == 'hindi':
+        answer = 'Haan ji, ab se seedhi-saadi Hindi mein baat karungi. Batao, kya samajhna hai? 😊'
+    elif target == 'hinglish':
+        answer = ('Haan ji, ab simple Hindi mein hi samjhaungi, aise hi jaise '
+                  'aap likh rahe ho. English ki zarurat nahi 😊')
+    elif target == 'punjabi':
+        if bot.guest_script(text) == 'gurmukhi':
+            answer = 'ਹਾਂ ਜੀ, ਹੁਣ ਪੰਜਾਬੀ ਵਿੱਚ ਗੱਲ ਕਰਾਂਗੀ। ਦੱਸੋ, ਕੀ ਮਦਦ ਚਾਹੀਦੀ ਹੈ? 😊'
+        else:
+            answer = 'Haan ji, hun Punjabi vich gall karangi. Tusi aaram naal dasso 😊'
+    elif target == 'english':
+        answer = "Sure, I'll use simple English from now on. How can I help?"
+    else:
+        # Other configured languages are handled by the AI, guided by this
+        # explicit preference. Do not fabricate translated text.
+        answer = None
+    return (target, answer)
+
+
 def handle(bot, phone, text, guest, message=None, semantic=None):
     """One interpretation, one explicitly selected operation, grounded response."""
     result = semantic if semantic is not None else bot.understand_guest_request(text, guest, phone)
@@ -544,12 +640,35 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
                       needs_reception=True, reception_request=resolved,
                       reception_followup=False, operation_text=resolved, reply='', items=[])
         action = 'RECEPTION'
+    language_meta = _language_conversation_reply(bot, phone, text)
+    if language_meta is not None:
+        requested_language, short_reply = language_meta
+        if requested_language:
+            language = requested_language
+        elif bot.get_guest_response_language(phone) in LANGUAGES:
+            # A language capability question must not overwrite a prior
+            # preference just because it mentions another language.
+            language = bot.get_guest_response_language(phone)
+    else:
+        # Short language-neutral follow-ups inherit an explicitly chosen
+        # regional language instead of reverting to the provider's English.
+        previous = bot.get_guest_response_language(phone)
+        if (previous in {'punjabi', 'hindi', 'hinglish'}
+                and detected == 'english'
+                and len(str(text).split()) <= 3
+                and not re.search(r'(?i)^\s*(?:what|which|where|why|how|can you|please explain)\b',text)):
+            language = previous
     with bot.state_lock:
         bot.guest_language_cache[phone] = language
     turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
             'language': language, 'meaning': result.get('understood_as', ''), 'direct': False}
     token = current.set(turn)
     try:
+        if language_meta is not None and language_meta[1]:
+            _direct(bot, phone, language_meta[1])
+            bot.remember_conversation(phone, 'user', text)
+            bot.remember_conversation(phone, 'assistant', language_meta[1])
+            return True
         if action == 'NONE' or result.get('confidence', 0) < 0.65:
             _direct(bot, phone, result.get('reply') or 'Could you clarify what you need?')
             return True

@@ -300,7 +300,10 @@ class ReceptionistBoundaryTests(unittest.TestCase):
             gateway.handle(app, self.phone, 'Butter roti hai?', None,
                 semantic=self.understanding(action='MENU_ITEM_INFO', items=[{'name':'Tawa Roti Butter','qty':1}], show_prices=False))
         source = app.send_whatsapp_message.call_args.args[1]
-        self.assertEqual(source, '• Tawa Roti Butter')
+        self.assertTrue(source.endswith('• Tawa Roti Butter'))
+        self.assertIn('menu mein',source)
+        self.assertNotIn('DEMO',source)
+        self.assertNotIn('order confirm',source.lower())
 
     def test_snapshot_preserves_only_senders_confirmed_order(self):
         with patch.object(app, 'active_orders', {

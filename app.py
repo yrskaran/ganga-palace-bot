@@ -10563,6 +10563,63 @@ def _room_status_column_index(headers):
     return -1
 
 
+def _eligible_lifecycle_stay_keys(room_rows, room_headers, current):
+    """Use completed checkout timestamps and the latest stay per phone, not status alone.
+
+    A previous room can remain marked CHECKED_IN after an actual checkout. If a
+    later checkout exists for the same WhatsApp number, never send that number
+    a reminder for an older stay. A genuine new check-in after checkout is valid.
+    Only checks existing cached Rooms data; no extra Google Sheets API reads.
+    """
+    columns = room_columns(room_headers)
+    if any(columns[key] < 0 for key in ("room", "phone", "status")):
+        return set()
+
+    normalized = [normalize_text(h).replace(" ", "_") for h in room_headers]
+    def time_col(*aliases):
+        for alias in aliases:
+            key = normalize_text(alias).replace(" ", "_")
+            if key in normalized:
+                return normalized.index(key)
+        return -1
+
+    in_col = time_col("CHECK IN TIME", "CHECK-IN TIME", "CHECKIN TIME")
+    out_col = time_col("CHECK OUT TIME", "CHECK-OUT TIME", "CHECKOUT TIME")
+    most_recent_exit = {}
+    possible = []
+    for row in room_rows:
+        phone = clean_phone(room_value(row, columns, "phone"))
+        room = clean_room(room_value(row, columns, "room"))
+        if not phone or not room:
+            continue
+        status = _classify_guest_status(room_value(row, columns, "status"))
+        entered_raw = row[in_col] if 0 <= in_col < len(row) else ""
+        exited_raw = row[out_col] if 0 <= out_col < len(row) else ""
+        entered = _parse_sheet_datetime(entered_raw)
+        exited = _parse_sheet_datetime(exited_raw)
+        completed_exit = bool(exited and exited <= current and
+                              (entered is None or exited >= entered))
+        if completed_exit:
+            previous = most_recent_exit.get(phone)
+            if previous is None or exited > previous:
+                most_recent_exit[phone] = exited
+        if status != "CHECKED_IN":
+            continue
+        # Actual checkout is authoritative, even if the status cell was not
+        # changed; an invalid, populated checkout timestamp is ambiguous.
+        if exited_raw and (not exited or entered is None or exited >= entered):
+            continue
+        possible.append((phone, room, entered))
+
+    authorized = set()
+    for phone, room, entered in possible:
+        last_exit = most_recent_exit.get(phone)
+        if last_exit and (entered is None or entered <= last_exit):
+            continue
+        authorized.add((phone, room))
+    return authorized
+
+
 def reconcile_lifecycle_from_room_sheet():
     """Keep Lifecycle_Automation as a compact active-stay queue only.
 
@@ -10630,7 +10687,9 @@ def reconcile_lifecycle_from_room_sheet():
                              if normalize_text(h).replace(" ", "_") in {"check_out_time", "out_time", "check-out_time"}), -1)
 
         active = {}
-        now_text = now_ist().strftime("%d-%b-%Y %I:%M %p")
+        reconcile_now = now_ist()
+        active_keys = _eligible_lifecycle_stay_keys(rooms, rh, reconcile_now)
+        now_text = reconcile_now.strftime("%d-%b-%Y %I:%M %p")
 
         # Rooms is authoritative for active stays and check-in/check-out timestamps.
         for rr_idx, row in enumerate(rooms, start=2):
@@ -10644,6 +10703,10 @@ def reconcile_lifecycle_from_room_sheet():
             is_in = "IN" in status and "OUT" not in status
             is_out = "OUT" in status
 
+            if is_in and (phone, room) not in active_keys:
+                # Checkout timestamp, or a newer checkout on this shared
+                # number, invalidated the old CHECKED_IN status.
+                continue
             if is_in:
                 checkin_raw = str(row[room_in_col] if room_in_col >= 0 and len(row) > room_in_col else "").strip()
                 if room_in_col >= 0 and not checkin_raw:
@@ -11275,6 +11338,7 @@ def monitor_guest_status_lifecycle():
             room_phone_col=_find_room_col(("PHONE (E)","PHONE","WHATSAPP","MOBILE"),4)
             room_room_col=_find_room_col(("ROOM (A)","ROOM"),0)
             room_name_col=_find_room_col(("GUEST NAME (D)","GUEST NAME","GUEST"),3)
+            active_stay_keys = _eligible_lifecycle_stay_keys(room_data, room_headers, current)
             room_time_map={}
             for rr in room_data:
                 rp=clean_phone(rr[room_phone_col] if len(rr)>room_phone_col else ""); rm=clean_room(rr[room_room_col] if len(rr)>room_room_col else "")
@@ -11341,6 +11405,11 @@ def monitor_guest_status_lifecycle():
                 # -----------------------------
                 # IN-HOUSE LIFECYCLE
                 # -----------------------------
+                if is_in and (phone, room) not in active_stay_keys:
+                    # Never use a stale Lifecycle_Automation row as evidence
+                    # that its recipient is still an in-house guest.
+                    print(f"LIFECYCLE SKIPPED INACTIVE: room={room}", flush=True)
+                    continue
                 if is_in:
                     # One-time arrival messages must never be sent days late after a
                     # deploy/repair. Retry only within a sensible post-check-in window.

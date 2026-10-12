@@ -12015,6 +12015,14 @@ def startup():
         print("KNOWLEDGE ONLY MODE: hotel_data.txt only; all hotel operations and scheduled jobs paused", flush=True)
         print("RECEPTION FACT HANDOFF: enabled=" + str(KNOWLEDGE_RECEPTION_LEARNING)
               + " configured_reception=" + str(bool(format_whatsapp_number(RECEPTION_PHONE))), flush=True)
+        if KNOWLEDGE_RECEPTION_LEARNING:
+            # Restore the local UTF-8 learned knowledge mirror from the durable
+            # Reception_Knowledge Sheet after a new Render build/restart.
+            threading.Thread(
+                target=knowledge_only.reception_learning.refresh_text_file,
+                args=(sys.modules[__name__],), kwargs={"force": True},
+                daemon=True, name="learned-hotel-text-restore"
+            ).start()
         for target, name in ((durable_runtime.inbox_loop, "durable-inbox"),
                              (durable_runtime.loop, "durable-outbox")):
             threading.Thread(target=target, args=(sys.modules[__name__],), daemon=True, name=name).start()

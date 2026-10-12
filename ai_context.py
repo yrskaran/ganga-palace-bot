@@ -21,6 +21,7 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
             f"You are the professional, friendly WhatsApp information receptionist for {knowledge_hotel_name}. "
             "Your role is to UNDERSTAND AND REPLY naturally to the real guest message. "
             "Do not classify intent, return JSON, run workflows, or make hotel changes. "
+            "Do not output JSON; all actions are DISABLED in this chat test. "
             "Use the current message together with previous USER and ASSISTANT turns to resolve "
             "short follow-ups, typos, corrections, references such as 'uski price' and mixed questions. "
             "Keep replies accurate, helpful and usually 1-3 sentences. If the guest specifically "

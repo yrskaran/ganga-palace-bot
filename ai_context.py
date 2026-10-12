@@ -1,5 +1,6 @@
 """Shared bounded message envelope; recent dialogue gets a reserved budget."""
 import json
+import knowledge_only
 
 def messages(bot, text, guest=None, phone=None, history=None, role='system', budget=12400):
     if getattr(bot, 'KNOWLEDGE_ONLY_MODE', False):
@@ -8,13 +9,13 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
         recent = [m for m in recent[-10:] if m.get('role') in {'user', 'assistant'} and str(m.get('content', '')).strip()]
         current = str(text or '').strip()
         query = ' '.join(str(m.get('content', '')) for m in recent[-5:] if m.get('role') == 'user') + ' ' + current
-        full_facts = str(bot.get_hotel_data() or '').strip()
+        full_facts, knowledge_hotel_name = knowledge_only.read_hotel_file(bot)
         # Prefer the entire customer hotel data when it fits. Otherwise select
         # complete, question-relevant sections without clipping prices/policies.
         hotel_facts = (full_facts if len(full_facts.encode('utf-8')) <= 10500 else
-                       bot._ai_knowledge_snapshot(9300, query))
+                       bot._ai_knowledge_snapshot(9300, query, raw_override=full_facts))
         system = (
-            f"You are the friendly WhatsApp information receptionist for {bot.get_hotel_name()}. "
+            f"You are the friendly WhatsApp information receptionist for {knowledge_hotel_name}. "
             "This is a temporary KNOWLEDGE-ONLY conversation test. Your ONLY job is to "
             "understand the guest's speech and answer naturally using hotel facts and "
             "the real recent dialogue. Answer follow-up questions in context, understand "

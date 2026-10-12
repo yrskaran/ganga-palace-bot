@@ -60,6 +60,12 @@ def loop(app):
     while True:
         try:
             for row in app.durable_store.due_sends():
+                if (getattr(app, 'KNOWLEDGE_ONLY_MODE', False) and
+                        row.get('created', 0) < getattr(app, 'KNOWLEDGE_ONLY_STARTED_AT', 0)):
+                    # An old unsubmitted hotel operation may not be delivered
+                    # after switching the bot into chat-only mode.
+                    app.durable_store.send_result(row['id'], 'suppressed')
+                    continue
                 transmit(app,row['id'],json.loads(row['body']))
             # Technical diagnostics must be deliberately enabled for a separate admin number.
             # They are never automatically sent to a guest just because OWNER_PHONE is set.

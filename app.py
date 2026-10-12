@@ -4492,6 +4492,24 @@ Hotel knowledge:\n{hotel_db}
         else:
             res = _post_cohere(payload, 25)
 
+        if res.status_code == 200 and structured and contract_schema:
+            # A successful HTTP response may still contain analysis instead of
+            # the requested final JSON, even with native JSON mode enabled.
+            # Retry only the inference (never hotel actions) through the
+            # compatibility endpoint, then apply the same output validation.
+            native_data = res.json() or {}
+            native_text = _ai_content_is_usable(_cohere_extract_text(native_data), "Cohere")
+            try:
+                native_json = json.loads(native_text) if native_text else None
+            except (ValueError, TypeError):
+                native_json = None
+            native_finish = str(native_data.get("finish_reason") or "").upper()
+            missing_required = (not isinstance(native_json, dict) or
+                any(key not in native_json for key in contract_schema.get("required", [])))
+            if missing_required or native_finish in {"LENGTH", "MAX_TOKENS"}:
+                print("COHERE CONTRACT RETRY: native final JSON unusable; trying compatibility", flush=True)
+                res = _post_cohere(payload, 25)
+
         if res.status_code == 200:
             data = res.json() or {}
             content = _cohere_extract_text(data)
@@ -5336,6 +5354,10 @@ Hotel knowledge:
     # semantic routing and consumes fewer reasoning tokens. Qwen 3.8 can disable it.
     if "qwen3.8-27b" in lower_model:
         payload["reasoning_effort"] = "none"
+        # The on-demand Qwen tier enforces an output-tokens-per-minute
+        # ceiling of 1,000. Asking for 1,024 is guaranteed to fail with 429,
+        # even when no tokens have been consumed this minute.
+        payload["max_completion_tokens"] = min(payload["max_completion_tokens"], 800)
     elif "gpt-oss" in lower_model:
         payload["reasoning_effort"] = "low"
         payload["include_reasoning"] = False

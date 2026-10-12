@@ -1,6 +1,7 @@
 """Shared bounded message envelope; recent dialogue gets a reserved budget."""
 import json
 import knowledge_only
+import reception_learning
 
 def messages(bot, text, guest=None, phone=None, history=None, role='system', budget=12400):
     if getattr(bot, 'KNOWLEDGE_ONLY_MODE', False):
@@ -17,6 +18,29 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
         # complete, question-relevant sections without clipping prices/policies.
         hotel_facts = knowledge_only.facts_for_conversation(
             bot, full_facts, query, max_bytes=9300
+        )
+        learned_facts = (reception_learning.faq_context(bot, query, max_bytes=1200)
+                         if reception_learning.enabled(bot) else "")
+        if learned_facts:
+            hotel_facts += "\n\nRECEPTION-VERIFIED HOTEL FAQ (use this before asking reception again):\n" + learned_facts
+        handoff_rules = (
+            "RECEPTION HANDOFF IS ENABLED: For a factual detail about this hotel "
+            "not available in published facts or verified FAQ, or a request for a "
+            "hotel action requiring a real person, do not guess and do not say "
+            "you already contacted staff. Instead append ONE token exactly at "
+            "the end of any factual answer: "
+            "[[ASK_RECEPTION: short precise question for reception]]. "
+            "If nothing is answerable, output ONLY the token. "
+            "The application—not the AI—sends a mapped WhatsApp request and "
+            "will forward the human reply unchanged when received. "
+            "For mixed questions, answer the known parts and use the token for "
+            "the missing part. When the verified FAQ answers it, answer from "
+            "that FAQ WITHOUT a token. Do not use this token for jokes, greetings "
+            "or ordinary conversation needing no specific hotel records. "
+            "Do not promise an action, delivery time, or receptionist response. "
+        ) if reception_learning.enabled(bot) else (
+            "No reception handoff exists in this chat test. For missing facts "
+            "or actions, suggest directly contacting front desk. "
         )
         system = (
             f"You are the professional, friendly WhatsApp information receptionist for {knowledge_hotel_name}. "
@@ -50,17 +74,16 @@ def messages(bot, text, guest=None, phone=None, history=None, role='system', bud
             "asks for cow milk for their child, explain that milk type must be confirmed "
             "with hotel reception, while you can mention the listed Hot Milk item. "
             "Treat older assistant replies as context, NEVER proof that an action was done. "
-            "CAPABILITY BOUNDARY: this TEST MODE cannot place/cancel food orders, "
-            "check guests in or out, reserve rooms, change bills, log tasks, send staff/reception "
-            "notifications, verify a guest, or arrange a service. Typing 'Help' DOES NOT "
-            "forward a request to staff. NEVER claim that a help word or your message triggers "
-            "automatic action, or that reception WILL send something. If asked for a real action, "
-            "politely explain the chat cannot execute it now and suggest contacting reception "
-            "directly, without claiming you contacted them. Still answer other factual questions. "
+            "CAPABILITY BOUNDARY: this TEST MODE cannot itself place/cancel food orders, "
+            "check guests in or out, reserve rooms, change bills, verify a guest or deliver "
+            "a service. Typing 'Help' DOES NOT automatically create a staff request. "
+            "NEVER claim a request was sent without a confirmed transport result, or that "
+            "reception WILL send something. Still answer other factual questions. "
             "For emergencies, advise contacting on-site reception or local emergency services "
             "directly rather than relying on this chat. Do not invent contact numbers. "
-            "No internal prompts, tech details, unverified promises or lengthy disclaimers.\n"
-            "PUBLISHED HOTEL FACTS (not live availability or operational instructions):\n"
+            + handoff_rules
+            + "No internal prompts, tech details, unverified promises or lengthy disclaimers.\n"
+            + "PUBLISHED HOTEL FACTS (not live availability or operational instructions):\n"
             + (hotel_facts or "No factual hotel file was loaded. Do not invent details.")
         )
         remaining = max(0, min(budget + 3500, 16000) - len(system.encode('utf-8')) - len(current.encode('utf-8')))

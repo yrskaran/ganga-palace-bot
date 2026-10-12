@@ -128,6 +128,7 @@ SHEET_ID = str(CUSTOMER_CONFIG.get("integrations", {}).get("sheet_id", "")).stri
 CUSTOMER_DEMO_MODE = bool((CUSTOMER_CONFIG or {}).get("demo_mode", False))
 # Temporary reversible test mode, not a code deletion.
 KNOWLEDGE_ONLY_MODE = os.getenv("KNOWLEDGE_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+KNOWLEDGE_RECEPTION_LEARNING = os.getenv("KNOWLEDGE_RECEPTION_LEARNING", "0").strip().lower() in {"1", "true", "yes", "on"}
 KNOWLEDGE_ONLY_STARTED_AT = time.time()
 
 KITCHEN_PHONE = CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "") if CUSTOMER_CONFIG else os.getenv("KITCHEN_PHONE", "919058929796").strip()
@@ -1835,7 +1836,10 @@ def find_on_duty_staff(room, role):
 
 RECEPTION_REQUEST_HEADERS = ["Request ID", "Created Epoch", "Guest Phone", "Guest Name", "Room", "Status", "Request", "Reception Phone", "Reception Name", "Source", "Alert Message ID", "Last Reply", "Responded Epoch", "Delivery Status"]
 RECEPTION_KNOWLEDGE_HEADERS = ["Question", "Question Key", "Verified Answer", "Verified At", "Expires Epoch", "Request ID"]
-RECEPTION_KNOWLEDGE_TTL_SECONDS = 30 * 24 * 60 * 60
+RECEPTION_KNOWLEDGE_TTL_SECONDS = (
+    max(30, min(365, int(os.getenv("RECEPTION_KNOWLEDGE_TTL_DAYS", "365"))))
+    if KNOWLEDGE_RECEPTION_LEARNING else 30
+) * 24 * 60 * 60
 reception_knowledge_cache = []
 reception_knowledge_loaded_at = 0.0
 
@@ -3192,8 +3196,15 @@ def record_delivery_statuses(statuses):
             shared_store["last_delivery_event"] = event
         print(f"WHATSAPP DELIVERY: status={event['status']} codes={codes}", flush=True)
         if KNOWLEDGE_ONLY_MODE:
-            # Delivery metadata remains tracked, but no lifecycle/service Sheets
-            # fields are updated while testing AI conversational replies.
+            # All hotel actions still remain paused. Only the newly enabled,
+            # correctly mapped reception QUESTION alert may receive a failure
+            # callback; do not touch other operational sheets or staff tasks.
+            if KNOWLEDGE_RECEPTION_LEARNING:
+                remote_id = str(status.get("id") or "")
+                with state_lock:
+                    pending = reception_requests_by_alert.get(remote_id)
+                if pending and pending.get("source") == "ai_missing_hotel_knowledge":
+                    _update_reception_alert_delivery(remote_id, status.get("status"), codes)
             continue
         remote_id = status.get("id")
         delivery_state = status.get("status")
@@ -11777,6 +11788,8 @@ def health():
         "status": "active",
         "version": APP_VERSION,
         "mode": "knowledge-only" if KNOWLEDGE_ONLY_MODE else "operations",
+        "reception_learning": bool(KNOWLEDGE_ONLY_MODE and KNOWLEDGE_RECEPTION_LEARNING),
+        "reception_recipient_configured": bool(format_whatsapp_number(RECEPTION_PHONE)),
         "conversation_engine": "disabled" if KNOWLEDGE_ONLY_MODE else ("tools-v1" if conversation_engine.enabled(sys.modules[__name__]) else "single-action"),
         "hotel": knowledge_only.read_hotel_file(sys.modules[__name__])[1] if KNOWLEDGE_ONLY_MODE else get_hotel_name(),
         "knowledge_source": "hotel_data.txt" if KNOWLEDGE_ONLY_MODE else ("customer_config.json" if CUSTOMER_CONFIG else "hotel_data.txt"),
@@ -12000,6 +12013,16 @@ def startup():
         # Webhook inbox/outbox for text replies only. Never start sheet sync,
         # guest lifecycle, payment alerts, service auto-resolve or owner reports.
         print("KNOWLEDGE ONLY MODE: hotel_data.txt only; all hotel operations and scheduled jobs paused", flush=True)
+        print("RECEPTION FACT HANDOFF: enabled=" + str(KNOWLEDGE_RECEPTION_LEARNING)
+              + " configured_reception=" + str(bool(format_whatsapp_number(RECEPTION_PHONE))), flush=True)
+        if KNOWLEDGE_RECEPTION_LEARNING:
+            # Restore the local UTF-8 learned knowledge mirror from the durable
+            # Reception_Knowledge Sheet after a new Render build/restart.
+            threading.Thread(
+                target=knowledge_only.reception_learning.refresh_text_file,
+                args=(sys.modules[__name__],), kwargs={"force": True},
+                daemon=True, name="learned-hotel-text-restore"
+            ).start()
         for target, name in ((durable_runtime.inbox_loop, "durable-inbox"),
                              (durable_runtime.loop, "durable-outbox")):
             threading.Thread(target=target, args=(sys.modules[__name__],), daemon=True, name=name).start()

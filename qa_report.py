@@ -79,7 +79,7 @@ def append_probe_report(target, paths):
                 r=json.loads(line)
                 valid=bool((r.get('plan') or {}).get('action'))
                 out.write('\n'+r['id']+' | revision '+r.get('code_revision','baseline')+'\nCustomer: '+r['question']+'\n')
-                out.write('Actual AI answer: '+(r.get('reply') if valid and r.get('reply') else '[No completed actual-model response]')+'\n')
+                out.write('Actual production-path reply (may include verified-data fallback): '+(r.get('reply') if valid and r.get('reply') else '[No completed actual-model response]')+'\n')
                 if not valid and r.get('reply'):
                     out.write('Diagnostic executor fallback (NOT an AI answer): '+r['reply']+'\n')
                 out.write('Automatic checks: '+('; '.join(r.get('errors',[])) or 'Routing checks pass; factual/language review still required')+'\n')

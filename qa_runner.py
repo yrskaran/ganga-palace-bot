@@ -120,7 +120,7 @@ class Transport:
     def __init__(self, bot):
         self.bot = bot
         self.blocked = set()
-        self.models = list(dict.fromkeys([bot.get_active_groq_model(), bot.GROQ_FALLBACK_CHAT_MODEL,'qwen/qwen3.8-27b']))
+        self.models = list(dict.fromkeys([bot.get_active_groq_model(), bot.GROQ_FALLBACK_CHAT_MODEL,'qwen/qwen3.8-27b','openai/gpt-oss-20b']))
         self.usage = 0
     def call(self, prompt, ids, stage):
         for model in self.models:

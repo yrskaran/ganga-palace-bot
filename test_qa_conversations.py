@@ -5,6 +5,18 @@ import qa_conversations as cases
 import qa_runner as qa
 
 class ConversationQATests(unittest.TestCase):
+    def test_qa_can_resume_after_daily_limits_using_previous_configured_model(self):
+        import threading,json
+        from unittest.mock import Mock
+        limited=SimpleNamespace(status_code=429,text='tokens per day',headers={})
+        good=SimpleNamespace(status_code=200,json=lambda:{'choices':[{'message':{'content':json.dumps({'results':[{'id':'a','reply':'Actual reply'}]})}}],'usage':{'total_tokens':0}})
+        req=SimpleNamespace(post=Mock(side_effect=[limited,limited,good]),RequestException=RuntimeError)
+        bot=SimpleNamespace(get_active_groq_model=lambda:'openai/gpt-oss-120b',GROQ_FALLBACK_CHAT_MODEL='qwen/qwen3.8-27b',GROQ_LOCK=threading.RLock(),GROQ_MODEL_UNAVAILABLE_UNTIL={},GROQ_API_KEY='test-only',requests=req,_parse_ai_json=json.loads)
+        with patch('builtins.print'):
+            result,model=qa.Transport(bot).call('QA',['a'],'interpret')
+        self.assertEqual(model,'openai/gpt-oss-20b')
+        self.assertEqual(result['a']['reply'],'Actual reply')
+
     def test_two_hundred_distinct_messages_cover_twenty_segments(self):
         chats=cases.conversations()
         self.assertEqual(len(chats),20)

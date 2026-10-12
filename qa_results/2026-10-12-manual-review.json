@@ -1,0 +1,567 @@
+{
+  "C01-01": {
+    "verified": true,
+    "errors": [
+      "Failed reception delivery hidden; unsupported future update promise."
+    ],
+    "note": "Failed reception delivery hidden; unsupported future update promise."
+  },
+  "C02-01": {
+    "verified": true,
+    "note": "Correct room categories."
+  },
+  "C03-01": {
+    "verified": true,
+    "errors": [
+      "Adds mandatory booking details/identification beyond supplied policy."
+    ],
+    "note": "Adds mandatory booking details/identification beyond supplied policy."
+  },
+  "C04-01": {
+    "verified": true,
+    "note": "Correct sender room 240."
+  },
+  "C05-02": {
+    "verified": true,
+    "note": "Correct context: Standard Veg Thali ₹200 from configured menu. No order created."
+  },
+  "C06-02": {
+    "verified": true,
+    "note": "Actual final reply uses verified Masala Chai ₹30. Interpreter guessed ₹50, but the executor discarded that draft and retrieved ₹30."
+  },
+  "C07-02": {
+    "verified": true,
+    "note": "Actual final reply uses verified Jeera Rice ₹140. Interpreter draft guessed ₹120; Python retrieval prevented the wrong rate reaching the guest."
+  },
+  "C08-02": {
+    "verified": true,
+    "note": "Actual final reply uses configured Poha ₹70; guessed draft ₹80 was discarded."
+  },
+  "C09-01": {
+    "verified": true,
+    "note": "Implies milk provision from listing alone; no order exists.",
+    "errors": [
+      "Implies milk provision from listing alone; no order exists."
+    ]
+  },
+  "C10-01": {
+    "verified": true,
+    "note": "Two chai requested, quantity changed to one.",
+    "errors": [
+      "Two chai requested, quantity changed to one."
+    ]
+  },
+  "C12-01": {
+    "verified": true,
+    "note": "Promises staff delivery despite failed notification.",
+    "errors": [
+      "Promises staff delivery despite failed notification."
+    ]
+  },
+  "C13-01": {
+    "verified": true,
+    "note": "Promises immediate checking despite failed notification.",
+    "errors": [
+      "Promises immediate checking despite failed notification."
+    ]
+  },
+  "C14-01": {
+    "verified": true,
+    "note": "Promises immediate action despite failed notification.",
+    "errors": [
+      "Promises immediate action despite failed notification."
+    ]
+  },
+  "C15-01": {
+    "verified": true,
+    "note": "Promises charge answer despite failed reception contact.",
+    "errors": [
+      "Promises charge answer despite failed reception contact."
+    ]
+  },
+  "C01-02": {
+    "verified": true,
+    "note": "Loses one-night requirement; promises update after failed contact.",
+    "errors": [
+      "Loses one-night requirement; promises update after failed contact."
+    ]
+  },
+  "C03-02": {
+    "verified": true,
+    "note": "ID-document question answered with room types; unsupported update promise.",
+    "errors": [
+      "ID-document question answered with room types; unsupported update promise."
+    ]
+  },
+  "C09-02": {
+    "verified": true,
+    "note": "Cow milk type not verified by Hot Milk listing.",
+    "errors": [
+      "Cow milk type not verified by Hot Milk listing."
+    ]
+  },
+  "C10-02": {
+    "verified": true,
+    "note": "Quantity revision misread as cancellation.",
+    "errors": [
+      "Quantity revision misread as cancellation."
+    ]
+  },
+  "C11-02": {
+    "verified": true,
+    "note": "Four roti explicitly reiterated, changed to one.",
+    "errors": [
+      "Four roti explicitly reiterated, changed to one."
+    ]
+  },
+  "C05-01": {
+    "verified": true,
+    "note": "Correct listed thali; action/script contract fails separately."
+  },
+  "C06-01": {
+    "verified": true,
+    "note": "Correct configured tea options."
+  },
+  "C07-01": {
+    "verified": true,
+    "note": "Correct rice options without roti."
+  },
+  "C08-01": {
+    "verified": true,
+    "note": "All listed items configured; breakfast scope/routing needs correction."
+  },
+  "C11-01": {
+    "verified": true,
+    "note": "Correct quantities/amounts and ₹245 total; exact data-line contract fails separately."
+  },
+  "C16-01": {
+    "verified": true,
+    "note": "Correct synthetic bill figures."
+  },
+  "C17-01": {
+    "verified": true,
+    "note": "Correct 11 AM checkout."
+  },
+  "C18-01": {
+    "verified": true,
+    "note": "Correct complimentary Wi-Fi."
+  },
+  "C19-01": {
+    "verified": true,
+    "note": "Exact configured map URL."
+  },
+  "C20-01": {
+    "verified": true,
+    "note": "Correct virtual receptionist disclosure."
+  },
+  "C02-02": {
+    "verified": true,
+    "note": "Configured family options; metadata inventory contract fails separately."
+  },
+  "C04-02": {
+    "verified": true,
+    "note": "Correct sender room; current-message language fails."
+  },
+  "C12-02": {
+    "verified": true,
+    "note": "Accurate failed notification and unconfirmed delivery."
+  },
+  "C13-02": {
+    "verified": true,
+    "note": "Claims checking underway despite failed contact.",
+    "errors": [
+      "Claims checking underway despite failed contact."
+    ]
+  },
+  "C14-02": {
+    "verified": true,
+    "note": "Omits failed notification and useful escalation status.",
+    "errors": [
+      "Omits failed notification and useful escalation status."
+    ]
+  },
+  "C15-02": {
+    "verified": true,
+    "note": "Invents airport pickup ₹200 and promises an update.",
+    "errors": [
+      "Invents airport pickup ₹200 and promises an update."
+    ]
+  },
+  "C16-02": {
+    "verified": true,
+    "note": "Full bill returned instead of food-only charges.",
+    "errors": [
+      "Full bill returned instead of food-only charges."
+    ]
+  },
+  "C17-02": {
+    "verified": true,
+    "note": "Omits contact failure, implies payable late checkout can proceed; English instead of Hinglish.",
+    "errors": [
+      "Omits contact failure, implies payable late checkout can proceed; English instead of Hinglish."
+    ]
+  },
+  "C18-02": {
+    "verified": true,
+    "note": "Omits failed reception delivery; English instead of Hinglish.",
+    "errors": [
+      "Omits failed reception delivery; English instead of Hinglish."
+    ]
+  },
+  "C19-02": {
+    "verified": true,
+    "note": "Correct attractions, but raw [[MAP:hotel]] placeholder leaks.",
+    "errors": [
+      "Correct attractions, but raw [[MAP:hotel]] placeholder leaks."
+    ]
+  },
+  "C20-02": {
+    "verified": true,
+    "note": "Correct complimentary Wi-Fi and English."
+  },
+  "C05-03": {
+    "verified": true,
+    "note": "Correct alternative thali; wrong script.",
+    "errors": [
+      "Correct alternative thali; wrong script."
+    ]
+  },
+  "C06-03": {
+    "verified": true,
+    "note": "Correct remaining tea; wrong script.",
+    "errors": [
+      "Correct remaining tea; wrong script."
+    ]
+  },
+  "C07-03": {
+    "verified": true,
+    "note": "Correct Veg Pulao; wrong script.",
+    "errors": [
+      "Correct Veg Pulao; wrong script."
+    ]
+  },
+  "C08-03": {
+    "verified": true,
+    "note": "Correct alternative parathas; wrong script.",
+    "errors": [
+      "Correct alternative parathas; wrong script."
+    ]
+  },
+  "C09-03": {
+    "verified": true,
+    "note": "Invents confirmed cow-milk availability.",
+    "errors": [
+      "Invents confirmed cow-milk availability."
+    ]
+  },
+  "C10-03": {
+    "verified": true,
+    "note": "Add Poha replaces the saved chai, yielding incomplete cart.",
+    "errors": [
+      "Add Poha replaces the saved chai, yielding incomplete cart."
+    ]
+  },
+  "C11-03": {
+    "verified": true,
+    "note": "Correct hypothetical confirmation explanation; no action performed."
+  },
+  "C12-03": {
+    "verified": true,
+    "note": "Omits failed staff notification; asks guest to wait.",
+    "errors": [
+      "Omits failed staff notification; asks guest to wait."
+    ]
+  },
+  "C13-03": {
+    "verified": true,
+    "note": "Staff-directed instruction rather than guest reply; omits failure; wrong script.",
+    "errors": [
+      "Staff-directed instruction rather than guest reply; omits failure; wrong script."
+    ]
+  },
+  "C14-03": {
+    "verified": true,
+    "note": "Re-asks known complaint context; omits failed contact; wrong script.",
+    "errors": [
+      "Re-asks known complaint context; omits failed contact; wrong script."
+    ]
+  },
+  "C15-03": {
+    "verified": true,
+    "note": "Does not answer delivery status; re-asks request; wrong script.",
+    "errors": [
+      "Does not answer delivery status; re-asks request; wrong script."
+    ]
+  },
+  "C16-03": {
+    "verified": true,
+    "note": "Converts bill charge into unverified nightly rate; wrong route/scope.",
+    "errors": [
+      "Converts bill charge into unverified nightly rate; wrong route/scope."
+    ]
+  },
+  "C01-03": {
+    "verified": true,
+    "note": "Fixed ₹1999 instead of qualified starting rate; unrequested price and English.",
+    "errors": [
+      "Fixed ₹1999 instead of qualified starting rate; unrequested price and English."
+    ]
+  },
+  "C02-03": {
+    "verified": true,
+    "note": "Configured photo exists but requested presentation not fulfilled; English.",
+    "errors": [
+      "Configured photo exists but requested presentation not fulfilled; English."
+    ]
+  },
+  "C03-03": {
+    "verified": true,
+    "note": "Invents driving-licence acceptance; omits failed contact; English.",
+    "errors": [
+      "Invents driving-licence acceptance; omits failed contact; English."
+    ]
+  },
+  "C04-03": {
+    "verified": true,
+    "note": "Correct sender name."
+  },
+  "C17-03": {
+    "verified": true,
+    "note": "Omits failed contact; English instead of Hinglish.",
+    "errors": [
+      "Omits failed contact; English instead of Hinglish."
+    ]
+  },
+  "C18-03": {
+    "verified": true,
+    "note": "Omits failed contact; English instead of Hinglish.",
+    "errors": [
+      "Omits failed contact; English instead of Hinglish."
+    ]
+  },
+  "C19-03": {
+    "verified": true,
+    "note": "Correct approximate 3.8 km; wrong script.",
+    "errors": [
+      "Correct approximate 3.8 km; wrong script."
+    ]
+  },
+  "C20-03": {
+    "verified": true,
+    "note": "Correct room and requested Devanagari; incorrect language metadata."
+  },
+  "C01-04": {
+    "verified": true,
+    "note": "Correct starting ₹1999; missing dynamic-rate qualification.",
+    "errors": [
+      "Correct starting ₹1999; missing dynamic-rate qualification."
+    ]
+  },
+  "C02-04": {
+    "verified": true,
+    "note": "Invents photo-send failure; only reception contact failure established.",
+    "errors": [
+      "Invents photo-send failure; only reception contact failure established."
+    ]
+  },
+  "C03-04": {
+    "verified": true,
+    "note": "Avoids guessing child ID rule, but omits failed contact.",
+    "errors": [
+      "Avoids guessing child ID rule, but omits failed contact."
+    ]
+  },
+  "C04-04": {
+    "verified": true,
+    "note": "Correct active stay and room; incorrect language metadata."
+  },
+  "C05-04": {
+    "verified": true,
+    "note": "Invented Special Thali ₹250 instead of configured ₹290.",
+    "errors": [
+      "Invented Special Thali ₹250 instead of configured ₹290."
+    ]
+  },
+  "C06-04": {
+    "verified": true,
+    "note": "Claims Cutting Chai price unavailable though ₹20 configured; English.",
+    "errors": [
+      "Claims Cutting Chai price unavailable though ₹20 configured; English."
+    ]
+  },
+  "C07-04": {
+    "verified": true,
+    "note": "Correct scoped bread options."
+  },
+  "C08-04": {
+    "verified": true,
+    "note": "Claims Paneer Paratha price unavailable though ₹130 configured; English.",
+    "errors": [
+      "Claims Paneer Paratha price unavailable though ₹130 configured; English."
+    ]
+  },
+  "C09-04": {
+    "verified": true,
+    "note": "English instead of Hinglish; does not repair earlier unverified cow-milk confirmation.",
+    "errors": [
+      "English instead of Hinglish; does not repair earlier unverified cow-milk confirmation."
+    ]
+  },
+  "C10-04": {
+    "verified": true,
+    "note": "Cart revision not executed, failed delivery hidden, unsupported future update.",
+    "errors": [
+      "Cart revision not executed, failed delivery hidden, unsupported future update."
+    ]
+  },
+  "C11-04": {
+    "verified": true,
+    "note": "Accurately preserves pending cart; correction is not confirmation."
+  },
+  "C12-04": {
+    "verified": true,
+    "note": "Acknowledgement contains no completion claim but uses English instead of Hinglish.",
+    "errors": [
+      "Acknowledgement contains no completion claim but uses English instead of Hinglish."
+    ]
+  },
+  "C13-04": {
+    "verified": true,
+    "note": "Records request and explicitly discloses failed notification and unconfirmed arrival."
+  },
+  "C14-04": {
+    "verified": true,
+    "note": "Failed reception delivery disclosed; refund approval not promised."
+  },
+  "C15-04": {
+    "verified": true,
+    "note": "Local record distinguished from staff confirmation; delivery failure disclosed."
+  },
+  "C16-04": {
+    "verified": true,
+    "note": "Correctly refuses to mark unpaid bill paid."
+  },
+  "C17-04": {
+    "verified": true,
+    "note": "Correctly denies confirmed late checkout but omits failed notification.",
+    "errors": [
+      "Correctly denies confirmed late checkout but omits failed notification."
+    ]
+  },
+  "C18-04": {
+    "verified": true,
+    "note": "Correct free parking with limited space and availability."
+  },
+  "C19-04": {
+    "verified": true,
+    "note": "Resolves Har Ki Pauri and reproduces exact configured map URL."
+  },
+  "C20-04": {
+    "verified": true,
+    "note": "Clarifies ambiguous reference without guessing."
+  },
+  "C01-05": {
+    "verified": true,
+    "note": "Correctly qualifies starting rate as variable by date and availability."
+  },
+  "C02-05": {
+    "verified": true,
+    "note": "Comparison matches configured room descriptions."
+  },
+  "C03-05": {
+    "verified": true,
+    "note": "Does not guess digital ID acceptance, but omits failed reception delivery.",
+    "errors": [
+      "Does not guess digital ID acceptance, but omits failed reception delivery."
+    ]
+  },
+  "C04-05": {
+    "verified": true,
+    "note": "Promises reception checking and later update despite failed delivery.",
+    "errors": [
+      "Promises reception checking and later update despite failed delivery."
+    ]
+  },
+  "C05-05": {
+    "verified": true,
+    "note": "Facts preserved, including failed delivery, but raw English/internal receipt exposed to Hinglish guest.",
+    "errors": [
+      "Facts preserved, including failed delivery, but raw English/internal receipt exposed to Hinglish guest."
+    ]
+  },
+  "C06-05": {
+    "verified": true,
+    "note": "Correct configured hot/cold coffee options; no price or order."
+  },
+  "C07-05": {
+    "verified": true,
+    "note": "Correct Garlic Naan price from retrieved menu: ₹75."
+  },
+  "C08-05": {
+    "verified": true,
+    "note": "Correct two configured sandwich options."
+  },
+  "C09-05": {
+    "verified": true,
+    "note": "Avoids invented cold-milk availability but hides failed notification behind pending confirmation.",
+    "errors": [
+      "Avoids invented cold-milk availability but hides failed notification behind pending confirmation."
+    ]
+  },
+  "C10-05": {
+    "verified": true,
+    "note": "Invents Wi-Fi password availability on TV screen; saved cart remains Poha after earlier failed chai revision.",
+    "errors": [
+      "Invents Wi-Fi password availability on TV screen; saved cart remains Poha after earlier failed chai revision."
+    ]
+  },
+  "C11-05": {
+    "verified": true,
+    "note": "Requested cart reduction not applied; failed staff delivery omitted.",
+    "errors": [
+      "Requested cart reduction not applied; failed staff delivery omitted."
+    ]
+  },
+  "C12-05": {
+    "verified": true,
+    "note": "Records bedsheet request and explicitly discloses failed notification."
+  },
+  "C13-05": {
+    "verified": true,
+    "note": "Correct maintenance request, failed notification and unconfirmed arrival."
+  },
+  "C14-05": {
+    "verified": true,
+    "note": "Invents causal link between complaint reference and staff confirmation; promises unsupported update.",
+    "errors": [
+      "Invents causal link between complaint reference and staff confirmation; promises unsupported update."
+    ]
+  },
+  "C15-05": {
+    "verified": true,
+    "note": "Recognizes topic correction and asks missing preferred time; actual reply is English rather than Hinglish. Routing expectation also fails separately.",
+    "errors": [
+      "Recognizes topic correction and asks missing preferred time; actual reply is English rather than Hinglish. Routing expectation also fails separately."
+    ]
+  },
+  "C16-05": {
+    "verified": true,
+    "note": "Correct refusal to share another room bill; only synthetic sender room 240 referenced."
+  },
+  "C17-05": {
+    "verified": true,
+    "note": "Correct early check-in policy, subject to availability; no approval or fixed fee invented."
+  },
+  "C18-05": {
+    "verified": true,
+    "note": "Configured pool season and hours reproduced; current operation explicitly unconfirmed."
+  },
+  "C19-05": {
+    "verified": true,
+    "note": "Correctly avoids guessing today’s exact Aarti time from static guide."
+  },
+  "C20-05": {
+    "verified": true,
+    "note": "Treats free-bill request as humour; no unauthorized financial action."
+  }
+}

@@ -317,3 +317,37 @@ class FinancialProtectionRepairTests(unittest.TestCase):
     def test_markdown_bill_rows_cannot_swap_amounts(self):
         self.assertFalse(engine.protected_reply(['*Room Rent:* Rs. 500\n*Food Total:* Rs. 150'],'',
             '*Room Rent:* Rs. 150\n*Food Total:* Rs. 500'))
+
+class ProtectedResultBlocksTests(unittest.TestCase):
+    def test_hindi_in_roman_script_has_hinglish_language_contract(self):
+        bot=SimpleNamespace(CUSTOMER_CONFIG={'menu':[]})
+        value={'understood_as':'greeting','language':'hindi','script':'roman','questions':[],'operations':[]}
+        self.assertEqual(engine.validate_plan(bot,value)['language'],'hinglish')
+
+    def test_model_can_keep_verified_cart_rows_with_placeholders(self):
+        receipts=['Room 450:\n• Dal Fry × 1\n• Steamed Rice × 1\nConfirm required.']
+        rendered=engine.render_result_blocks('Ji, Room 450 ka cart:\n[[DATA:0]]\nConfirm kar dein.',receipts)
+        self.assertIn('• Dal Fry × 1\n• Steamed Rice × 1',rendered)
+        self.assertTrue(engine.protected_reply(receipts,'',rendered))
+
+    def test_unknown_result_placeholder_is_rejected(self):
+        self.assertIsNone(engine.render_result_blocks('Saved [[DATA:99]]',['Masala Chai — ₹30']))
+
+class ReadOnlyEfficiencyTests(EngineFlowTests):
+    def test_read_only_plan_cannot_smuggle_a_reception_write_flag(self):
+        value=self.plan(operations=[{'action':'MENU_ITEM_INFO','items':[{'name':'Chole Bhature','qty':1}],
+            'show_prices':True,'category':'NONE','confidence':.95,'needs_reception':True,
+            'reception_followup':True,'reception_request':'Write to reception'}],questions=['Price?'])
+        final='Ji, Chole Bhature ka rate ₹150 hai.'
+        with self.provider([value,{'reply':final,'answered_questions':[0]},{'supported':True}]),self.patch.object(self.app,'reply_to_reception_request') as reception:
+            engine.handle(self.app,self.phone,'Chole Bhature kitne ka hai?',self.guest)
+        reception.assert_not_called()
+        self.assertEqual(self.sent[0]['text']['body'],final)
+
+    def test_price_retrieval_does_not_need_a_second_intent_review(self):
+        value=self.plan(operations=[{'action':'MENU_ITEM_INFO','items':[{'name':'Chole Bhature','qty':1}],
+            'show_prices':True,'category':'NONE','confidence':.95}],questions=['Price?'])
+        final='Ji, Chole Bhature ka rate ₹150 hai.'
+        with self.provider([value,{'reply':final,'answered_questions':[0]},{'supported':True}]),self.patch.object(engine.gateway,'review_plan',side_effect=AssertionError('Unnecessary retrieval review')):
+            engine.handle(self.app,self.phone,'Chole Bhature kitne ka hai?',self.guest)
+        self.assertEqual(self.sent[0]['text']['body'],final)

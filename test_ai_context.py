@@ -7,6 +7,17 @@ import app
 import ai_receptionist
 
 class ProductionContextTests(unittest.TestCase):
+    def test_groq_uses_native_schema_for_explicit_contract(self):
+        schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}
+        response=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
+        token=ai_receptionist.current.set({'contract_request':True,'json_schema':schema,'language':'english'})
+        try:
+            with patch.object(app,'_groq_circuit_open',return_value=False),patch.object(app,'get_active_groq_model',return_value='openai/gpt-oss-120b'),patch.object(app.requests,'post',return_value=response) as post:
+                app.ask_groq_chat('Return a supported decision',structured=True)
+        finally: ai_receptionist.current.reset(token)
+        self.assertEqual(post.call_args.kwargs['json']['response_format']['type'],'json_schema')
+        self.assertTrue(post.call_args.kwargs['json']['response_format']['json_schema']['strict'])
+
     def test_workflow_contract_does_not_reclassify_english_prompt_as_guest_language(self):
         import ai_context
         token=ai_receptionist.current.set({'contract_request':True,'plan_review':True})
@@ -27,6 +38,18 @@ class ProductionContextTests(unittest.TestCase):
         payload=post.call_args.kwargs['json']
         self.assertEqual(payload.get('reasoning_effort'),'none')
         self.assertGreaterEqual(payload['max_tokens'],2048)
+
+    def test_cohere_explicit_contract_supplies_schema_and_developer_role(self):
+        schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}
+        response=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
+        token=ai_receptionist.current.set({'contract_request':True,'json_schema':schema,'language':'english'})
+        try:
+            with patch.object(app,'COHERE_API_KEY','test'),patch.object(app,'_cohere_circuit_open',return_value=False),patch.object(app.requests,'post',return_value=response) as post:
+                app.ask_cohere_chat('Return final JSON',structured=True)
+        finally: ai_receptionist.current.reset(token)
+        payload=post.call_args.kwargs['json']
+        self.assertEqual(payload['messages'][0]['role'],'developer')
+        self.assertEqual(payload['response_format'],{'type':'json_object','schema':schema})
 
     def test_full_profile_preserves_followup_at_groq_transport(self):
         phone='919555550001'

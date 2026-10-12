@@ -3934,6 +3934,9 @@ Local guide:
         payload['generationConfig']['temperature'] = 0.2
     if structured:
         payload["generationConfig"]["responseMimeType"] = "application/json"
+        contract_schema=(ai_receptionist.current.get() or {}).get('json_schema')
+        if contract_schema:
+            payload["generationConfig"]["responseJsonSchema"]=contract_schema
 
     transient = {500, 502, 503, 504}
     for model in models:
@@ -4439,7 +4442,8 @@ Hotel knowledge:\n{hotel_db}
     # multilingual guest messages; backend code continues to own transactions.
     if ai_receptionist.enabled(sys.modules[__name__]):
         import ai_context
-        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone)
+        messages = ai_context.messages(sys.modules[__name__], user_text, guest_info, sender_phone,
+            role="developer" if (ai_receptionist.current.get() or {}).get("contract_request") else "system")
 
     payload = {
         "model": COHERE_MODEL,
@@ -4452,6 +4456,9 @@ Hotel knowledge:\n{hotel_db}
     }
     if structured:
         payload["response_format"] = {"type": "json_object"}
+        contract_schema=(ai_receptionist.current.get() or {}).get('json_schema')
+        if contract_schema:
+            payload['response_format']={'type':'json_object','schema':contract_schema}
 
     headers = {
         "Authorization": f"Bearer {COHERE_API_KEY}",
@@ -5323,6 +5330,11 @@ Hotel knowledge:
         # field after generation. This reduces request tokens and avoids Qwen JSON
         # generation failures caused by a large schema/output budget.
         payload["response_format"] = {"type": "json_object"}
+
+    contract_schema=(ai_receptionist.current.get() or {}).get('json_schema')
+    if structured and contract_schema and 'gpt-oss' in lower_model:
+        payload['response_format']={'type':'json_schema','json_schema':{
+            'name':'hotel_workflow','strict':True,'schema':contract_schema}}
 
     try:
         url = "https://api.groq.com/openai/v1/chat/completions"

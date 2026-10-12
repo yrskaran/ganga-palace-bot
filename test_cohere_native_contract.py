@@ -15,7 +15,7 @@ class CohereContractTest(unittest.TestCase):
             "message": {"content": [{"type": "text", "text": '{"reply":"Ji."}'}]},
             "finish_reason": "COMPLETE",
         }
-        token = gateway.current.set({"contract_request": True, "json_schema": schema})
+        token = gateway.current.set({"contract_request": True, "json_schema": schema, "language": "english"})
         try:
             with patch.object(app, "COHERE_API_KEY", "test"), patch.object(app, "_cohere_circuit_open", return_value=False), patch.object(app.requests, "post", return_value=response) as request:
                 output = app.ask_cohere_chat("Return a JSON reply.", structured=True)

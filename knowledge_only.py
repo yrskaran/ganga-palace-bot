@@ -55,6 +55,30 @@ def public_knowledge(raw):
     return "\n".join(output).strip()
 
 
+# A final boundary for false operational-success claims. This does NOT decide
+# intent or run a workflow: the conversational AI is still the only responder.
+_UNVERIFIED_PROMISE = [
+    r"\brequest\b.{0,95}\bstaff tak pahunch",
+    r"\b(?:request|order|booking)\b.{0,90}\b(?:confirm ho gay|staff ko notify|forward kar di|register ho gay)",
+    r"\b(?:maine|humne|we have|i have)\b.{0,90}\b(?:staff|order|booking|request|notified|confirmed)",
+    r"\b(?:woh|ve|staff|reception|front.desk)\b.{0,95}\b(?:bhej denge|arrange kar denge|turant action lenge)",
+]
+
+
+def unverified_promise(reply):
+    msg = " ".join(str(reply or "").lower().split())
+    for rule in _UNVERIFIED_PROMISE:
+        match = re.search(rule, msg)
+        if not match:
+            continue
+        around = msg[max(0, match.start()-30):match.end()+20]
+        # Do not reject truthful negative statements about disabled actions.
+        if re.search(r"\b(?:nahi|nahin|nhi|not|never|cannot|can't|disabled)\b", around):
+            continue
+        return True
+    return False
+
+
 def _message_text(bot, message, msg_type):
     if msg_type == "text":
         return str((message.get("text") or {}).get("body") or "").strip()
@@ -111,6 +135,12 @@ def process(bot, message, sender_phone, msg_type):
     if not reply:
         reply = ("Abhi AI se sahi jawab nahi mil pa raha ji. "
                  "Is chat mein koi hotel request ya action nahi kiya gaya.")
+
+    if unverified_promise(reply):
+        print("KNOWLEDGE ONLY: unverified real-world action promise blocked", flush=True)
+        reply = ("Ji, is test chat se staff ko koi request forward nahi hoti aur "
+                 "koi order ya booking confirm nahi hoti. Zaroorat ho toh "
+                 "hotel reception se seedha sampark karein.")
 
     sent = bot.send_whatsapp_message(sender_phone, reply)
     if sent:

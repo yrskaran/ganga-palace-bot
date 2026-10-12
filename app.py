@@ -128,6 +128,7 @@ SHEET_ID = str(CUSTOMER_CONFIG.get("integrations", {}).get("sheet_id", "")).stri
 CUSTOMER_DEMO_MODE = bool((CUSTOMER_CONFIG or {}).get("demo_mode", False))
 # Temporary reversible test mode, not a code deletion.
 KNOWLEDGE_ONLY_MODE = os.getenv("KNOWLEDGE_ONLY_MODE", "0").strip().lower() in {"1", "true", "yes", "on"}
+KNOWLEDGE_RECEPTION_LEARNING = os.getenv("KNOWLEDGE_RECEPTION_LEARNING", "0").strip().lower() in {"1", "true", "yes", "on"}
 KNOWLEDGE_ONLY_STARTED_AT = time.time()
 
 KITCHEN_PHONE = CUSTOMER_ENV_DEFAULTS.get("KITCHEN_PHONE", "") if CUSTOMER_CONFIG else os.getenv("KITCHEN_PHONE", "919058929796").strip()

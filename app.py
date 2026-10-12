@@ -4649,7 +4649,7 @@ def _ai_provider_functions():
     return [(name, functions[name]) for name in AI_PROVIDER_ORDER if name in functions]
 
 
-def ask_ai_chat(user_text, guest_info=None, sender_phone=None, structured=False):
+def ask_ai_chat(user_text, guest_info=None, sender_phone=None, structured=False, json_validator=None):
     """Resilient conversational gateway using the same provider order everywhere."""
     for provider_name, provider_fn in _ai_provider_functions():
         try:
@@ -4657,6 +4657,9 @@ def ask_ai_chat(user_text, guest_info=None, sender_phone=None, structured=False)
                    if structured else provider_fn(user_text, guest_info, sender_phone))
             reply = _ai_content_is_usable(raw, provider_name)
             if structured and not _parse_ai_json(reply):
+                continue
+            if json_validator is not None and not json_validator(_parse_ai_json(reply)):
+                print(f'AI GATEWAY CONTRACT REJECTED: provider={provider_name}',flush=True)
                 continue
             if reply:
                 print(f"AI GATEWAY SUCCESS: provider={provider_name}", flush=True)

@@ -255,3 +255,19 @@ class ServiceReceiptTruthTests(unittest.TestCase):
             app._handle_ai_service_route('919555555555',guest,{'category':'HOUSEKEEPING','service':'Towel'},'Bring towel',True)
         self.assertNotIn("I've noted",send.call_args.args[1])
         self.assertIn("save",send.call_args.args[1])
+
+class PlanContractFailoverTests(unittest.TestCase):
+    def test_valid_json_with_wrong_plan_shape_uses_next_provider(self):
+        import os
+        os.environ['BOT_AUTOSTART']='0'
+        import app
+        from unittest.mock import patch
+        old_shape=Mock(return_value='{"action":"ORDER","language":"hinglish"}')
+        good=Mock(return_value=json.dumps({'understood_as':'Food and timing','language':'hinglish',
+            'script':'roman','questions':['When?'],'operations':[{'action':'ORDER','category':'KITCHEN',
+            'items':[{'name':'Chole Bhature','qty':1}],'operation_text':'','confidence':.95}]}))
+        with patch.object(app,'CUSTOMER_CONFIG',{'menu':[{'name':'Chole Bhature'}]}),patch.object(app,'_ai_provider_functions',return_value=[('old',old_shape),('good',good)]):
+            reply=app.ask_ai_chat('Return whole-turn plan',structured=True,
+                json_validator=lambda value:engine.validate_plan(app,value) is not None)
+        self.assertEqual(json.loads(reply)['script'],'roman')
+        good.assert_called_once()

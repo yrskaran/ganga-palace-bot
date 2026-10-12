@@ -5427,10 +5427,10 @@ Hotel knowledge:
         # even when no tokens have been consumed this minute.
         payload["max_completion_tokens"] = min(payload["max_completion_tokens"], 800)
     elif "gpt-oss" in lower_model:
-        payload["reasoning_effort"] = "low" if structured else "medium"
+        payload["reasoning_effort"] = "low"
         payload["include_reasoning"] = False
         # Reserve room for private reasoning plus the complete JSON envelope.
-        payload["max_completion_tokens"] = 1536 if structured else 1536
+        payload["max_completion_tokens"] = 1536 if structured else 768
 
     if structured:
         # JSON mode is intentionally used instead of a large strict schema here.

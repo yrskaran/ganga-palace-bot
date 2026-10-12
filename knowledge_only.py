@@ -24,6 +24,37 @@ def read_hotel_file(bot):
     return raw, hotel_name
 
 
+def public_knowledge(raw):
+    """Return guest-facing hotel facts; exclude instructions for paused operations."""
+    output = []
+    included = False
+    rules = False
+    for line in str(raw or "").splitlines():
+        heading = line.strip()
+        numbered = re.match(r"^(\\d{1,2})\\.\\s+[A-Z]", heading)
+        if numbered:
+            included = int(numbered.group(1)) in (1, 2, 3, 4, 5)
+            rules = False
+        elif heading in ("PHOTOS & MEDIA", "GOOGLE MAPS"):
+            included = True
+            rules = False
+        elif heading in ("LOCAL GUIDE RULES", "HARIDWAR CONCIERGE PLANNING",
+                         "HUMAN TOUR GUIDE REQUESTS") or heading.startswith("GUIDE SOURCES"):
+            included = False
+            rules = False
+        if not included:
+            continue
+        if heading in ("RULES:", "FOOD RULES:", "LOCAL GUIDE BEHAVIOUR:"):
+            rules = True
+            continue
+        if rules or heading.startswith("Use this as the guest-facing Haridwar guide."):
+            continue
+        if heading.startswith("# Replace these") or heading.startswith("# Do not change"):
+            continue
+        output.append(line)
+    return "\\n".join(output).strip()
+
+
 def _message_text(bot, message, msg_type):
     if msg_type == "text":
         return str((message.get("text") or {}).get("body") or "").strip()

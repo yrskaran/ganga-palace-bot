@@ -2198,6 +2198,18 @@ def _rebuild_service_task_cache():
     with state_lock:
         for request_id, task in rebuilt.items():
             previous = service_tasks_by_id.get(request_id, {})
+            # A stale Sheet row must not auto-close feedback whose save failed.
+            # Keep it pending until the guest can retry the authoritative update.
+            if previous.get('_feedback_save_failed'):
+                task.update(previous)
+                # Feedback persistence may still hold this dictionary. Keep
+                # identity so its successful transition also updates the cache.
+                previous.update(task)
+                rebuilt[request_id] = previous
+                if previous.get('alert_message_id'):
+                    by_alert[previous['alert_message_id']] = previous
+                if task.get('guest_phone'):
+                    guest_pending[task['guest_phone']] = request_id
             if previous.get("status") == task.get("status") and previous.get("confirmation_message_id"):
                 task["confirmation_message_id"] = previous["confirmation_message_id"]
         service_tasks_by_id.update(rebuilt)
@@ -2461,25 +2473,35 @@ def handle_service_guest_confirmation(phone, text, message=None):
     task = candidates[0]
 
     stamp = now_ist().strftime("%d-%b-%Y %I:%M %p")
-    if result == "yes":
+    with state_lock:
+        proposed = dict(task, status='COMPLETED' if result == 'yes' else 'REOPENED', last_update=stamp)
+        proposed.pop('_feedback_save_failed', None)
+        if result == 'yes':
+            proposed.update(guest_confirmed_at=stamp, closed_at=stamp)
+        # Pause auto-resolution and stale-cache replacement during Sheet I/O.
+        task['status'] = 'CONFIRMATION_FAILED'
+        task['_feedback_save_failed'] = True
+    if not _update_service_task_sheet(proposed):
         with state_lock:
-            task["status"] = "COMPLETED"
-            task["guest_confirmed_at"] = stamp
-            task["closed_at"] = stamp
-            task["last_update"] = stamp
-            if service_guest_pending.get(guest_phone) == task.get("request_id"):
-                service_guest_pending.pop(guest_phone, None)
-        _update_service_task_sheet(task)
+            task['status'] = 'CONFIRMATION_FAILED'
+            task['_feedback_save_failed'] = True
+            service_guest_pending[guest_phone] = task.get('request_id')
+        send_whatsapp_message(guest_phone, bilingual_text(guest_phone,
+            "I received your feedback, but could not save the request update. It remains pending; please retry or contact reception.",
+            "Aapka jawab mila, lekin request ka update save nahi ho paaya. Request abhi pending hai; dobara try karein ya reception se baat karein.",
+            "आपका जवाब मिला, लेकिन रिक्वेस्ट का अपडेट सेव नहीं हो पाया। रिक्वेस्ट अभी लंबित है; दोबारा प्रयास करें या रिसेप्शन से बात करें।"))
+        print(f"SERVICE FEEDBACK SAVE FAILED: id={task.get('request_id')}", flush=True)
+        return True
+    with state_lock:
+        task.clear()
+        task.update(proposed)
+        if service_guest_pending.get(guest_phone) == task.get('request_id'):
+            service_guest_pending.pop(guest_phone, None)
+    if result == "yes":
         print(f"SERVICE GUEST CONFIRMED: id={task.get('request_id')}", flush=True)
         # Keep confirmation quiet; the guest has already said yes.
         return True
 
-    with state_lock:
-        task["status"] = "REOPENED"
-        task["last_update"] = stamp
-        if service_guest_pending.get(guest_phone) == task.get("request_id"):
-            service_guest_pending.pop(guest_phone, None)
-    _update_service_task_sheet(task)
     rerouted = _reroute_service_task(task)
     send_whatsapp_message(
         guest_phone,

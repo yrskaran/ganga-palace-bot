@@ -4475,19 +4475,37 @@ Hotel knowledge:\n{hotel_db}
 
     try:
         print(f"COHERE TRY: model={COHERE_MODEL} structured={structured} endpoint=compat", flush=True)
-        res = _post_cohere(payload, 25)
+        if structured and contract_schema:
+            # The compatibility endpoint returned objects outside its declared
+            # schema in live checks. Use the native documented JSON contract;
+            # thinking is explicitly disabled to leave room for final output.
+            native={"model":COHERE_MODEL,"stream":False,"messages":[
+                dict(m,role='system' if m['role']=='developer' else m['role']) for m in messages],
+                "temperature":0.2,"max_tokens":2048,"thinking":{"type":"disabled"},
+                "response_format":{"type":"json_object","json_schema":contract_schema}}
+            print('COHERE CONTRACT: endpoint=v2 thinking=disabled',flush=True)
+            res=requests.post('https://api.cohere.ai/v2/chat',json=native,headers=headers,timeout=25)
+            if res.status_code in {400,422}:
+                # Inference failover only; no hotel tool has been executed here.
+                print(f'COHERE CONTRACT FALLBACK: v2_status={res.status_code}',flush=True)
+                res=_post_cohere(payload,25)
+        else:
+            res = _post_cohere(payload, 25)
 
         if res.status_code == 200:
             data = res.json() or {}
             content = _cohere_extract_text(data)
             usable = _ai_content_is_usable(content, "Cohere")
-            finish_reason = ""
+            finish_reason = str(data.get('finish_reason') or '').strip().upper()
             choices = data.get("choices") if isinstance(data, dict) else None
             if isinstance(choices, list) and choices and isinstance(choices[0], dict):
                 finish_reason = str(choices[0].get("finish_reason") or "").strip().upper()
 
             if finish_reason in {"LENGTH", "MAX_TOKENS"}:
                 print("COHERE INCOMPLETE OUTPUT: final reply rejected", flush=True)
+                return None
+            if finish_reason and finish_reason not in {'STOP','COMPLETE','STOP_SEQUENCE'}:
+                print(f'COHERE NONFINAL OUTPUT: finish_reason={finish_reason}',flush=True)
                 return None
 
             if usable:
@@ -5332,7 +5350,7 @@ Hotel knowledge:
         payload["response_format"] = {"type": "json_object"}
 
     contract_schema=(ai_receptionist.current.get() or {}).get('json_schema')
-    if structured and contract_schema and 'gpt-oss' in lower_model:
+    if structured and contract_schema and ('gpt-oss' in lower_model or 'qwen3.8-27b' in lower_model):
         payload['response_format']={'type':'json_schema','json_schema':{
             'name':'hotel_workflow','strict':True,'schema':contract_schema}}
 

@@ -159,6 +159,8 @@ def plan(bot, phone, text, guest):
         'Understand data.original_message using data.dialogue. Return ONE JSON plan, no analysis. '
         'Fields: understood_as (short meaning), language, script, questions (ALL current guest needs, '
         'not questions you want to ask), operations (0-4 tools). Empty irrelevant strings; false irrelevant flags. '
+        'script is EXACTLY roman or native, never Latin/Devanagari. category is EXACTLY NONE, '
+        'KITCHEN, HOUSEKEEPING, MAINTENANCE, ROOM_SERVICE or RECEPTION; never food/AC/generic. '
         'Ordinary conversation, known facts and language/readability corrections need ZERO tools. '
         'A readability correction means explain the previous assistant message in Roman letters. '
         'For example, after a Gurmukhi room-number reply, "Padhni ni aundi menu" means '
@@ -323,6 +325,8 @@ def finalize(bot, phone, text, guest, value, receipts):
             'Reject wrong topic/script, analysis, drafts, invented requirements/amounts/ETA/update promises, '
             'failed becoming saved, pending becoming confirmed, alerts becoming delivered or paid. '
             'Failures/uncertain results must remain explicit. Unknown live availability/stock must stay unknown. '
+            'For readability feedback, a clear Roman Hindi/Punjabi mix is acceptable if it faithfully '
+            'explains the previous meaning; do not reject it merely for using aapka instead of tuhada. '
             'Immediate on-site/emergency guidance is allowed for urgent danger; no diagnosis. '
             f'Language={value["language"]}, script={value["script"]}. Roman Punjabi uses Latin letters.\n'
             +json.dumps({'original_guest_message':text,'verified_evidence':evidence,'proposed_reply':reply},ensure_ascii=False))
@@ -376,6 +380,7 @@ def handle(bot, phone, text, guest, message=None):
                 'otherwise reply is empty. Return operational=true, action, items, category, operation_text, '
                 'reception_followup, language, confidence, reply, submission_intent, task_id; irrelevant '
                 'strings empty, flags false. Keep Roman Hindi language=hinglish.\n'
+                'category must be exactly NONE, KITCHEN, HOUSEKEEPING, MAINTENANCE, ROOM_SERVICE or RECEPTION.\n'
                 +json.dumps({'original_message':text,'dialogue':bot._ai_recent_history(phone),
                     'sender_state':gateway.snapshot(bot,phone,text),'candidate':operation,
                     'canonical_menu_names':[r.get('name') for r in (bot.CUSTOMER_CONFIG or {}).get('menu',[]) if isinstance(r,dict)]},ensure_ascii=False))

@@ -18,6 +18,16 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual(post.call_args.kwargs['json']['response_format']['type'],'json_schema')
         self.assertTrue(post.call_args.kwargs['json']['response_format']['json_schema']['strict'])
 
+    def test_groq_fallback_qwen_preserves_native_contract(self):
+        schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}
+        response=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
+        token=ai_receptionist.current.set({'contract_request':True,'json_schema':schema,'language':'english'})
+        try:
+            with patch.object(app,'_groq_circuit_open',return_value=False),patch.object(app,'get_active_groq_model',return_value='qwen/qwen3.8-27b'),patch.object(app.requests,'post',return_value=response) as post:
+                app.ask_groq_chat('Return JSON',structured=True)
+        finally: ai_receptionist.current.reset(token)
+        self.assertEqual(post.call_args.kwargs['json']['response_format']['type'],'json_schema')
+
     def test_workflow_contract_does_not_reclassify_english_prompt_as_guest_language(self):
         import ai_context
         token=ai_receptionist.current.set({'contract_request':True,'plan_review':True})
@@ -39,7 +49,7 @@ class ProductionContextTests(unittest.TestCase):
         self.assertEqual(payload.get('reasoning_effort'),'none')
         self.assertGreaterEqual(payload['max_tokens'],2048)
 
-    def test_cohere_explicit_contract_supplies_schema_and_developer_role(self):
+    def test_cohere_explicit_contract_uses_native_typed_json(self):
         schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}
         response=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
         token=ai_receptionist.current.set({'contract_request':True,'json_schema':schema,'language':'english'})
@@ -48,8 +58,21 @@ class ProductionContextTests(unittest.TestCase):
                 app.ask_cohere_chat('Return final JSON',structured=True)
         finally: ai_receptionist.current.reset(token)
         payload=post.call_args.kwargs['json']
-        self.assertEqual(payload['messages'][0]['role'],'developer')
-        self.assertEqual(payload['response_format'],{'type':'json_object','schema':schema})
+        self.assertEqual(post.call_args.args[0],'https://api.cohere.ai/v2/chat')
+        self.assertEqual(payload['messages'][0]['role'],'system')
+        self.assertEqual(payload['thinking'],{'type':'disabled'})
+        self.assertEqual(payload['response_format'],{'type':'json_object','json_schema':schema})
+
+    def test_native_cohere_rejection_falls_back_to_compatibility_inference(self):
+        schema={'type':'object','properties':{'supported':{'type':'boolean'}},'required':['supported'],'additionalProperties':False}
+        rejected=Mock(status_code=422)
+        good=Mock(status_code=200,json=Mock(return_value={'choices':[{'message':{'content':'{"supported":true}'},'finish_reason':'stop'}]}))
+        token=ai_receptionist.current.set({'contract_request':True,'json_schema':schema,'language':'english'})
+        try:
+            with patch.object(app,'COHERE_API_KEY','test'),patch.object(app,'_cohere_circuit_open',return_value=False),patch.object(app.requests,'post',side_effect=[rejected,good]) as post:
+                self.assertEqual(app.ask_cohere_chat('Return JSON',structured=True),'{"supported":true}')
+        finally: ai_receptionist.current.reset(token)
+        self.assertEqual(post.call_args_list[1].args[0],'https://api.cohere.ai/compatibility/v1/chat/completions')
 
     def test_full_profile_preserves_followup_at_groq_transport(self):
         phone='919555550001'

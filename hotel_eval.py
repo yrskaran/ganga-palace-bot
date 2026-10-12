@@ -43,7 +43,7 @@ def inference_provider(url):
         return 'gemini'
     if parsed.hostname=='api.groq.com' and parsed.path=='/openai/v1/chat/completions':
         return 'groq'
-    if parsed.hostname=='api.cohere.ai' and parsed.path=='/compatibility/v1/chat/completions':
+    if parsed.hostname=='api.cohere.ai' and parsed.path in {'/compatibility/v1/chat/completions','/v2/chat'}:
         return 'cohere'
     return None
 
@@ -73,6 +73,8 @@ class ModelBudget:
                 choice=(body.get('choices') or [{}])[0]
                 rec['response_text']=str((choice.get('message') or {}).get('content') or '')[:2500]
                 rec['usage']=body.get('usage',{})
+                if provider=='cohere' and isinstance(body.get('message'),dict):
+                    rec['response_text']=''.join(str(p.get('text','')) for p in body['message'].get('content',[]) if isinstance(p,dict) and p.get('type')=='text')[:2500]
             if res.status_code!=200:
                 self.stopped=not self.allow_fallback
                 rec['error']=str((body.get('error') or {}).get('message',''))[:400]

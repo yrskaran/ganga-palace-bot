@@ -19,7 +19,7 @@ def read_hotel_file(bot):
     except (OSError, UnicodeError) as exc:
         print(f"KNOWLEDGE ONLY FILE UNAVAILABLE: {type(exc).__name__}", flush=True)
         return "", "Hotel"
-    name_match = re.search(r"(?im)^\\s*-\\s*Name\\s*:\\s*(.+?)\\s*$", raw)
+    name_match = re.search(r"(?im)^\s*-\s*Name\s*:\s*(.+?)\s*$", raw)
     hotel_name = name_match.group(1).strip() if name_match else "Hotel"
     return raw, hotel_name
 

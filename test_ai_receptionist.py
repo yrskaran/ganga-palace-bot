@@ -81,6 +81,50 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertIsNone(gateway._language_meta(app,self.phone,
             'Punjabi guest ka bill batao'))
 
+    def test_literacy_complaint_recovers_previous_reply_without_menu_action(self):
+        # Real WhatsApp regression: "Padhni ni aundi menu" = cannot read
+        # previous Gurmukhi message; "menu" means "to me", not hotel menu.
+        self.assertEqual(app.guest_language('Padhni ni aundi menu'), 'hinglish')
+        app.conversation_memory[self.phone] = [
+            {'role':'user','content':'Confirm'},
+            {'role':'assistant','content':'ਹਿਤੇਸ਼ ਜੀ, ਰੂਮ 450 ਲਈ 1 x ਛੋਲੇ ਭਟੂਰੇ ਦਾ ਆਰਡਰ ਨੋਟ ਕੀਤਾ ਗਿਆ ਹੈ।'}]
+        app.ask_ai_chat.return_value = (
+            '{"reply":"Room 450 ke liye 1 x Chole Bhature ka order note kiya gaya hai."}')
+        with patch.object(app, '_process_and_reply') as executor:
+            gateway.handle(app, self.phone, 'Padhni ni aundi menu', None,
+                semantic=self.understanding(action='SHOW_MENU', language='punjabi',
+                    menu_section='BREAKFAST'))
+        executor.assert_not_called()
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('Roman Hindi',reply)
+        self.assertIn('Room 450',reply)
+        self.assertNotIn('Breakfast Menu',reply)
+        self.assertFalse(any(0x0a00 <= ord(ch) <= 0x0a7f for ch in reply))
+        self.assertEqual(app.guest_language_cache[self.phone], 'hinglish')
+
+    def test_real_food_menu_request_is_not_a_literacy_correction(self):
+        app.conversation_memory[self.phone] = [
+            {'role':'assistant','content':'ਇੱਥੇ ਹੋਟਲ ਦੇ ਨਾਸ਼ਤੇ ਦੀ ਸੂਚੀ ਹੈ।'}]
+        self.assertIsNone(gateway._reading_correction(
+            app,self.phone,'Breakfast menu dikhao'))
+        self.assertIsNone(gateway._reading_correction(
+            app,self.phone,'Menu ka price padh ke batao'))
+
+    def test_ai_reviewer_can_repair_menu_into_conversational_answer(self):
+        import json
+        candidate=self.understanding(action='SHOW_MENU',language='punjabi',
+            menu_section='BREAKFAST')
+        review={'menu_related':False,'blocked':False,'language':'hinglish',
+            'action':'ANSWER','operation_text':'','show_prices':False,
+            'reply':'Sorry ji, pichhla message Roman Hindi mein samjha deti hoon.'}
+        result=gateway.review_plan(app,'Padhni ni aundi menu',candidate,
+            [{'role':'assistant','content':'ਪੰਜਾਬੀ ਵਿਚ ਜਵਾਬ'}],
+            provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'ANSWER')
+        self.assertEqual(result['language'],'hinglish')
+        self.assertNotEqual(result['action'],'SHOW_MENU')
+        self.assertFalse(result['needs_reception'])
+
     def test_failed_qa_hinglish_menu_question_keeps_script_and_verified_item(self):
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':200}]
         gateway.handle(app,self.phone,'Standard veg thali bhi hai?',None,
@@ -535,6 +579,43 @@ class ReceptionistBoundaryTests(unittest.TestCase):
             app.process_and_reply({'text': {'body': 'aapka naam kya hai'}}, self.phone, 'text')
         brain.assert_called_once()
         self.assertEqual(app.send_whatsapp_message.call_args.args[1], 'Main Monika hoon.')
+
+    def test_food_order_plus_when_will_it_arrive_keeps_eta_question(self):
+        self.assertTrue(gateway._asks_delivery_eta(
+            'Chole bhature di 1, mineral water 1, paneer paratha 1. Kab tak mil juga?'))
+        self.assertTrue(gateway._asks_delivery_eta('When will my food order arrive?'))
+        self.assertFalse(gateway._asks_delivery_eta('Breakfast menu dikhao'))
+        token=gateway.current.set({'phone': self.phone, 'text':
+            'Chole bhature di 1 mineral water 1 paneer paratha 1 kab tak mil juga',
+            'language':'hinglish','meaning':'order with ETA question',
+            'order_eta_pending':True,'order_eta_answered':False,'direct':False})
+        try:
+            app.ask_ai_chat.return_value = None
+            result=gateway.compose(app,self.phone,
+                'Room 450: 1 Chole Bhature, 1 Mineral Water, 1 Paneer Paratha. CONFIRM?')
+            self.assertIn('exact time',result)
+            self.assertIn('verify nahi hua',result)
+            self.assertIn('Room 450',result)
+            self.assertNotIn('20 minute',result)
+            # Multiple sends from one executor turn must not repeat ETA.
+            second=gateway.compose(app,self.phone,'Thank you, Hitesh ji.')
+            self.assertNotIn('exact time',second)
+        finally:
+            gateway.current.reset(token)
+
+    def test_order_turn_annotates_secondary_eta_without_changing_canonical_cart(self):
+        check={}
+        def executor(*args,**kwargs):
+            check.update(gateway.current.get())
+        with patch.object(app,'_process_and_reply',side_effect=executor):
+            gateway.handle(app,self.phone,
+                'Chole bhature di 1, mineral water 1, paneer paratha 1. Kab tak mil juga?',
+                None,semantic=self.understanding(action='ORDER',language='hinglish',
+                    items=[{'name':'Chole Bhature','qty':1},
+                           {'name':'Mineral Water','qty':1},
+                           {'name':'Paneer Paratha','qty':1}]))
+        self.assertTrue(check['order_eta_pending'])
+        self.assertFalse(check['order_eta_answered'])
 
     def test_composer_cannot_swap_menu_item_prices(self):
         source = 'Menu\nPoha Rs. 70\nChai Rs. 30'

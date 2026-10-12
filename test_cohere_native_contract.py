@@ -8,6 +8,28 @@ import ai_receptionist as gateway
 
 
 class CohereContractTest(unittest.TestCase):
+    def test_invalid_native_reasoning_retries_compat_json_once(self):
+        schema = {"type": "object", "properties": {"reply": {"type": "string"}}, "required": ["reply"]}
+        native = Mock(status_code=200)
+        native.json.return_value = {
+            "message": {"content": [{"type": "text", "text": "We need to analyze this request before answering."}]},
+            "finish_reason": "COMPLETE",
+        }
+        compat = Mock(status_code=200)
+        compat.json.return_value = {
+            "choices": [{"message": {"content": '{"reply":"Ji, bataiye."}'}, "finish_reason": "stop"}],
+        }
+        token = gateway.current.set({"contract_request": True, "json_schema": schema, "language": "english"})
+        try:
+            with patch.object(app, "COHERE_API_KEY", "test"), patch.object(app, "_cohere_circuit_open", return_value=False), patch.object(app.requests, "post", side_effect=[native, compat]) as request:
+                output = app.ask_cohere_chat("Reply in JSON.", structured=True)
+        finally:
+            gateway.current.reset(token)
+        self.assertEqual(output, '{"reply":"Ji, bataiye."}')
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[0].args[0], "https://api.cohere.ai/v2/chat")
+        self.assertEqual(request.call_args_list[1].args[0], "https://api.cohere.ai/compatibility/v1/chat/completions")
+
     def test_v2_json_schema_contract(self):
         schema = {"type": "object", "properties": {"reply": {"type": "string"}}, "required": ["reply"]}
         response = Mock(status_code=200)

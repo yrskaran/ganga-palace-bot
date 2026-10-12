@@ -106,6 +106,10 @@ def faq_context(bot, query, max_bytes=1800):
     rows = _verified_rows(bot)
     if not rows or max_bytes < 100:
         return ""
+    # Render's deployed filesystem is temporary. If it was recreated after a
+    # restart, restore the human-readable text mirror from durable Sheet rows.
+    if not _text_path(bot).is_file():
+        refresh_text_file(bot)
     words = set(re.findall(r"\w+", str(query).casefold()))
     scored = []
     for i, row in enumerate(rows):

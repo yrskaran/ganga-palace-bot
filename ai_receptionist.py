@@ -593,8 +593,10 @@ def _language_conversation_reply(bot, phone, text):
         r'^(?:bolo|bol|baat|gall|gal|boliye|speak|talk|reply)\b|'
         r'^ਬੋਲ|^ਗੱਲ|^बोल', after, re.I))
     intro_speak = bool(re.search(
-        r'\b(?:speak|talk|reply|respond|explain|say|baat karo|bol|bolo)\s+'
-        r'(?:in|mein|me|vich)?\s*
+        r'\\b(?:speak|talk|reply|respond|explain|say|baat karo|bol|bolo)\\s+'
+        r'(?:in|mein|me|vich)?\\s*$', before, re.I))
+    if not (language_link or direct_speak or intro_speak):
+        return None
     if target == 'hindi' and bot.guest_script(text) == 'roman':
         target = 'hinglish'  # Everyday Hindi in the guest's own Roman script.
     if target == 'hindi':

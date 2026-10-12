@@ -5,6 +5,23 @@ bill, spreadsheet, or notification handlers. The normal transport, deduplication
 and per-sender conversation history remain available.
 """
 import json
+import os
+import re
+from pathlib import Path
+
+
+def read_hotel_file(bot):
+    """Read hotel_data.txt explicitly; do not silently use another hotel's JSON."""
+    configured = os.getenv("KNOWLEDGE_ONLY_FILE", "").strip()
+    path = Path(configured) if configured else Path(__file__).resolve().with_name("hotel_data.txt")
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError) as exc:
+        print(f"KNOWLEDGE ONLY FILE UNAVAILABLE: {type(exc).__name__}", flush=True)
+        return "", "Hotel"
+    name_match = re.search(r"(?im)^\\s*-\\s*Name\\s*:\\s*(.+?)\\s*$", raw)
+    hotel_name = name_match.group(1).strip() if name_match else "Hotel"
+    return raw, hotel_name
 
 
 def _message_text(bot, message, msg_type):

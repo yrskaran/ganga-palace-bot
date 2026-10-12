@@ -7,6 +7,12 @@ import app
 import hotel_eval
 
 class ProductionEntryEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        # These archived provider fixtures exercise the supported single-action
+        # compatibility gateway. Native whole-turn fixtures are tested below.
+        self.profile=patch.object(app,'CUSTOMER_CONFIG',dict(app.CUSTOMER_CONFIG,conversation_tool_engine=False))
+        self.profile.start()
+        self.addCleanup(self.profile.stop)
     def test_media_wire_response_is_retained_as_guest_output(self):
         plan={'action':'SHOW_PHOTO','photo_target':'Family Suite','language':'hinglish','confidence':.95}
         def process(*args):
@@ -85,3 +91,18 @@ class ProductionEntryEvaluationTests(unittest.TestCase):
         self.assertFalse(row['errors'],row)
         self.assertEqual(row['output'],reply)
         self.assertEqual(len(row['model_calls']),3)
+
+class ToolEngineProductionEntryTests(unittest.TestCase):
+    def test_native_engine_own_room_passes_actual_entry_and_wire(self):
+        answers=[{'understood_as':'Own room number','language':'english','script':'roman',
+                  'questions':['What is my room number?'],'operations':[]},
+                 {'reply':'Your room number is 240.','answered_questions':[0]}, {'supported':True}]
+        def transport(url,**kwargs):
+            return Mock(status_code=200,json=Mock(return_value={'candidates':[{'content':{'parts':[{'text':json.dumps(answers.pop(0))}]},'finishReason':'STOP'}]}))
+        with patch.object(app,'GEMINI_API_KEY','test'),patch.object(app,'CUSTOMER_CONFIG',dict(app.CUSTOMER_CONFIG,conversation_tool_engine=True)):
+            row=hotel_eval.evaluate(app,hotel_eval.CASES[2],transport=transport)
+        self.assertFalse(row['errors'],row)
+        self.assertEqual(row['output'],'Your room number is 240.')
+        self.assertEqual(len(row['model_calls']),3)
+        self.assertEqual(row['plan']['operations'],[])
+        self.assertFalse(row['fresh_model_acceptance'])

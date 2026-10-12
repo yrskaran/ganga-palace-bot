@@ -133,7 +133,14 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
     text_payloads=[p for p in guest_payloads if p.get('type')=='text']
     media=[p for p in guest_payloads if p.get('type')!='text']
     output='\n'.join(p.get('text',{}).get('body','') if p.get('type')=='text' else p.get(p['type'],{}).get('caption','') for p in guest_payloads)
-    plan=next((p for p in plans if p),None)
+    whole_plan=next((t.get('plan') for t in trace if t.get('stage')=='conversation_plan'),None)
+    if whole_plan:
+        operations=whole_plan['operations']
+        projected=operations[0] if operations else {'action':'ANSWER','confidence':1.0}
+        plan=dict(projected,language=whole_plan['language'],questions=whole_plan['questions'],
+                  script=whole_plan['script'],operations=operations)
+    else:
+        plan=next((p for p in plans if p),None)
     errors=[]
     if not plan:errors.append('No completed interpreter/review plan')
     if not output and not media:errors.append('No guest output')

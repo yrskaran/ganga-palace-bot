@@ -185,6 +185,8 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
         'A guest asking whether Punjabi is supported deserves a truthful yes, not a claim of only Hindi and English. '
         'Use casual language, not stiff formal Hindi. Do not let English menu names change a Hinglish reply. '
         'Use only the chosen branch schema; enum examples separated by | mean ONE value.\n'
+        f'Whole-turn tool scope: {json.dumps(candidate.get("_separate_operations", []))}. '
+        'When this list is present, review only this candidate operation; other operations and side questions are handled separately. Do not substitute one whole-turn reception request for several independent valid tools.\n'
         f'Canonical inventory: {json.dumps(inventory, ensure_ascii=False)}\n'
         f'Verified hotel facts: {bot._ai_knowledge_snapshot(1600, text) if candidate.get("action") in info_actions and hasattr(bot, "_ai_knowledge_snapshot") else "Only explicitly supplied facts are verified."}\n'
         f'Verified session state: {json.dumps(pending if pending is not None else snapshot(bot, phone, text), ensure_ascii=False)}\n'
@@ -357,6 +359,9 @@ def review_plan(bot, text, candidate, history, guest=None, phone=None, provider=
 
 
 def compose(bot, phone, backend_text):
+    import conversation_engine
+    if conversation_engine.collection.get() is not None:
+        return backend_text
     turn = current.get()
     if not turn or turn['phone'] != bot.format_whatsapp_number(phone) or turn.get('direct'):
         return backend_text
@@ -636,7 +641,7 @@ def _reading_correction(bot, phone, text):
     return preface + ' Pichhli baat clear nahi hui ho to bataiye, main seedhe shabdon mein samjha dungi.'
 
 
-def handle(bot, phone, text, guest, message=None, semantic=None):
+def handle(bot, phone, text, guest, message=None, semantic=None, tools_only=False):
     """One interpretation, one explicitly selected operation, grounded response."""
     result = semantic if semantic is not None else bot.understand_guest_request(text, guest, phone)
     if not isinstance(result, dict):
@@ -649,13 +654,13 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
     # The model can confuse English menu names for an English guest reply.
     # A clear Roman-Hindi or Devanagari current message takes precedence.
     detected = bot.guest_language(text)
-    if detected in {'hinglish', 'hindi'} and language != detected:
+    if not tools_only and detected in {'hinglish', 'hindi'} and language != detected:
         language = detected
     if language not in LANGUAGES:
         language = bot.get_guest_response_language(phone)
     # AI interpretation precedes all actions. As a fail-closed safety check,
     # a room-category list must not stand in for unverified bed/capacity facts.
-    if action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
+    if not tools_only and action == 'ROOM_OPTIONS' and (not result.get('generic') or not result.get('reply')) and re.search(
         r'\b(?:adults?|children|child|kids?|bacch[ae]|bachch[ae]|'
         r'(?:double|single|twin|alag|separate|extra)\s+beds?|'
         r'beds?\s+(?:arrangement|milenge|hoga|hain))\b',
@@ -675,7 +680,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
     # The semantic model has already run. Validate its proposed action against
     # an explicit inability to read the previous reply; never send a food menu
     # because Roman Punjabi uses 'menu' to mean 'to me'.
-    reading_reply = _reading_correction(bot, phone, text)
+    reading_reply = None if tools_only else _reading_correction(bot, phone, text)
     if reading_reply is not None:
         with bot.state_lock:
             bot.guest_language_cache[phone] = 'hinglish'
@@ -687,7 +692,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         finally:
             current.reset(token)
         return True
-    language_meta = _language_meta(bot, phone, text)
+    language_meta = None if tools_only else _language_meta(bot, phone, text)
     if language_meta is not None:
         requested, prepared_reply = language_meta
         if requested:
@@ -696,7 +701,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
             previous = bot.get_guest_response_language(phone)
             if previous in LANGUAGES:
                 language = previous
-    else:
+    elif not tools_only:
         previous = bot.get_guest_response_language(phone)
         if (previous in {'punjabi', 'hindi', 'hinglish'} and detected == 'english'
                 and len(str(text).split()) <= 3
@@ -706,7 +711,7 @@ def handle(bot, phone, text, guest, message=None, semantic=None):
         bot.guest_language_cache[phone] = language
     turn = {'phone': bot.format_whatsapp_number(phone), 'text': text, 'guest': guest,
             'language': language, 'meaning': result.get('understood_as', ''), 'direct': False,
-            'order_eta_pending': action in {'ORDER', 'ORDER_SELECTION'} and _asks_delivery_eta(text),
+            'order_eta_pending': not tools_only and action in {'ORDER', 'ORDER_SELECTION'} and _asks_delivery_eta(text),
             'order_eta_answered': False}
     token = current.set(turn)
     try:

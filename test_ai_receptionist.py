@@ -36,6 +36,51 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         return dict({'action': 'ANSWER', 'reply': 'AI ne poori baat samjhi.',
                      'language': 'hinglish', 'confidence': 0.95}, **values)
 
+    def test_language_capability_question_answers_punjabi_without_switching(self):
+        app.guest_language_cache[self.phone] = 'hinglish'
+        gateway.handle(app, self.phone, 'Punjabi bhi aati hai?', None,
+            semantic=self.understanding(action='ANSWER',language='english',
+                reply='I can mainly speak Hindi and English.'))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('Punjabi vich',reply)
+        self.assertNotIn('mainly',reply)
+        self.assertEqual(app.guest_language_cache[self.phone],'hinglish')
+
+    def test_language_preference_roman_hindi_stays_casual(self):
+        gateway.handle(app,self.phone,
+            'Hindi me samjha yaar.. English ni aati ya punjabi me samjha',
+            None,semantic=self.understanding(action='ANSWER',language='punjabi',
+                reply='कृपया सहायता हेतु बताइए।'))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('simple Hindi',reply)
+        self.assertNotIn('कृपया',reply)
+        self.assertEqual(app.guest_language_cache[self.phone],'hinglish')
+
+    def test_explicit_punjabi_switch_uses_roman_and_keeps_preference(self):
+        gateway.handle(app,self.phone,'Punjabi vich gal karo',None,
+            semantic=self.understanding(action='ANSWER',language='hinglish'))
+        self.assertIn('Punjabi vich gall',app.send_whatsapp_message.call_args.args[1])
+        self.assertEqual(app.guest_language_cache[self.phone],'punjabi')
+        gateway.handle(app,self.phone,'wifi?',None,
+            semantic=self.understanding(action='ANSWER',reply='Wi-Fi ki details reception se milengi.',
+                language='english'))
+        self.assertEqual(app.guest_language_cache[self.phone],'punjabi')
+
+    def test_language_capability_list_does_not_limit_to_two_languages(self):
+        gateway.handle(app,self.phone,'What languages can you speak?',None,
+            semantic=self.understanding(action='ANSWER',language='english',
+                reply='Only English and Hindi.'))
+        reply=app.send_whatsapp_message.call_args.args[1]
+        self.assertIn('Punjabi',reply)
+        self.assertIn('English',reply)
+        self.assertNotIn('Only English',reply)
+
+    def test_regular_hotel_question_never_faked_as_language_switch(self):
+        self.assertIsNone(gateway._language_conversation_reply(app,self.phone,
+            'Room ka rate aur photo batao'))
+        self.assertIsNone(gateway._language_conversation_reply(app,self.phone,
+            'Punjabi guest ka bill batao'))
+
     def test_failed_qa_hinglish_menu_question_keeps_script_and_verified_item(self):
         app.CUSTOMER_CONFIG['menu'] = [{'name':'Standard Veg Thali','price':200}]
         gateway.handle(app,self.phone,'Standard veg thali bhi hai?',None,

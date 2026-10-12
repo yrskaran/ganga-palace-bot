@@ -1,5 +1,6 @@
 """Regression test for native Cohere JSON contracts."""
 import os
+import json
 import unittest
 from unittest.mock import Mock, patch
 os.environ["BOT_AUTOSTART"] = "0"
@@ -23,7 +24,7 @@ class CohereContractTest(unittest.TestCase):
                 output = app.ask_cohere_chat("Give final JSON.", structured=True)
         finally:
             gateway.current.reset(token)
-        self.assertEqual(output, answer)
+        self.assertEqual(json.loads(output), json.loads(answer))
         self.assertEqual(request.call_count, 1)
 
     def test_never_extract_json_from_internal_reasoning_prose(self):

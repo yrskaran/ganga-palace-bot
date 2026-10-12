@@ -7,6 +7,7 @@ and per-sender conversation history remain available.
 import json
 import os
 import re
+import reception_learning
 from pathlib import Path
 
 
@@ -143,6 +144,9 @@ def _message_text(bot, message, msg_type):
 def process(bot, message, sender_phone, msg_type):
     """Call one plain language AI gateway; never invoke hotel operations."""
     message = message if isinstance(message, dict) else {}
+    # Reception messages are never processed as new guest prompts.
+    if reception_learning.handle_operator_message(bot, message, sender_phone, msg_type):
+        return True
     if msg_type == "image":
         return bot.send_whatsapp_message(
             sender_phone,
@@ -157,7 +161,16 @@ def process(bot, message, sender_phone, msg_type):
             "Aap apna sawaal text ya clear voice note mein bhej sakte hain ji."
         )
 
-    # No JSON plan, reviewer, tool dispatcher or sheet/guest-state lookup.
+    # A previously verified generic hotel fact should not be asked again.
+    known = reception_learning.cached_answer(bot, text)
+    if known:
+        sent = bot.send_whatsapp_message(sender_phone, known)
+        if sent:
+            bot.remember_conversation(sender_phone, "user", text)
+            bot.remember_conversation(sender_phone, "assistant", known)
+        return sent
+
+    # One natural AI response; Python only transports the optional escalation.
     raw = bot.ask_ai_chat(text, None, sender_phone, structured=False)
     reply = bot._ai_content_is_usable(raw, "Knowledge only") if raw else ""
     reply = str(reply or "").strip()
@@ -172,6 +185,21 @@ def process(bot, message, sender_phone, msg_type):
     if not reply:
         reply = ("Abhi AI se sahi jawab nahi mil pa raha ji. "
                  "Is chat mein koi hotel request ya action nahi kiya gaya.")
+
+    reply, uncertainty = reception_learning.extract_handoff(reply)
+    if uncertainty:
+        result = reception_learning.forward_unknown(bot, sender_phone, text, uncertainty)
+        acknowledgement = {
+            "sent": "Ji, ye sawaal reception ko bhej diya hai. Unka jawab aane par yahin forward kar dungi.",
+            "pending": "Ji, ye sawaal pehle se reception ke paas hai. Unka jawab milne par yahin forward kar dungi.",
+            "failed": "Ji, abhi reception ko WhatsApp par message nahi pahunch paaya. Kripya front desk se seedha sampark karein.",
+        }[result]
+        outgoing = (reply + "\n\n" + acknowledgement).strip() if reply else acknowledgement
+        sent = bot.send_whatsapp_message(sender_phone, outgoing)
+        if sent:
+            bot.remember_conversation(sender_phone, "user", text)
+            bot.remember_conversation(sender_phone, "assistant", outgoing)
+        return sent
 
     if unverified_promise(reply):
         print("KNOWLEDGE ONLY: unverified real-world action promise blocked", flush=True)

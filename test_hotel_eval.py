@@ -56,3 +56,8 @@ class ProductionEntryEvaluationTests(unittest.TestCase):
         self.assertEqual(row['output'],'Your room number is 240.')
         self.assertIn('Verified sender stay',prompts[1])
         self.assertEqual(len(prompts),2)
+
+    def test_acceptance_checks_bill_scope_photo_target_and_default_script(self):
+        self.assertIn('Wrong bill scope',hotel_eval.contract_errors({'actions':['BILL'],'scope':'food'},{'action':'BILL','operation_text':'full','language':'hinglish'},'Ji, bill hai.'))
+        self.assertIn('Wrong photo target',hotel_eval.contract_errors({'actions':['SHOW_PHOTO'],'photo':'Family Suite'},{'action':'SHOW_PHOTO','photo_target':'Deluxe','language':'hinglish'},'Ji, photo hai.'))
+        self.assertIn('Final reply does not match Hinglish script/wording',hotel_eval.contract_errors({'actions':['ANSWER']},{'action':'ANSWER','language':'hinglish'},'Your room number is 240.'))

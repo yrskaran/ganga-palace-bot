@@ -8286,11 +8286,16 @@ def _room_category_question(text):
     return has_room and kinds
 
 
-def _send_verified_room_categories(sender_phone, user_text, show_prices=False):
+def _send_verified_room_categories(sender_phone, user_text, show_prices=False, category=None):
     """Verified category information, without a live availability claim."""
     config = get_room_categories()
     rooms = list(config.values()) if isinstance(config, dict) else []
     rooms = [r for r in rooms if isinstance(r, dict) and r.get('name')]
+    if category:
+        rooms = [r for r in rooms if str(r['name']).casefold()==str(category).casefold()]
+        if not rooms:
+            send_whatsapp_message(sender_phone, 'That room category could not be matched to verified hotel records. Please clarify the category; no availability confirmed.')
+            return True
     if rooms:
         lines = []
         for room in rooms:

@@ -45,3 +45,30 @@ class CheckinReviewTests(unittest.TestCase):
         candidate={'action':'CHECKIN_DETAILS','operation_text':'Old name','language':'english'}
         review={'operational':True,'action':'CHECKIN_DETAILS','items':[],'category':'NONE','operation_text':'Old name','language':'english','confidence':.95,'reply':'','submission_intent':False}
         self.assertIsNone(ai.review_plan(app,'What is the price?',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={'checkin_sessions':{'step':'NAME'}}))
+
+class AvailabilityAuthorityTests(unittest.TestCase):
+    def test_review_cannot_treat_room_categories_as_live_availability(self):
+        candidate={'action':'AVAILABILITY','understood_as':'Room for two tomorrow','language':'hinglish','reply':'Kal kamra mil sakta hai.'}
+        review={'menu_related':False,'action':'AVAILABILITY','language':'hinglish','reply':'Ji haan, kal kamra mil sakta hai.'}
+        result=ai.review_plan(app,'Kal 2 logo ke liye kamra milega?',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={})
+        self.assertEqual(result['action'],'AVAILABILITY')
+        self.assertFalse(result['needs_reception'])
+        self.assertEqual(result['reply'],'')
+
+class RoomSelectionTests(unittest.TestCase):
+    def test_specific_category_does_not_send_whole_category_list(self):
+        with patch.object(app,'get_room_categories',return_value={'deluxe':{'name':'Deluxe','rate':1999},'family':{'name':'Family Suite','rate':3499}}),patch.object(app,'send_whatsapp_message') as send:
+            app._send_verified_room_categories('919555550001','',show_prices=True,category='Deluxe')
+        self.assertIn('Deluxe',send.call_args.args[1])
+        self.assertNotIn('Family Suite',send.call_args.args[1])
+    def test_unknown_category_is_not_broadened(self):
+        with patch.object(app,'get_room_categories',return_value={'deluxe':{'name':'Deluxe','rate':1999}}),patch.object(app,'send_whatsapp_message') as send:
+            app._send_verified_room_categories('919555550001','',category='Foreign Room')
+        self.assertNotIn('• Deluxe',send.call_args.args[1])
+
+    def test_reviewed_handoff_does_not_trust_candidate_followup(self):
+        candidate={'action':'RECEPTION','language':'hinglish','reception_followup':True}
+        review={'operational':True,'action':'RECEPTION','items':[],'category':'RECEPTION','operation_text':'A new towel request','reception_followup':False,'language':'hinglish','confidence':.95,'reply':''}
+        result=ai.review_plan(app,'Towel bhi bhejo',candidate,[],provider=Mock(return_value=json.dumps(review)),pending={'reception_request_sessions':{'request':'Milk','status':'pending'}})
+        self.assertFalse(result['reception_followup'])
+        self.assertEqual(result['reception_request'],'A new towel request')

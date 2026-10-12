@@ -28,6 +28,13 @@ CASES=[
      'forbidden_action':'CHECKIN_DETAILS','unchanged_step':'NAME'},
 ]
 
+REPAIR_CASES=[
+    {'id':'availability-authority','question':'Kal 2 logo ke liye kamra milega?','language':'hinglish','expected_action':'RECEPTION'},
+    {'id':'room-selection','question':'AC wala sabse sasta konsa hai?','language':'hinglish','actions':['ROOM_OPTIONS','ROOM_RATE','ANSWER'],'required':['Deluxe'],'forbidden':['Super Deluxe','Family Suite','Premium Window']},
+    {'id':'failed-reception','question':'Bache ke liye cow milk milega?','language':'hinglish','expected_action':'RECEPTION'},
+    {'id':'checkin-side-question','question':'Room ka rate kya hai?','language':'hinglish','pending':{'checkin_sessions':{'step':'NAME'}},'forbidden_action':'CHECKIN_DETAILS','unchanged_step':'NAME'},
+]
+
 class BlockedIO(RuntimeError): pass
 
 class ModelBudget:
@@ -54,6 +61,19 @@ class ModelBudget:
         except Exception:
             self.stopped=True
             raise
+
+def contract_errors(case,plan,output):
+    import re
+    plan=plan or {};errors=[]
+    language=case.get('language','hinglish' if 'actions' in case else None)
+    if language and plan.get('language')!=language:errors.append('Wrong guest language')
+    if language=='hinglish' and (re.search(r'[\u0900-\u097F]',output) or not re.search(r'\b(ji|hai|hain|ki|ke|ka|mein|me|aur|mil|aap|chahiye|hoon|liye|nahi)\b',output,re.I)):
+        errors.append('Final reply does not match Hinglish script/wording')
+    if language=='hindi' and not re.search(r'[\u0900-\u097F]',output):errors.append('Final reply does not match Hindi script')
+    if case.get('scope') and plan.get('operation_text')!=case['scope']:errors.append('Wrong bill scope')
+    if case.get('photo') and case['photo'].casefold() not in str(plan.get('photo_target','')).casefold():errors.append('Wrong photo target')
+    if case.get('no_unrequested_price') and plan.get('show_prices'):errors.append('Unrequested price breakdown')
+    return errors
 
 def evaluate(bot,case,transport=None,live=False,budget=None):
     """Run actual interpreter/review/dispatch/composer and wire-message memory."""
@@ -110,13 +130,11 @@ def evaluate(bot,case,transport=None,live=False,budget=None):
     errors=[]
     if not plan:errors.append('No completed interpreter/review plan')
     if not output:errors.append('No guest output')
-    if case.get('language') and (plan or {}).get('language')!=case['language']:errors.append('Wrong guest language')
-    if case.get('language')=='hinglish':
-        import re
-        if re.search(r'[\u0900-\u097F]',output) or not re.search(r'\b(ji|hai|hain|ki|ke|ka|mein|me|aur|mil|aap|chahiye)\b',output,re.I):
-            errors.append('Final reply does not match Hinglish script/wording')
+    errors.extend(contract_errors(case,plan,output))
     if case.get('expected_action') and (plan or {}).get('action')!=case['expected_action']:errors.append('Wrong action')
     if case.get('forbidden_action') and (plan or {}).get('action')==case['forbidden_action']:errors.append('Forbidden action')
+    for forbidden in case.get('forbidden',[]):
+        if forbidden in output: errors.append('Unrelated '+forbidden)
     for required in case.get('required',[]):
         if required not in output:errors.append('Missing '+required)
     if case.get('unchanged_step') and after.get('checkin_sessions',{}).get('step')!=case['unchanged_step']:errors.append('Check-in step advanced')
@@ -151,7 +169,7 @@ def run(bot,run_id):
     if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='200':
         return run_conversations(bot,run_id,budget)
     rows=[]
-    for case in CASES:
+    for case in (REPAIR_CASES if os.getenv('AI_PRODUCTION_CHECK_SUITE')=='repairs' else CASES):
         row=evaluate(bot,case,live=True,budget=budget);row.pop('next_state',None);rows.append(row)
         print('PRODUCTION EVAL ROW: '+json.dumps(dict(row,run_id=run_id),ensure_ascii=False),flush=True)
         if budget.stopped or len(budget.calls)>=budget.limit or not row['plan']:break

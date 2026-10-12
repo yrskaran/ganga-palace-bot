@@ -31,7 +31,7 @@ def public_knowledge(raw):
     rules = False
     for line in str(raw or "").splitlines():
         heading = line.strip()
-        numbered = re.match(r"^(\\d{1,2})\\.\\s+[A-Z]", heading)
+        numbered = re.match(r"^(\d{1,2})\.\s+[A-Z]", heading)
         if numbered:
             included = int(numbered.group(1)) in (1, 2, 3, 4, 5)
             rules = False
@@ -52,7 +52,7 @@ def public_knowledge(raw):
         if heading.startswith("# Replace these") or heading.startswith("# Do not change"):
             continue
         output.append(line)
-    return "\\n".join(output).strip()
+    return "\n".join(output).strip()
 
 
 def _message_text(bot, message, msg_type):

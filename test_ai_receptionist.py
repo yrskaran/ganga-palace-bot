@@ -84,7 +84,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
     def test_literacy_complaint_recovers_previous_reply_without_menu_action(self):
         # Real WhatsApp regression: "Padhni ni aundi menu" = cannot read
         # previous Gurmukhi message; "menu" means "to me", not hotel menu.
-        self.assertEqual(app.guest_language('Padhni ni aundi menu'), 'punjabi')
+        self.assertEqual(app.guest_language('Padhni ni aundi menu'), 'hinglish')
         app.conversation_memory[self.phone] = [
             {'role':'user','content':'Confirm'},
             {'role':'assistant','content':'ਹਿਤੇਸ਼ ਜੀ, ਰੂਮ 450 ਲਈ 1 x ਛੋਲੇ ਭਟੂਰੇ ਦਾ ਆਰਡਰ ਨੋਟ ਕੀਤਾ ਗਿਆ ਹੈ।'}]
@@ -99,7 +99,7 @@ class ReceptionistBoundaryTests(unittest.TestCase):
         self.assertIn('Roman Hindi',reply)
         self.assertIn('Room 450',reply)
         self.assertNotIn('Breakfast Menu',reply)
-        self.assertFalse(any('\\u0a00' <= ch <= '\\u0a7f' for ch in reply))
+        self.assertFalse(any(0x0a00 <= ord(ch) <= 0x0a7f for ch in reply))
         self.assertEqual(app.guest_language_cache[self.phone], 'hinglish')
 
     def test_real_food_menu_request_is_not_a_literacy_correction(self):
